@@ -1,0 +1,10 @@
+# private local issue tracker (provenance notes — never public)
+.dogcats/
+.dogcatrc
+
+node_modules/
+.DS_Store
+*.log
+.env
+.dogcats/config.local.toml
+.dogcats/.issues.lock
