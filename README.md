@@ -4,7 +4,30 @@
 
 tjor runs AI coding agents (Claude Code, opencode, GitHub Copilot CLI) inside a portable, fail-closed container cage with per-session identity, brokered credentials, and session lifecycle management. The agent works at full speed inside the boundary — and the boundary, not the prompt, is the policy.
 
-**Status: pre-alpha.** Design phase; no releases yet. Specs live in [`openspec/`](openspec/), decisions in [`docs/decisions/`](docs/decisions/).
+**Status: pre-alpha, working skeleton.** The cage core runs: fail-closed egress with an adversarial conformance suite (10/10 probes green), opencode doing real work inside. Specs live in [`openspec/`](openspec/), decisions in [`docs/decisions/`](docs/decisions/).
+
+## Quickstart
+
+Requires bash ≥ 4.4, python3 ≥ 3.11, git, and a Docker engine with compose v2
+(Colima, Docker Desktop, or native Linux).
+
+```console
+$ git clone https://github.com/bjorges/tjor && cd tjor
+$ ./bin/tjor doctor              # host preflight + policy check + guarantee tiers
+$ ./bin/tjor conformance         # adversarial suite: proves the boundary holds on YOUR runtime
+$ cd ~/your/project
+$ /path/to/tjor/bin/tjor run     # caged opencode session in this repo
+```
+
+Sessions are per-repo: state (harness auth, history) persists under
+`~/.tjor/sessions/<session>/` across container restarts; the containers stay
+disposable. `tjor run --harness claude` / `--harness copilot` select other
+harnesses (images build on first use). `tjor policy <url>` previews an
+egress verdict; `tjor down` removes a repo's topology.
+
+The egress policy lives at `~/.config/tjor/policy.toml` (falling back to
+[`config/policy.toml`](config/policy.toml)) — strict allow-list by default,
+and a policy file that fails to parse denies everything.
 
 ## Why
 

@@ -106,10 +106,6 @@ ensure_topology() { # expects TJOR_PROJECT, TJOR_SESSION_DIR exported
     fi
     python3 "${TJOR_ROOT}/python/gen_corefile.py" --policy "${session_policy}" --out "${corefile}"
 
-    export TJOR_PROXY_IMAGE="tjor-proxy:local"
-    TJOR_COREDNS_IMAGE="$(cfg images.coredns)"
-    TJOR_PROXY_PORT="$(cfg proxy.port --default 8080)"
-    export TJOR_COREDNS_IMAGE TJOR_PROXY_PORT
     TJOR_CONFIG_HASH="$(cat "${session_policy}" "${corefile}" "${TJOR_ROOT}/compose.yaml" | sha256 | cut -c1-16)"
     export TJOR_CONFIG_HASH
 
@@ -182,6 +178,13 @@ report_tiers() {
 }
 
 # ----------------------------------------------------------------- sessions
+export_static_env() {
+    export TJOR_PROXY_IMAGE="tjor-proxy:local"
+    TJOR_COREDNS_IMAGE="$(cfg images.coredns)"
+    TJOR_PROXY_PORT="$(cfg proxy.port --default 8080)"
+    export TJOR_COREDNS_IMAGE TJOR_PROXY_PORT
+}
+
 session_setup() { # $1 = harness
     local ws root sid
     if ws="$(git rev-parse --show-toplevel 2>/dev/null)"; then :; else
@@ -198,6 +201,7 @@ session_setup() { # $1 = harness
     TJOR_LAUNCH_DIR="$(pwd)"
     export TJOR_LAUNCH_DIR
     export TJOR_AGENT_IMAGE="tjor-agent-$1:local"
+    export_static_env
     mkdir -p "${TJOR_SESSION_DIR}/home"
 }
 
@@ -254,6 +258,7 @@ cmd_conformance() {
     export TJOR_WORKSPACE="${TJOR_SESSION_DIR}"
     export TJOR_LAUNCH_DIR="${TJOR_SESSION_DIR}"
     mkdir -p "${TJOR_SESSION_DIR}/home"
+    export_static_env
     build_conformance
     ensure_topology
     local rc=0
