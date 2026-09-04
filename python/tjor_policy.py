@@ -243,6 +243,39 @@ def evaluate(policy: Policy, url: str) -> Verdict:
     return Verdict(True, "default-allow")
 
 
+def evaluate_connect(policy: Policy, host: str) -> Verdict:
+    """Host-level decision at HTTPS CONNECT time, before any TLS interception.
+
+    Path rules cannot be evaluated yet (the path is inside the tunnel), so a
+    host that any path-allow carve-out could apply to gets its tunnel opened
+    and the full ``evaluate()`` runs on the decrypted request. Everything
+    else is decided here, fail-closed.
+    """
+    if not policy.valid:
+        return Verdict(False, "fail-closed:invalid-policy")
+    canon = _canon_host(host)
+    if not canon or not re.fullmatch(r"[a-z0-9._:\-]+", canon):
+        return Verdict(False, "fail-closed:bad-url")
+
+    def carveout_could_apply() -> bool:
+        return any(host_matches(hpat, canon) for hpat, _ in policy.path_allow)
+
+    for pattern in policy.host_block:
+        if host_matches(pattern, canon):
+            if carveout_could_apply():
+                return Verdict(True, "connect-defer:carveout", pattern)
+            return Verdict(False, "host-block", pattern)
+
+    if policy.mode == "strict-allow":
+        for pattern in policy.host_allow:
+            if host_matches(pattern, canon):
+                return Verdict(True, "host-allow", pattern)
+        if carveout_could_apply():
+            return Verdict(True, "connect-defer:carveout")
+        return Verdict(False, "default-deny")
+    return Verdict(True, "default-allow")
+
+
 def check(policy_path: str, url: str) -> Verdict:
     """One-call convenience used by the CLI and launcher preview."""
     return evaluate(load_policy(policy_path), url)

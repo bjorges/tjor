@@ -1,0 +1,9 @@
+# Allowlist-style build context (charter L10): deny everything, re-include
+# exactly the COPY sources. State dirs and credentials can never leak into
+# a build context this way.
+*
+!python/tjor_policy.py
+!proxy/addon.py
+!images/agent/entrypoint.sh
+!images/agent/instructions
+!images/conformance/probes.py
