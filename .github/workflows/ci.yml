@@ -1,0 +1,51 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  unit:
+    name: unit + parity + lint
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pytest
+      - name: unit, corpus, and call-site parity tests
+        run: python -m pytest python/tests -q
+      - name: shellcheck
+        run: shellcheck bin/tjor images/agent/entrypoint.sh
+
+  agent-image:
+    name: agent image build (checksum-gated, amd64)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: build opencode agent image
+        run: ./bin/tjor build
+      - name: image contract — non-root user, harness present, no leaked build tokens
+        run: |
+          docker run --rm --entrypoint bash tjor-agent-opencode:local -c '
+            [ "$(su agent -c "id -u")" != "0" ] || { echo "agent is root"; exit 1; }
+            command -v opencode >/dev/null || { echo "opencode missing"; exit 1; }
+            test -f /opt/tjor/instructions/opencode/AGENTS.md || { echo "instruction cargo missing"; exit 1; }
+          '
+
+  conformance:
+    name: conformance (live topology, Linux engine)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: run adversarial conformance suite
+        run: ./bin/tjor conformance
