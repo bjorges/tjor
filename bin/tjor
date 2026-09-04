@@ -1,0 +1,319 @@
+#!/usr/bin/env bash
+# tjor — run AI coding agents inside a portable, fail-closed container cage.
+#
+# Every entry point gets configuration through python/tjor_cfg.py (the ONE
+# merge path, charter L19) and policy verdicts through python/tjor_policy.py
+# (the ONE matcher, charter L4). This script orchestrates; it never decides.
+set -euo pipefail
+
+# ---------------------------------------------------------------- preflight
+if ((BASH_VERSINFO[0] < 4 || (BASH_VERSINFO[0] == 4 && BASH_VERSINFO[1] < 4))); then
+    echo "tjor: bash >= 4.4 required (you have ${BASH_VERSION})." >&2
+    echo "      macOS: brew install bash   (then run via that bash or fix PATH)" >&2
+    exit 1
+fi
+
+TJOR_ROOT="$(python3 - "${BASH_SOURCE[0]}" <<'PY' 2>/dev/null || true
+import os, sys
+print(os.path.dirname(os.path.dirname(os.path.realpath(sys.argv[1]))))
+PY
+)"
+
+die() { echo "tjor: ERROR: $*" >&2; exit 1; }
+warn() { echo "tjor: WARNING: $*" >&2; }
+loud() { echo -e "\033[1;31mtjor: $*\033[0m" >&2; }
+
+preflight() {
+    local missing=()
+    command -v python3 >/dev/null || missing+=("python3 (>=3.11) — brew install python / apt install python3")
+    if command -v python3 >/dev/null; then
+        python3 -c 'import tomllib' 2>/dev/null || missing+=("python3 >= 3.11 with tomllib — current $(python3 --version)")
+    fi
+    command -v docker >/dev/null || missing+=("docker — https://docs.docker.com/engine/install/ or colima")
+    command -v git >/dev/null || missing+=("git")
+    if docker compose version >/dev/null 2>&1; then COMPOSE=(docker compose)
+    elif command -v docker-compose >/dev/null 2>&1; then COMPOSE=(docker-compose)
+    else missing+=("docker compose v2 (plugin or docker-compose binary) — brew install docker-compose"); fi
+    command -v shasum >/dev/null || command -v sha256sum >/dev/null || missing+=("shasum or sha256sum")
+    if ((${#missing[@]})); then
+        echo "tjor: missing host dependencies:" >&2
+        printf '  - %s\n' "${missing[@]}" >&2
+        exit 1
+    fi
+    [[ -n "${TJOR_ROOT}" && -f "${TJOR_ROOT}/compose.yaml" ]] || die "cannot locate tjor installation root"
+    docker info >/dev/null 2>&1 || die "docker daemon not reachable — is docker/colima running?"
+}
+
+sha256() {
+    if command -v sha256sum >/dev/null; then sha256sum | cut -d' ' -f1
+    else shasum -a 256 | cut -d' ' -f1; fi
+}
+
+cfg() { python3 "${TJOR_ROOT}/python/tjor_cfg.py" get "$@"; }
+
+policy_file() {
+    if [[ -n "${TJOR_POLICY_OVERRIDE:-}" ]]; then echo "${TJOR_POLICY_OVERRIDE}"
+    elif [[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/tjor/policy.toml" ]]; then
+        echo "${XDG_CONFIG_HOME:-$HOME/.config}/tjor/policy.toml"
+    else echo "${TJOR_ROOT}/config/policy.toml"; fi
+}
+
+# ------------------------------------------------------------------- images
+build_proxy() {
+    docker build -q -f "${TJOR_ROOT}/images/proxy/Dockerfile" \
+        --build-arg BASE_IMAGE="$(cfg images.mitmproxy)" \
+        -t tjor-proxy:local "${TJOR_ROOT}" >/dev/null
+}
+
+build_agent() { # $1 = harness list (comma separated)
+    local harness="$1"
+    echo "tjor: building agent image (${harness}) — first build downloads pinned tools" >&2
+    docker build -f "${TJOR_ROOT}/images/agent/Dockerfile" \
+        --build-arg BASE_IMAGE="$(cfg images.debian)" \
+        --build-arg HARNESS="${harness}" \
+        --build-arg AGENT_UID="$(id -u)" \
+        --build-arg OPENCODE_VERSION="$(cfg versions.opencode)" \
+        --build-arg OPENCODE_SHA256_ARM64="$(cfg versions.sha256.opencode_linux_arm64)" \
+        --build-arg OPENCODE_SHA256_X64="$(cfg versions.sha256.opencode_linux_x64)" \
+        --build-arg CLAUDE_CODE_VERSION="$(cfg versions.claude_code)" \
+        --build-arg COPILOT_VERSION="$(cfg versions.copilot)" \
+        -t "tjor-agent-${harness//,/-}:local" "${TJOR_ROOT}"
+}
+
+build_conformance() {
+    docker build -q -f "${TJOR_ROOT}/images/conformance/Dockerfile" \
+        --build-arg BASE_IMAGE="$(cfg images.python)" \
+        -t tjor-conformance:local "${TJOR_ROOT}" >/dev/null
+}
+
+# ----------------------------------------------------------------- topology
+compose() { "${COMPOSE[@]}" -f "${TJOR_ROOT}/compose.yaml" "$@"; }
+
+is_connected() { # ctr net
+    docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$1" | grep -qw "$2"
+}
+
+ensure_topology() { # expects TJOR_PROJECT, TJOR_SESSION_DIR exported
+    local pfile session_policy corefile
+    pfile="$(policy_file)"
+    session_policy="${TJOR_SESSION_DIR}/policy.toml"
+    corefile="${TJOR_SESSION_DIR}/Corefile"
+    cp "${pfile}" "${session_policy}"
+
+    if ! python3 "${TJOR_ROOT}/python/tjor_policy.py" validate --policy "${session_policy}" >/dev/null 2>&1; then
+        loud "EGRESS POLICY INVALID (${pfile}) — failing closed: ALL egress will be denied."
+        python3 "${TJOR_ROOT}/python/tjor_policy.py" validate --policy "${session_policy}" || true
+    fi
+    python3 "${TJOR_ROOT}/python/gen_corefile.py" --policy "${session_policy}" --out "${corefile}"
+
+    export TJOR_PROXY_IMAGE="tjor-proxy:local"
+    TJOR_COREDNS_IMAGE="$(cfg images.coredns)"
+    TJOR_PROXY_PORT="$(cfg proxy.port --default 8080)"
+    export TJOR_COREDNS_IMAGE TJOR_PROXY_PORT
+    TJOR_CONFIG_HASH="$(cat "${session_policy}" "${corefile}" "${TJOR_ROOT}/compose.yaml" | sha256 | cut -c1-16)"
+    export TJOR_CONFIG_HASH
+
+    build_proxy
+
+    # The agent network: internal-only, launcher-managed (compose sees it as
+    # external so that sidecar creation happens on the egress network first).
+    local internal="${TJOR_PROJECT}_internal"
+    docker network inspect "${internal}" >/dev/null 2>&1 \
+        || docker network create --internal "${internal}" >/dev/null
+
+    # Recreate sidecars on config drift (charter L12): compare the stamp on
+    # the running containers with the hash of the config we just generated.
+    local force=() ctr stamp
+    for svc in proxy dns; do
+        ctr="$(compose ps -q "${svc}" 2>/dev/null || true)"
+        if [[ -n "${ctr}" ]]; then
+            stamp="$(docker inspect -f '{{index .Config.Labels "tjor.confighash"}}' "${ctr}" 2>/dev/null || true)"
+            [[ "${stamp}" != "${TJOR_CONFIG_HASH}" ]] && force=(--force-recreate)
+        fi
+    done
+    compose up -d "${force[@]}" proxy dns
+
+    # Dual-homed sidecars: created on the egress network by compose, then
+    # connected to the internal network SECOND (charter L28). Retry: the
+    # network sandbox may lag container start by a moment.
+    for svc in proxy dns; do
+        ctr="$(compose ps -q "${svc}")"
+        local attempt connected=""
+        for attempt in $(seq 1 10); do
+            if is_connected "${ctr}" "${internal}" \
+               || docker network connect "${internal}" "${ctr}" 2>/dev/null; then
+                connected=1; break
+            fi
+            sleep 1
+            ctr="$(compose ps -q "${svc}")"
+        done
+        [[ -n "${connected}" ]] || die "could not connect ${svc} to ${internal} after ${attempt} attempts"
+    done
+
+    # Core guarantee verification: the agent network MUST be internal-only.
+    [[ "$(docker network inspect -f '{{.Internal}}' "${internal}")" == "true" ]] \
+        || { loud "CORE GUARANTEE FAILED: network ${internal} is not internal-only. Aborting."; exit 1; }
+
+    # Extract the session CA *certificate* (never the key) for the agent.
+    local proxy_ctr ok=""
+    proxy_ctr="$(compose ps -q proxy)"
+    for _ in $(seq 1 30); do
+        if docker cp "${proxy_ctr}:/home/mitmproxy/.mitmproxy/mitmproxy-ca-cert.pem" \
+              "${TJOR_SESSION_DIR}/ca.pem" >/dev/null 2>&1; then ok=1; break; fi
+        sleep 0.5
+    done
+    [[ -n "${ok}" ]] || die "proxy did not produce a session CA — check: docker logs ${proxy_ctr}"
+
+    TJOR_PROXY_IP="$(docker inspect -f "{{(index .NetworkSettings.Networks \"${internal}\").IPAddress}}" "${proxy_ctr}")"
+    TJOR_DNS_IP="$(docker inspect -f "{{(index .NetworkSettings.Networks \"${internal}\").IPAddress}}" "$(compose ps -q dns)")"
+    export TJOR_PROXY_IP TJOR_DNS_IP
+    [[ -n "${TJOR_PROXY_IP}" && -n "${TJOR_DNS_IP}" ]] || die "could not determine sidecar internal IPs"
+
+    report_tiers
+}
+
+report_tiers() {
+    echo "tjor: core guarantees active: internal-only network, fail-closed egress proxy, zone-scoped DNS, non-root agent" >&2
+    if docker info --format '{{join .SecurityOptions ","}}' 2>/dev/null | grep -q apparmor; then
+        echo "tjor: hardening add-on available: AppArmor (profiles ship in a later tjor release)" >&2
+    else
+        warn "hardening add-on INACTIVE: AppArmor not supported by this container runtime (guarantee tier: core only)"
+    fi
+}
+
+# ----------------------------------------------------------------- sessions
+session_setup() { # $1 = harness
+    local ws root sid
+    if ws="$(git rev-parse --show-toplevel 2>/dev/null)"; then :; else
+        ws="$(pwd)"
+        warn "not inside a git repository — using ${ws} as the workspace"
+    fi
+    # shellcheck disable=SC2088  # literal ~ is expanded on the next line
+    root="$(cfg session.root --default "~/.tjor/sessions")"; root="${root/#\~/$HOME}"
+    sid="$(basename "${ws}" | tr -cd 'a-zA-Z0-9_.-' | tr '[:upper:]' '[:lower:]')-$(printf %s "${ws}" | sha256 | cut -c1-8)"
+    export TJOR_SESSION="${sid}"
+    export TJOR_PROJECT="tjor-${sid}"
+    export TJOR_SESSION_DIR="${root}/${sid}"
+    export TJOR_WORKSPACE="${ws}"
+    TJOR_LAUNCH_DIR="$(pwd)"
+    export TJOR_LAUNCH_DIR
+    export TJOR_AGENT_IMAGE="tjor-agent-$1:local"
+    mkdir -p "${TJOR_SESSION_DIR}/home"
+}
+
+cmd_run() {
+    local harness="opencode"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --harness) harness="$2"; shift 2 ;;
+            --) shift; break ;;
+            *) break ;;
+        esac
+    done
+    session_setup "${harness}"
+    docker image inspect "${TJOR_AGENT_IMAGE}" >/dev/null 2>&1 || build_agent "${harness}"
+    ensure_topology
+    echo "tjor: session ${TJOR_SESSION} — workspace ${TJOR_WORKSPACE}" >&2
+    if [[ $# -gt 0 ]]; then
+        exec_compose_run agent "$@"
+    else
+        case "${harness}" in
+            claude) exec_compose_run agent claude ;;
+            copilot) exec_compose_run agent copilot ;;
+            *) exec_compose_run agent opencode ;;
+        esac
+    fi
+}
+
+exec_compose_run() { exec "${COMPOSE[@]}" -f "${TJOR_ROOT}/compose.yaml" run --rm "$@"; }
+
+cmd_down() {
+    session_setup "opencode"
+    compose down --volumes --remove-orphans
+    docker network rm "${TJOR_PROJECT}_internal" >/dev/null 2>&1 || true
+    echo "tjor: session topology ${TJOR_PROJECT} removed (state in ${TJOR_SESSION_DIR} preserved)" >&2
+}
+
+cmd_status() { session_setup "opencode"; compose ps; }
+
+cmd_policy() {
+    [[ $# -ge 1 ]] || die "usage: tjor policy <url>"
+    python3 "${TJOR_ROOT}/python/tjor_policy.py" check --policy "$(policy_file)" "$1"
+}
+
+cmd_conformance() {
+    export TJOR_POLICY_OVERRIDE="${TJOR_ROOT}/python/tests/fixtures/parity-policy.toml"
+    export TJOR_SESSION="conformance"
+    export TJOR_PROJECT="tjor-conformance"
+    # Session dir must live under $HOME: VM-based runtimes (Colima, Docker
+    # Desktop) only share user paths, and an unshared bind source silently
+    # becomes an empty directory inside the VM.
+    mkdir -p "${HOME}/.tjor/tmp"
+    TJOR_SESSION_DIR="$(mktemp -d "${HOME}/.tjor/tmp/conformance.XXXXXX")"
+    export TJOR_SESSION_DIR
+    export TJOR_WORKSPACE="${TJOR_SESSION_DIR}"
+    export TJOR_LAUNCH_DIR="${TJOR_SESSION_DIR}"
+    mkdir -p "${TJOR_SESSION_DIR}/home"
+    build_conformance
+    ensure_topology
+    local rc=0
+    "${COMPOSE[@]}" -f "${TJOR_ROOT}/compose.yaml" run --rm conformance || rc=$?
+    compose down --volumes --remove-orphans >/dev/null 2>&1 || true
+    docker network rm "${TJOR_PROJECT}_internal" >/dev/null 2>&1 || true
+    rm -rf "${TJOR_SESSION_DIR}"
+    if ((rc == 0)); then echo "tjor: conformance PASSED — the boundary holds" >&2
+    else loud "conformance FAILED (rc=${rc}) — the boundary does NOT hold"; fi
+    return "${rc}"
+}
+
+cmd_doctor() {
+    echo "tjor root:     ${TJOR_ROOT}"
+    echo "policy file:   $(policy_file)"
+    python3 "${TJOR_ROOT}/python/tjor_policy.py" validate --policy "$(policy_file)" || true
+    report_tiers
+    if [[ "${1:-}" == "--full" ]]; then cmd_conformance; fi
+}
+
+cmd_build() {
+    local harness="opencode"
+    [[ "${1:-}" == "--harness" ]] && harness="$2"
+    build_proxy && echo "tjor: built tjor-proxy:local" >&2
+    build_conformance && echo "tjor: built tjor-conformance:local" >&2
+    build_agent "${harness}"
+}
+
+usage() {
+    cat <<'EOF'
+tjor — run AI coding agents inside a portable, fail-closed container cage
+
+usage: tjor <command> [args]
+
+  run [--harness opencode|claude|copilot] [cmd...]   launch a caged session in this repo
+  down                                               tear down this repo's session topology
+  status                                             show this repo's session containers
+  policy <url>                                       evaluate a URL against the active egress policy
+  conformance                                        run the adversarial conformance suite
+  doctor [--full]                                    check host deps, policy, guarantees (--full: + conformance)
+  build [--harness ...]                              (re)build the images
+EOF
+}
+
+main() {
+    local cmd="${1:-}"
+    [[ -n "${cmd}" ]] || { usage; exit 1; }
+    shift || true
+    preflight
+    case "${cmd}" in
+        run) cmd_run "$@" ;;
+        down) cmd_down "$@" ;;
+        status) cmd_status "$@" ;;
+        policy) cmd_policy "$@" ;;
+        conformance) cmd_conformance "$@" ;;
+        doctor) cmd_doctor "$@" ;;
+        build) cmd_build "$@" ;;
+        help|-h|--help) usage ;;
+        *) usage; exit 1 ;;
+    esac
+}
+
+main "$@"

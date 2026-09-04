@@ -47,7 +47,23 @@ def decide(url: str) -> tjor_policy.Verdict:
     return tjor_policy.evaluate(_current_policy(), url)
 
 
+def decide_connect(host: str) -> tjor_policy.Verdict:
+    """Host-level parity call site for CONNECT-time decisions."""
+    return tjor_policy.evaluate_connect(_current_policy(), host)
+
+
 class TjorPolicy:
+    def http_connect(self, flow) -> None:
+        from mitmproxy import http
+
+        verdict = decide_connect(flow.request.host)
+        if not verdict.allowed:
+            flow.response = http.Response.make(
+                403,
+                f"tjor egress policy: DENY CONNECT ({verdict.rule})\n".encode(),
+                {"x-tjor-policy": "deny", "x-tjor-rule": verdict.rule},
+            )
+
     def request(self, flow) -> None:
         from mitmproxy import http  # deferred so decide() imports host-side
 

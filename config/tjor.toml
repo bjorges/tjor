@@ -1,0 +1,33 @@
+# tjor built-in defaults. Override in ~/.config/tjor/config.toml — never edit
+# this file in an installed copy; upgrades replace it.
+
+[proxy]
+port = 8080
+
+[dns]
+# Extra DNS zones to forward beyond those derived from the policy allow-list.
+# Required for any forwarding at all when the policy mode is default-allow.
+extra_zones = []
+
+[session]
+root = "~/.tjor/sessions"
+
+[versions]
+# Harness and tool versions are config, not Dockerfile constants (charter L8).
+# SHA256 values come from the publisher's release metadata (GitHub asset
+# digests). Threat model per charter L23: verifies integrity of what was
+# pinned, does not prove publisher authenticity behind a TLS-inspecting proxy.
+opencode = "1.18.28"
+claude_code = "2.1.260"   # npm exact-version pin (registry integrity applies)
+copilot = "1.0.83"        # npm exact-version pin
+
+[versions.sha256]
+opencode_linux_arm64 = "ccb0d39467eeccc52cdfe1cccad0114304366cb42073b906d970a487ca5b4497"
+opencode_linux_x64 = "42add0fb1f13bdfd13855adc11cdaf2944c149377a873732168cdfd234fec7c3"
+
+[images]
+# Sidecar and base images pinned by digest (charter L11).
+mitmproxy = "mitmproxy/mitmproxy:12.1.2@sha256:0d7b2a14b4a71a908cd6f31b8f50e29bbc5c8720fe6caa706acf782da558e5c7"
+coredns = "coredns/coredns:1.12.4@sha256:986f04c2e15e147d00bdd51e8c51bcef3644b13ff806be7d2ff1b261d6dfbae1"
+debian = "debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132"
+python = "python:3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285"

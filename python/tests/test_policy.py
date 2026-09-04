@@ -139,6 +139,38 @@ class TestMatching:
         assert tp.evaluate(policy, "not a url at all \x00").rule.startswith("fail-closed")
 
 
+class TestConnect:
+    """CONNECT-time (pre-TLS) host decisions: everything decidable at the
+    host level is decided fail-closed; only hosts a path carve-out could
+    apply to get a deferred tunnel (full evaluate() runs post-MITM)."""
+
+    def test_blocked_host_without_carveout_denied(self):
+        policy = make('mode="strict-allow"\n[hosts]\nblock=["bad.test"]\nallow=[]')
+        verdict = tp.evaluate_connect(policy, "bad.test:443")
+        assert not verdict.allowed and verdict.rule == "host-block"
+
+    def test_blocked_host_with_carveout_defers(self):
+        policy = make(BASE)
+        verdict = tp.evaluate_connect(policy, "bad.test:443")
+        assert verdict.allowed and verdict.rule == "connect-defer:carveout"
+
+    def test_strict_unknown_host_denied(self):
+        policy = make(BASE)
+        assert not tp.evaluate_connect(policy, "unknown.test:443").allowed
+
+    def test_allowed_host_tunnels(self):
+        policy = make(BASE)
+        assert tp.evaluate_connect(policy, "good.test:443").rule == "host-allow"
+
+    def test_invalid_policy_denies_connect(self):
+        policy = tp.parse_policy("mode = [broken")
+        assert tp.evaluate_connect(policy, "good.test:443").rule == "fail-closed:invalid-policy"
+
+    def test_default_allow_mode_tunnels(self):
+        policy = make('mode="default-allow"')
+        assert tp.evaluate_connect(policy, "anything.test:443").rule == "default-allow"
+
+
 class TestCorpusExpectations:
     """The corpus is also the parity input; assert it holds via the API."""
 

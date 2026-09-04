@@ -1,0 +1,92 @@
+# tjor cage topology. Driven by bin/tjor, which exports every TJOR_* variable.
+#
+# Layout (charter L1/L2/L28): the agent lives on an internal-only network;
+# proxy and dns sidecars are created on the egress network FIRST and then
+# connected to the internal network by the launcher (docker network connect)
+# — published ports and route-derived addresses bind against the creation-
+# time network, so the ordering is load-bearing. The agent reaches sidecars
+# by their internal IPs, exported by the launcher after connection.
+
+name: ${TJOR_PROJECT:-tjor}
+
+networks:
+  # The internal network is created by the launcher (docker network create
+  # --internal) BEFORE compose runs, so sidecars are provably created on the
+  # egress network first and connected to internal second (charter L28).
+  internal:
+    external: true
+    name: ${TJOR_PROJECT:-tjor}_internal
+  egress: {}
+
+volumes:
+  # Per-session mitmproxy confdir: holds the session CA. Only the CERT is
+  # ever extracted for the agent; the private key never leaves this volume.
+  proxy-confdir: {}
+
+services:
+  proxy:
+    image: ${TJOR_PROXY_IMAGE:?}
+    networks: [egress]
+    restart: unless-stopped
+    labels:
+      tjor.role: proxy
+      tjor.confighash: ${TJOR_CONFIG_HASH:-unset}
+    volumes:
+      - ${TJOR_SESSION_DIR:?}/policy.toml:/policy/policy.toml:ro
+      - proxy-confdir:/home/mitmproxy/.mitmproxy
+    command:
+      [
+        "mitmdump",
+        "--mode", "regular",
+        "--listen-host", "0.0.0.0",
+        "--listen-port", "${TJOR_PROXY_PORT:-8080}",
+        "-s", "/addon/addon.py",
+        "--set", "stream_large_bodies=1m",
+      ]
+
+  dns:
+    image: ${TJOR_COREDNS_IMAGE:?}
+    networks: [egress]
+    restart: unless-stopped
+    labels:
+      tjor.role: dns
+      tjor.confighash: ${TJOR_CONFIG_HASH:-unset}
+    volumes:
+      - ${TJOR_SESSION_DIR:?}/Corefile:/Corefile:ro
+    command: ["-conf", "/Corefile"]
+
+  agent:
+    profiles: [agent]
+    image: ${TJOR_AGENT_IMAGE:-tjor-agent-opencode:local}
+    networks: [internal]
+    dns:
+      - ${TJOR_DNS_IP:-127.0.0.11}
+    environment:
+      HTTP_PROXY: &proxyurl http://${TJOR_PROXY_IP:-0.0.0.0}:${TJOR_PROXY_PORT:-8080}
+      HTTPS_PROXY: *proxyurl
+      http_proxy: *proxyurl
+      https_proxy: *proxyurl
+      NO_PROXY: localhost,127.0.0.1
+      no_proxy: localhost,127.0.0.1
+      NODE_EXTRA_CA_CERTS: /etc/tjor/ca/ca.pem
+      REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
+      TJOR_SESSION: ${TJOR_SESSION:-}
+    volumes:
+      - ${TJOR_SESSION_DIR:?}/home:/home/agent
+      - ${TJOR_WORKSPACE:-/dev/null}:${TJOR_WORKSPACE:-/tmp/.tjor-nows}
+      - ${TJOR_SESSION_DIR:?}/ca.pem:/etc/tjor/ca/ca.pem:ro
+    working_dir: ${TJOR_LAUNCH_DIR:-/home/agent}
+    hostname: tjor
+    stdin_open: true
+    tty: true
+
+  conformance:
+    profiles: [conformance]
+    image: ${TJOR_CONFORMANCE_IMAGE:-tjor-conformance:local}
+    networks: [internal]
+    dns:
+      - ${TJOR_DNS_IP:-127.0.0.11}
+    environment:
+      TJOR_PROXY_IP: ${TJOR_PROXY_IP:-}
+      TJOR_DNS_IP: ${TJOR_DNS_IP:-}
+      TJOR_PROXY_PORT: ${TJOR_PROXY_PORT:-8080}

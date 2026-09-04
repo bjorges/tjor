@@ -1,0 +1,39 @@
+# tjor default egress policy: strict allow-list, fail closed.
+# Copy to ~/.config/tjor/policy.toml and adapt. A file that fails to parse
+# denies ALL egress — check with:  tjor policy https://example.com/
+#
+# The default list covers what a coding harness needs for real work:
+# source hosting, package registries, and the LLM endpoints of the three
+# supported harnesses. Vendor telemetry endpoints are blocked by path or
+# host below (charter L5).
+
+mode = "strict-allow"
+
+[hosts]
+allow = [
+  # source hosting
+  "github.com", "*.github.com", "*.githubusercontent.com", "codeload.github.com",
+  "gitlab.com", "*.gitlab.com",
+  # package registries
+  "registry.npmjs.org", "pypi.org", "files.pythonhosted.org",
+  "proxy.golang.org", "sum.golang.org", "crates.io", "static.crates.io", "index.crates.io",
+  # LLM / harness endpoints
+  "api.anthropic.com", "statsig.anthropic.com",
+  "api.openai.com",
+  "api.githubcopilot.com", "*.githubcopilot.com",
+  "opencode.ai", "*.opencode.ai",
+  "models.dev", "api.models.dev",
+]
+block = [
+  # harness vendor telemetry (functionality endpoints stay allowed above)
+  "telemetry.opencode.ai",
+]
+
+# Path-level telemetry blocks on otherwise-allowed hosts.
+[[paths.block]]
+host = "api.githubcopilot.com"
+path = "/telemetry*"
+
+[[paths.block]]
+host = "*.githubcopilot.com"
+path = "/telemetry*"
