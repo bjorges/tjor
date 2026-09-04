@@ -1,0 +1,24 @@
+{
+  "policy": "parity-policy.toml",
+  "cases": [
+    {"url": "https://allowed.test/anything", "allowed": true, "rule": "host-allow"},
+    {"url": "https://sub.allowed.test/x", "allowed": true, "rule": "host-allow"},
+    {"url": "https://deep.sub.allowed.test/x", "allowed": true, "rule": "host-allow"},
+    {"url": "https://notlisted.test/", "allowed": false, "rule": "default-deny"},
+    {"url": "https://blocked.test/secret", "allowed": false, "rule": "host-block"},
+    {"url": "https://blocked.test/docs/guide", "allowed": true, "rule": "path-allow-carveout"},
+    {"url": "https://blocked.test/%64ocs/guide", "allowed": false, "rule": "host-block"},
+    {"url": "https://blocked.test/docs/%2e%2e/secret", "allowed": false, "rule": "host-block"},
+    {"url": "https://blocked.test/docs/../secret", "allowed": false, "rule": "host-block"},
+    {"url": "https://api.vendor.test/v1/data", "allowed": true, "rule": "host-allow"},
+    {"url": "https://api.vendor.test/v1/telemetry/send", "allowed": false, "rule": "path-block"},
+    {"url": "https://api.vendor.test/v1/%74elemetry/send", "allowed": false, "rule": "path-block"},
+    {"url": "https://api.vendor.test/v1/foo/%2e%2e/telemetry/x", "allowed": false, "rule": "path-block"},
+    {"url": "https://ALLOWED.TEST./x", "allowed": true, "rule": "host-allow"},
+    {"url": "https://allowed.test:8443/x", "allowed": true, "rule": "host-allow"},
+    {"url": "https://x.telemetry.test/", "allowed": false, "rule": "host-block"},
+    {"url": "https://anything.test/phone-home/beacon", "allowed": false, "rule": "path-block"},
+    {"url": "http://allowed.test", "allowed": true, "rule": "host-allow"},
+    {"url": "https://allowed.test.evil.test/x", "allowed": false, "rule": "default-deny"}
+  ]
+}

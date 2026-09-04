@@ -1,0 +1,18 @@
+# Fixture policy for the parity corpus. Exercises every evaluation stage.
+mode = "strict-allow"
+
+[hosts]
+allow = ["allowed.test", "*.allowed.test", "api.vendor.test"]
+block = ["blocked.test", "*.telemetry.test"]
+
+[[paths.allow]]
+host = "blocked.test"
+path = "/docs/*"
+
+[[paths.block]]
+host = "api.vendor.test"
+path = "*/telemetry*"
+
+[[paths.block]]
+host = "*"
+path = "/phone-home/*"
