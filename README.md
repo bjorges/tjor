@@ -154,17 +154,22 @@ $ tjor run --profile mine                      # named, from [profiles] in confi
 mine = "~/.opencode"
 ```
 
-A profile carries **definitions, never credentials**. tjor stages only an
-allow-list of definition subdirectories — `agent`/`agents`, `command`/`commands`,
+**Definitions, not credentials.** tjor stages only a **structural allow-list**
+of definition subdirectories — `agent`/`agents`, `command`/`commands`,
 `skill`/`skills`, `prompt`/`prompts`, `mode`/`modes` — host-side, and mounts only
-that; an `auth.json` or API key sitting beside them in `~/.opencode` is never
-copied and **cannot reach the cage** (verified in CI: a secret placed in the
-source appears nowhere in the container). The staged definitions overlay the
-image's baseline instructions (your definitions win on conflict). Because a
-profile is *you* naming *your own* directory, the `--profile` selection is the
-consent — no separate trust step (unlike a repo's `.tjor/`, which travels with
-code and needs `tjor trust`). Content must already be in the active harness's
-format; tjor deploys it, it doesn't translate between harnesses.
+that. So a credential/config file at the profile *root* — an `auth.json`,
+`opencode.json`, or API key sitting beside those dirs in `~/.opencode` — is
+never copied (verified in CI). As defense in depth, well-known credential
+filenames and key/cert extensions (`auth.json`, `id_rsa`, `*.pem`, …) are also
+skipped *inside* the definition dirs. What tjor **can't** do is tell a
+definition file from a secret by its content — so don't hide a token inside a
+definition directory; a profile is instructions the agent runs, so treat it as
+trusted content you authored. The staged definitions overlay the image's
+baseline instructions (your definitions win on conflict). Because a profile is
+*you* naming *your own* directory, the `--profile` selection is the consent — no
+separate trust step (unlike a repo's `.tjor/`, which travels with code and needs
+`tjor trust`). Content must already be in the active harness's format; tjor
+deploys it, it doesn't translate between harnesses.
 
 ## Why
 

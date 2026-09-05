@@ -3,6 +3,14 @@
 *(Added retroactively — this change shipped without a design.md; recorded here
 because its trust/hash-pinning surface warrants an explicit rationale.)*
 
+> **Provenance note.** Three items below were NOT part of the original v0.6.0
+> design: the terminal-escape sanitizer, the two-step `tjor trust` confirm gate,
+> and the `resolve_session`/`session_setup` split were **vulnerabilities found by
+> a later external review and fixed in v0.9.1** (terminal-escape injection in the
+> trust review; read-only commands minting credentials). They are documented here
+> as part of the capability's current design, but they were corrections, not
+> foresight — recorded honestly, as with `add-multi-repo`'s design.md.
+
 ## Context
 
 Two frictions after prebuilt images made first run fast: an egress denial is

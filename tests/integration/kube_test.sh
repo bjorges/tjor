@@ -112,6 +112,25 @@ TOML
 PATH="${WORK}/empty" run_prepare 2>/dev/null || true
 [[ -z "${TJOR_BROKER_ENABLED:-}" ]] && ok "fail-closed: missing kubectl disables the broker" || bad "missing kubectl did NOT disable the broker"
 
+# === 5. Fail-closed: argument-injection-shaped kube_sa (leading dash) =====
+write_user_cfg <<'TOML'
+[broker]
+source = "kube"
+kube_sa = "-oh-no"
+TOML
+PATH="${MOCKBIN}:${PATH}" run_prepare 2>/dev/null || true
+[[ -z "${TJOR_BROKER_ENABLED:-}" ]] && ok "fail-closed: flag-shaped kube_sa (leading '-') refused" || bad "flag-shaped kube_sa was accepted (arg injection)"
+
+# === 6. Fail-closed: bogus kube_duration ==================================
+write_user_cfg <<'TOML'
+[broker]
+source = "kube"
+kube_sa = "ci-runner"
+kube_duration = "; rm -rf /"
+TOML
+PATH="${MOCKBIN}:${PATH}" run_prepare 2>/dev/null || true
+[[ -z "${TJOR_BROKER_ENABLED:-}" ]] && ok "fail-closed: non-duration kube_duration refused" || bad "bogus kube_duration was accepted"
+
 echo "----"
 echo "kube wiring: ${PASS} passed, ${FAIL} failed"
 [[ "${FAIL}" -eq 0 ]]

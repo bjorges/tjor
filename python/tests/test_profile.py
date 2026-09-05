@@ -96,6 +96,35 @@ class TestStageAllowList:
         staged = tjor_profile.stage(src, tmp_path / "staged")
         assert staged == []
 
+    def test_credentials_NESTED_in_definition_dir_not_staged(self, tmp_path):
+        # The structural allow-list alone would stage these (they're inside an
+        # allowed dir); the credential-filename denylist must catch them.
+        src = tmp_path / "profile"
+        _write(src / "agent" / "reviewer.md", "def")
+        _write(src / "agent" / "auth.json", "SECRET")
+        _write(src / "agent" / "keys" / "id_rsa", "SECRET")
+        _write(src / "skills" / "k8s" / "client.pem", "SECRET")
+        _write(src / "command" / ".env", "TOKEN=SECRET")
+        _write(src / "agents" / "svc.p12", "SECRET")
+        dest = tmp_path / "staged"
+        staged = tjor_profile.stage(src, dest)
+        assert staged == ["agent/reviewer.md"]
+        blob = ""
+        for root, _, files in os.walk(dest):
+            for f in files:
+                blob += (Path(root) / f).read_text()
+        assert "SECRET" not in blob
+
+    def test_definition_named_like_secret_still_staged(self, tmp_path):
+        # No false positives: the denylist is exact names + key/cert extensions,
+        # so a legit definition whose name merely contains "secret"/"auth" and
+        # ends in .md is NOT dropped.
+        src = tmp_path / "profile"
+        _write(src / "agent" / "secret-scanner.md", "def")
+        _write(src / "command" / "rotate-credentials.md", "def")
+        staged = tjor_profile.stage(src, tmp_path / "staged")
+        assert set(staged) == {"agent/secret-scanner.md", "command/rotate-credentials.md"}
+
 
 class TestCli:
     def test_stage_prints_relative_paths(self, tmp_path, capsys):

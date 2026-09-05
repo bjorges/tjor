@@ -401,6 +401,18 @@ prepare_broker() {
             ttl="$(cfg broker.kube_duration --default 1h)"
             [[ -n "${sa}" ]] \
                 || { warn "broker source=kube needs broker.kube_sa (the ServiceAccount to mint a token for) — broker disabled"; return 0; }
+            # Validate SA + namespace as Kubernetes DNS names before handing them
+            # to kubectl: a value starting with '-' would be parsed as a kubectl
+            # FLAG, not a positional (argument injection). Secondary defense —
+            # these come from trust-gated config seen during `tjor trust` — but
+            # cheap and correct. Names are DNS-1123-ish: start/end alphanumeric.
+            local _v
+            for _v in "${sa}" "${ns}"; do
+                [[ "${_v}" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] \
+                    || { warn "broker source=kube: invalid ServiceAccount/namespace '${_v}' (lowercase DNS name; no leading '-') — broker disabled"; return 0; }
+            done
+            [[ "${ttl}" =~ ^[0-9]+[smh]$ ]] \
+                || { warn "broker source=kube: invalid kube_duration '${ttl}' (e.g. 3600s, 30m, 1h) — broker disabled"; return 0; }
             # API server: pinned override, else derived from the active context.
             server="$(cfg broker.kube_api_host --default '')"
             if [[ -z "${server}" ]]; then

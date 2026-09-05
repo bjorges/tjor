@@ -23,6 +23,7 @@ The D2 broker holds a secret only in the proxy sidecar and injects it toward con
 - **`kubectl create token` requires the user's identity to have `create` on the SA's `serviceaccounts/token` subresource** — standard for a cluster admin/operator; documented. If it fails, the broker is disabled (fail-closed, no injection), loudly.
 - **No refresh** means a session longer than the token TTL loses cluster auth mid-run — documented; pick a `duration` matching the work, or re-launch.
 - **The API server's TLS is MITM'd by the proxy** like all egress; kubectl trusts the session CA (already installed). Cluster client-cert *auth* is not used (we use bearer tokens), so MITM doesn't break auth.
+- **The SA's RBAC is the whole action policy, so scoping it is the operator's responsibility.** tjor mints a token for whatever ServiceAccount `kube_sa` names and does not (and cannot) narrow its permissions — an SA bound to `cluster-admin` gives the caged session cluster-admin. The security property ("read-only by construction", "namespaced by construction") holds only to the extent the operator bound the SA to a suitably narrow Role. Bind the least-privilege Role the session needs; treat a broad binding as equivalent to handing the agent that access.
 
 ## Verification approach
 

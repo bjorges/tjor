@@ -69,6 +69,15 @@ _denial_log_count = 0
 _DENIAL_LOG_MAX = 1000
 
 
+def _safe_ascii(s: str, limit: int = 253) -> str:
+    """Collapse anything outside printable, non-space ASCII to '?' (bounded).
+    For attacker-influenced strings (a destination hostname, a forged header
+    name) that land in a log a human may view — the session denial log, or the
+    proxy's own stderr via `docker logs` — so no terminal-control byte (ANSI/OSC
+    escape, bidi override) ever reaches a terminal through that path."""
+    return "".join(c if 0x20 < ord(c) < 0x7F else "?" for c in s)[:limit] or "?"
+
+
 def _log_denial(host: str, rule: str) -> None:
     """Append a denied egress to the session denial log (#23) so `tjor
     denials` can surface it. Best-effort — never let logging break a request."""
@@ -76,12 +85,11 @@ def _log_denial(host: str, rule: str) -> None:
     if not DENIAL_LOG or _denial_log_count >= _DENIAL_LOG_MAX:
         return
     _denial_log_count += 1
-    # `host` is attacker-influenced (the destination the agent tried to reach),
-    # and this file is later printed by `tjor denials`. Keep the file itself
-    # free of terminal-control bytes — collapse anything outside printable
-    # non-space ASCII to '?' and bound the length (`tjor denials` sanitizes
-    # again at display, defense in depth).
-    safe_host = "".join(c if 0x20 < ord(c) < 0x7F else "?" for c in host)[:253] or "?"
+    # `host` is attacker-influenced (the destination the agent tried to reach)
+    # and this file is later printed by `tjor denials`; keep the file itself
+    # free of terminal-control bytes (`tjor denials` sanitizes again at display,
+    # defense in depth).
+    safe_host = _safe_ascii(host)
     try:
         with open(DENIAL_LOG, "a") as fh:
             fh.write(f"{safe_host}\t{rule}\t{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n")
@@ -279,9 +287,14 @@ def _log_stripped(host: str, stripped: dict) -> None:
     global _strip_log_count
     _strip_log_count += 1
     if _strip_log_count <= 20 or _strip_log_count % 100 == 0:
+        # `host` and the stripped header names are both attacker-influenced and
+        # go to the proxy's stderr (visible via `docker logs`) — sanitize both
+        # so a hostile hostname/header can't inject escapes into that view.
+        safe_host = _safe_ascii(host)
+        safe_keys = sorted(_safe_ascii(k, 64) for k in stripped)
         print(
-            f"tjor: stripped forged/unknown identity headers toward {host} "
-            f"(#{_strip_log_count}): {sorted(stripped)}",
+            f"tjor: stripped forged/unknown identity headers toward {safe_host} "
+            f"(#{_strip_log_count}): {safe_keys}",
             file=sys.stderr,
             flush=True,
         )

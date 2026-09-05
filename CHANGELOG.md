@@ -3,6 +3,47 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [0.9.3] — 2026-09-05 — Security review (broad re-review of v0.7.0–v0.9.1)
+
+A five-lens external review that broadened scope to the releases that hadn't
+been reviewed before surfaced one new High and two Mediums, all now fixed with
+regression tests.
+
+### Security
+- **High — kube placeholder-config symlink-follow.** The kube broker's
+  entrypoint (v0.7.0) renders `~/.kube/config` via a root redirect through a
+  `.tmp` intermediate, but de-symlinked only the final `config`, not the `.tmp`.
+  A prior session (agent-level access, no root) could plant `~/.kube/config.tmp`
+  as a symlink, and the next kube-broker-enabled start would write the fixed
+  placeholder *through* it, clobbering any root-reachable file — the one new
+  root-write touch point that missed the project's de-symlink discipline
+  (charter L26). Both `config` and `config.tmp` are now de-symlinked before the
+  write. Regression-tested (a planted `config.tmp` symlink is not followed).
+- **Medium — agent-profile nested credential files.** The profile allow-list
+  (v0.9.0) filtered top-level directory *names* only, so a credential file
+  nested *inside* a definition dir (`agent/auth.json`) was staged into the cage.
+  A credential-filename/extension denylist (`auth.json`, `id_rsa`, `*.pem`, …) is
+  now applied at any depth; docs corrected to state the precise guarantee
+  (structural allow-list **plus** a credential denylist — tjor can't tell a
+  secret from a definition by content, so don't hide secrets in a definition
+  dir). Tested, including the nested case.
+- **Medium — proxy stderr escape sanitization.** The identity-forgery logger
+  (`_log_stripped`) printed attacker-influenced hostnames and header names raw
+  to the proxy's stderr (visible via `docker logs`); now sanitized with the same
+  shared filter as the denial log (v0.9.1). Unit-tested.
+
+### Changed
+- The kube broker rejects a `kube_sa`/`kube_namespace` not shaped like a
+  Kubernetes DNS name (a leading `-` would be parsed as a `kubectl` flag —
+  argument injection) and a malformed `kube_duration`. Secondary defense: these
+  come from trust-gated config seen during `tjor trust`.
+- Documentation honesty: the archived `add-repo-config` design.md now discloses
+  that its sanitizer / two-step-trust / `resolve_session` items were **v0.9.1
+  vulnerability fixes**, not original design; the kube design.md names "scoping
+  the SA's RBAC is the operator's responsibility" as an explicit risk; the
+  `tjor_safeprint` docstring notes Zalgo/homoglyph obscuring is out of scope for
+  an escape-injection defense; CHANGELOG v0.9.1 severity tags aligned.
+
 ## [0.9.2] — 2026-09-05 — Robust safe.directory scoping
 
 ### Fixed
@@ -27,12 +68,12 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
   format/bidi code point as a visible token; wired into the trust review **and**
   the denial-log display (a denied hostname is attacker-influenced too), and the
   proxy sanitizes the host as it writes the denial log.
-- **Read-only commands no longer mint credentials.** `status`/`down`/`reset`/
-  `denials` ran the full launch path just to resolve a session path — so under a
-  kube broker source (v0.7.0), `tjor denials` minted a live ServiceAccount token
-  and `down` minted one while tearing down. `session_setup` is split into
-  `resolve_session` (no side effects) + `session_setup` (resolve + broker); the
-  read-only and teardown commands use the former.
+- **Read-only commands no longer mint credentials (high).** `status`/`down`/
+  `reset`/`denials` ran the full launch path just to resolve a session path — so
+  under a kube broker source (v0.7.0), `tjor denials` minted a live
+  ServiceAccount token and `down` minted one while tearing down. `session_setup`
+  is split into `resolve_session` (no side effects) + `session_setup` (resolve +
+  broker); the read-only and teardown commands use the former.
 
 ### Changed
 - `tjor trust` is a genuine two-step gate: `--show` reviews only; approval needs
@@ -54,15 +95,16 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
   `[profiles]` map in config) overlays a host directory of agents/commands/
   skills onto the image's baseline instructions — so a caged session can use
   *your* setup, reused across sessions.
-- **Credentials never cross the boundary.** tjor stages only an allow-list of
+- **Definitions, not credentials.** tjor stages only a structural allow-list of
   definition subdirectories (`agent`/`agents`, `command`/`commands`,
   `skill`/`skills`, `prompt`/`prompts`, `mode`/`modes`) **host-side**, and
-  mounts only that staged dir read-only. An `auth.json` / API key sitting
-  beside the definitions (as in a real `~/.opencode`) is never copied and
-  cannot reach the cage — verified in CI (a secret placed in the source appears
-  nowhere in the container). An out-of-tree symlink is refused. The staged
-  definitions overlay the baseline (your definition wins on conflict),
-  symlink-safe.
+  mounts only that staged dir read-only — so a credential/config file at the
+  profile root (an `auth.json` / API key sitting beside the dirs, as in a real
+  `~/.opencode`) is never copied (verified in CI). An out-of-tree symlink is
+  refused. The staged definitions overlay the baseline (your definition wins on
+  conflict), symlink-safe. *(v0.9.3 additionally skips known credential
+  filenames nested inside a definition dir; tjor cannot distinguish a secret
+  from a definition by content, so don't place secrets in a definition dir.)*
 - Opt-in *is* the trust decision: a profile is you naming your own directory,
   so `--profile`/`--profile-dir` needs no separate `tjor trust` (unlike a repo's
   `.tjor/`, which rides along with code). A profile carries instructions the

@@ -90,6 +90,9 @@ jobs:
       - name: agent profile deploy (#29) — definitions in, credentials out (real entrypoint)
         if: matrix.harness == 'opencode'
         run: bash tests/integration/profile_test.sh
+      - name: kube placeholder-config symlink-follow regression (real entrypoint)
+        if: matrix.harness == 'opencode'
+        run: bash tests/integration/kube_symlink_test.sh
       - name: checksum gate must reject a tampered artifact (negative path)
         if: matrix.harness == 'opencode'
         run: |

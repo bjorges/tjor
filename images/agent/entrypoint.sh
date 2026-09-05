@@ -204,16 +204,25 @@ if [[ -n "${TJOR_BROKER_ENABLED:-}" && -n "${TJOR_KUBE_SERVER:-}" ]]; then
     [[ -L "${kube_dir}" || ( -e "${kube_dir}" && ! -d "${kube_dir}" ) ]] && rm -rf "${kube_dir}"
     mkdir -p "${kube_dir}"
     kube_cfg="${kube_dir}/config"
-    [[ -L "${kube_cfg}" || ( -e "${kube_cfg}" && ! -f "${kube_cfg}" ) ]] && rm -rf "${kube_cfg}"
-    if python3 /opt/tjor/python/tjor_kube.py config "${TJOR_KUBE_SERVER}" "${CA_BUNDLE}" >"${kube_cfg}.tmp" 2>/dev/null; then
-        mv -f "${kube_cfg}.tmp" "${kube_cfg}"
+    kube_tmp="${kube_cfg}.tmp"
+    # De-symlink BOTH the final config AND the .tmp we redirect through: a prior
+    # session (agent-level access, no root) could have planted config.tmp as a
+    # symlink, and the root redirect below would then write the placeholder
+    # THROUGH it, clobbering whatever the entrypoint's root can reach. Every
+    # root write in this file is de-symlinked at its touch point (charter L26);
+    # this .tmp is one such point. Race-free: no agent runs until the exec below.
+    for kube_target in "${kube_cfg}" "${kube_tmp}"; do
+        [[ -L "${kube_target}" || ( -e "${kube_target}" && ! -f "${kube_target}" ) ]] && rm -rf "${kube_target}"
+    done
+    if python3 /opt/tjor/python/tjor_kube.py config "${TJOR_KUBE_SERVER}" "${CA_BUNDLE}" >"${kube_tmp}" 2>/dev/null; then
+        mv -f "${kube_tmp}" "${kube_cfg}"
         chmod 600 "${kube_cfg}"
         chown -R agent:agent "${kube_dir}" 2>/dev/null || true
     else
-        rm -f "${kube_cfg}.tmp"
+        rm -f "${kube_tmp}"
         echo "tjor-entrypoint: WARNING: failed to render kube placeholder config" >&2
     fi
-    unset kube_dir kube_cfg
+    unset kube_dir kube_cfg kube_tmp kube_target
 fi
 
 # 4. Ownership + writability. The setup above runs as root and creates XDG

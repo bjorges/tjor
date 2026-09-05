@@ -17,6 +17,14 @@ are rendered as a VISIBLE token (`^[` for ESC, `<U+202E>` for a bidi override);
 printable text, including legitimate multi-byte UTF-8, passes through unchanged.
 Raw undecodable bytes are preserved via surrogateescape and then escaped, so the
 filter never crashes and never silently drops input.
+
+Scope: this is an ANSI/OSC-escape and bidi-injection defense — it stops a hostile
+string from HIDING or REORDERING what is displayed for a trust decision. It does
+NOT normalize legitimately-printable-but-confusable text: stacked combining
+marks (Zalgo), homoglyphs, and lookalike scripts still render as themselves.
+Those obscure but cannot forge — the operator sees garbled, not spoofed, text —
+so they are out of scope here; a reviewer wanting canonical display should NFC/
+confusable-normalize separately.
 """
 from __future__ import annotations
 

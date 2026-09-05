@@ -336,3 +336,38 @@ class TestAddressGuard:
         addon._resolver = lambda host: {"10.0.0.5"}
         # cached verdict still served inside the TTL window
         assert addon.resolved_addresses_ok("allowed.test")[0]
+
+
+class TestSafeAscii:
+    """The shared sanitizer for attacker-influenced strings written to logs a
+    human may view (denial log, proxy stderr via docker logs)."""
+
+    def test_ansi_escape_collapsed(self):
+        addon = load_addon()
+        out = addon._safe_ascii("evil\x1b[31mred\x1b[0m.example.com")
+        assert "\x1b" not in out
+        assert out == "evil?[31mred?[0m.example.com"   # each ESC byte -> '?'
+
+    def test_controls_and_c1_and_bidi_collapsed(self):
+        addon = load_addon()
+        s = "a\nb\tc\x00\x7f\x9b‮"   # newline/tab are controls too here
+        out = addon._safe_ascii(s)
+        assert all(0x20 < ord(c) < 0x7F for c in out)  # only printable non-space ASCII survives
+
+    def test_printable_ascii_preserved(self):
+        addon = load_addon()
+        assert addon._safe_ascii("api.githubcopilot.com") == "api.githubcopilot.com"
+
+    def test_bounded_and_empty(self):
+        addon = load_addon()
+        assert addon._safe_ascii("x" * 500) == "x" * 253
+        assert addon._safe_ascii("", 253) == "?"
+        assert addon._safe_ascii("\x1b\x1b") == "?" * 2
+
+    def test_log_stripped_sanitizes_host(self, capsys):
+        addon = load_addon()
+        addon._strip_log_count = 0
+        addon._log_stripped("evil\x1b]0;pwned\x07.example.com", {"x-agent-\x1bfoo": "1"})
+        err = capsys.readouterr().err
+        assert "\x1b" not in err            # no raw escape reaches stderr
+        assert "example.com" in err          # the printable part still shown
