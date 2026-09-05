@@ -100,12 +100,17 @@ git config --system --add url."https://gitlab.com/".insteadOf "ssh://git@gitlab.
 git config --system credential."https://github.com".helper '!gh auth git-credential'
 git config --system credential."https://gist.github.com".helper '!gh auth git-credential'
 
-# 4. Ownership + writability. chown may legitimately fail on uid-mapped VM
-#    mounts (Colima virtiofs) — warn, then hard-verify the invariant that
-#    actually matters: the agent user can write its home.
-if ! chown -R agent:agent "${AGENT_HOME}/.config/opencode" 2>/dev/null; then
-    echo "tjor-entrypoint: WARNING: chown of ${AGENT_HOME}/.config/opencode failed (uid-mapped mount?)" >&2
-fi
+# 4. Ownership + writability. The setup above runs as root and creates XDG
+#    dirs (.config, .local/share, .local/state) root-owned; chown them to the
+#    agent uid (= the host user) so the session state stays host-manageable
+#    (e.g. `tjor reset`) on a native-Linux engine — on a uid-mapping VM
+#    (Colima virtiofs) chown can legitimately fail, so warn, then hard-verify
+#    the invariant that actually matters: the agent user can write its home.
+for d in "${AGENT_HOME}/.config" "${AGENT_HOME}/.local"; do
+    if [[ -d "${d}" ]] && ! chown -R agent:agent "${d}" 2>/dev/null; then
+        echo "tjor-entrypoint: WARNING: chown of ${d} failed (uid-mapped mount?)" >&2
+    fi
+done
 if ! chown agent:agent "${AGENT_HOME}" 2>/dev/null; then
     echo "tjor-entrypoint: WARNING: chown of ${AGENT_HOME} failed (uid-mapped mount?)" >&2
 fi
