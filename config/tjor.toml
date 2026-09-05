@@ -67,6 +67,16 @@ extra_zones = []
 [session]
 root = "~/.tjor/sessions"
 
+# Agent profiles (#29): named host directories of harness DEFINITIONS
+# (agents/commands/skills) you can opt a session into with `tjor run --profile
+# <name>` (or ad-hoc with `--profile-dir <path>`). Only definition subdirs are
+# staged — agent/agents, command/commands, skill/skills, prompt/prompts,
+# mode/modes — never credential/auth files, so pointing at ~/.opencode does NOT
+# import your API keys. The profile overlays the image's baseline instructions.
+[profiles]
+# mine = "~/.opencode"
+# review = "~/.config/tjor/profiles/review"
+
 [versions]
 # Harness and tool versions are config, not Dockerfile constants (charter L8).
 # SHA256 values come from the publisher's release metadata (GitHub asset

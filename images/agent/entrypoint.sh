@@ -110,11 +110,22 @@ def safe_write_target(path: pathlib.Path) -> pathlib.Path:
 desymlink(HOME / ".local" / "share")
 desymlink(HOME / ".local" / "state")
 
+profile = pathlib.Path(os.environ.get("TJOR_PROFILE_DIR", "") or "/nonexistent")
+
 for h in harnesses:
     cfg, fname = TARGETS[h]
     desymlink(cfg)
     if NEUTRAL.is_file():
         shutil.copyfile(NEUTRAL, safe_write_target(cfg / fname))
+    # Overlay an opted-in host profile (#29) on top of the baseline cargo. The
+    # staged dir was credential-filtered host-side (allow-list in
+    # tjor_profile.py), so we copy it wholesale into this harness's config dir;
+    # an operator definition wins over the baseline. Symlink-safe per target.
+    if profile.is_dir():
+        for src in sorted(p for p in profile.rglob("*") if p.is_file()):
+            dst = cfg / src.relative_to(profile)
+            desymlink(dst.parent)
+            shutil.copyfile(src, safe_write_target(dst))
     # Harness self-update is an image concern, never a session one (charter
     # L13). opencode has no env knob, so disable it via its config file; claude
     # and copilot are disabled via image ENV (DISABLE_AUTOUPDATER /

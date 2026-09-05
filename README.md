@@ -137,6 +137,35 @@ on the host (it does the cluster auth) and that your identity can `create` the
 SA's `serviceaccounts/token`. The token is short-lived with no refresh — a
 session outliving it re-launches. See the kube-broker design under `openspec/`.
 
+## Agent profiles
+
+The cage isolates from host config by design, so the agents, commands, and
+skills you've defined for your harness (e.g. in `~/.opencode`) don't reach a
+caged session. **Opt in** to bring them:
+
+```console
+$ tjor run --profile-dir ~/.opencode          # ad-hoc: this host dir
+$ tjor run --profile mine                      # named, from [profiles] in config
+```
+
+```toml
+# ~/.config/tjor/config.toml
+[profiles]
+mine = "~/.opencode"
+```
+
+A profile carries **definitions, never credentials**. tjor stages only an
+allow-list of definition subdirectories — `agent`/`agents`, `command`/`commands`,
+`skill`/`skills`, `prompt`/`prompts`, `mode`/`modes` — host-side, and mounts only
+that; an `auth.json` or API key sitting beside them in `~/.opencode` is never
+copied and **cannot reach the cage** (verified in CI: a secret placed in the
+source appears nowhere in the container). The staged definitions overlay the
+image's baseline instructions (your definitions win on conflict). Because a
+profile is *you* naming *your own* directory, the `--profile` selection is the
+consent — no separate trust step (unlike a repo's `.tjor/`, which travels with
+code and needs `tjor trust`). Content must already be in the active harness's
+format; tjor deploys it, it doesn't translate between harnesses.
+
 ## Why
 
 Prompt-level rules are advisory. Harness-level permissions are harness-specific. The only guarantees that hold for *any* harness — including one running with permissions disabled — are structural: what the process can physically reach. tjor's design is corroborated by multiple independent production systems that converged on the same conclusion: restrict the environment, not the agent.

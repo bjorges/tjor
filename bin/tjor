@@ -316,6 +316,39 @@ with os.fdopen(fd, "w") as fh:
 PY
 }
 
+# Agent profile (#29): stage an opted-in host profile — agents/commands/skills
+# only — into the session dir, credential-safe. The allow-list filtering lives
+# in tjor_profile.py and runs HOST-SIDE, so an auth.json / API key beside the
+# definitions is never copied and never mounted (it cannot reach the cage). The
+# entrypoint later overlays the staged dir on the image instruction cargo. Sets
+# TJOR_PROFILE_STAGE (host path) when a profile is active, else leaves it empty.
+prepare_profile() { # $1 = profile name (via [profiles]), $2 = ad-hoc dir
+    export TJOR_PROFILE_STAGE=""
+    local name="$1" adhoc="$2" src=""
+    [[ -z "${name}" || -z "${adhoc}" ]] \
+        || die "use --profile <name> OR --profile-dir <path>, not both"
+    if [[ -n "${name}" ]]; then
+        src="$(cfg "profiles.${name}" --default '')"
+        [[ -n "${src}" ]] || die "no profile named '${name}' — define it under [profiles] in your tjor config"
+    elif [[ -n "${adhoc}" ]]; then
+        src="${adhoc}"
+    else
+        return 0
+    fi
+    src="${src/#\~/$HOME}"
+    [[ -d "${src}" ]] || die "profile source is not a directory: ${src}"
+    local stage="${TJOR_SESSION_DIR}/profile" staged n
+    staged="$(python3 "${TJOR_ROOT}/python/tjor_profile.py" stage "${src}" "${stage}")" \
+        || die "failed to stage agent profile from ${src}"
+    n="$(printf '%s' "${staged}" | grep -c . || true)"
+    if [[ "${n}" -eq 0 ]]; then
+        warn "profile ${src} has no agent/command/skill definitions to deploy — nothing staged"
+        return 0
+    fi
+    export TJOR_PROFILE_STAGE="${stage}"
+    echo "tjor: agent profile — staged ${n} definition file(s) from ${src} (credentials excluded)" >&2
+}
+
 # Kube broker (#26): the current kubeconfig context's API server URL, or fail.
 # Delegates all cluster-auth complexity (exec plugins, client certs, OIDC) to
 # the user's working kubectl — we only read the resolved server address.
@@ -527,7 +560,7 @@ dir_is_sensitive() { # $1 = absolute path (already symlink-resolved by pwd -P)
 }
 
 cmd_run() {
-    local harness="opencode" task="" name="" detach="" unsafe_dir=""
+    local harness="opencode" task="" name="" detach="" unsafe_dir="" profile="" profile_dir=""
     local -a extra_dirs=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -536,12 +569,15 @@ cmd_run() {
             --session) name="$2"; shift 2 ;;
             --dir) extra_dirs+=("$2"); shift 2 ;;
             --unsafe-dir) unsafe_dir=1; shift ;;
+            --profile) profile="$2"; shift 2 ;;
+            --profile-dir) profile_dir="$2"; shift 2 ;;
             --detach|-d) detach=1; shift ;;
             --) shift; break ;;
             *) break ;;
         esac
     done
     session_setup "${harness}" "${task}" "${name}"
+    prepare_profile "${profile}" "${profile_dir}"
     # Multi-repo (--dir): resolve each to an absolute path now (existence
     # check); VM-share verification + mounting happen in run_agent, after the
     # proxy image (used by the share check) is built. Refuse sensitive host
@@ -599,7 +635,15 @@ run_agent() { # $1 = detach flag, $2.. = command
         echo "tjor: + repo mount ${dir}" >&2
     done
     export TJOR_SAFE_DIRS="${safe_dirs}"
-    ctr="$(compose run -d "${mounts[@]}" -e TJOR_SAFE_DIRS="${safe_dirs}" agent "$@")" || die "failed to start the agent container"
+    # Agent profile (#29): mount the credential-filtered staging dir read-only
+    # and tell the entrypoint where to overlay it. Empty env when no profile.
+    local profile_env=""
+    if [[ -n "${TJOR_PROFILE_STAGE:-}" && -d "${TJOR_PROFILE_STAGE}" ]]; then
+        mounts+=(--volume "${TJOR_PROFILE_STAGE}:/opt/tjor/profile:ro")
+        profile_env="/opt/tjor/profile"
+        echo "tjor: + agent profile overlay" >&2
+    fi
+    ctr="$(compose run -d "${mounts[@]}" -e TJOR_SAFE_DIRS="${safe_dirs}" -e TJOR_PROFILE_DIR="${profile_env}" agent "$@")" || die "failed to start the agent container"
     if [[ -n "${detach}" ]]; then
         echo "tjor: session ${TJOR_SESSION} started detached — attach with: tjor attach ${TJOR_SESSION}" >&2
         return 0
@@ -1048,8 +1092,8 @@ tjor — run AI coding agents inside a portable, fail-closed container cage
 
 usage: tjor <command> [args]
 
-  run [--harness opencode|claude|copilot] [--task <id>] [--session <name>] [--dir <path>]... [--unsafe-dir] [--detach] [cmd...]
-                                                     launch a caged session (--dir: mount another repo at its host path — sensitive paths refused unless --unsafe-dir; --detach: start without attaching)
+  run [--harness opencode|claude|copilot] [--task <id>] [--session <name>] [--dir <path>]... [--unsafe-dir] [--profile <name>|--profile-dir <path>] [--detach] [cmd...]
+                                                     launch a caged session (--dir: mount another repo at its host path — sensitive paths refused unless --unsafe-dir; --profile/--profile-dir: overlay host-defined agents/commands, credential-safe; --detach: start without attaching)
   ls                                                 list all sessions (and re-verify their boundaries)
   attach [session]                                   reattach to a running agent's terminal
   gc [--age <hours>] [--dry-run]                     reap idle session containers/networks/volumes

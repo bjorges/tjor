@@ -87,6 +87,9 @@ jobs:
               grep -q "tjor cage" "$f" || { echo "cargo content wrong in $f"; exit 1; }
               echo "ok: $H instruction cargo deployed to $f"
             '
+      - name: agent profile deploy (#29) — definitions in, credentials out (real entrypoint)
+        if: matrix.harness == 'opencode'
+        run: bash tests/integration/profile_test.sh
       - name: checksum gate must reject a tampered artifact (negative path)
         if: matrix.harness == 'opencode'
         run: |

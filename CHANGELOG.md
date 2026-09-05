@@ -3,6 +3,29 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [0.9.0] — 2026-09-05 — Agent profiles (opt-in, credential-safe)
+
+### Added
+- **Agent profiles** (#29): opt a session into your own harness definitions.
+  `tjor run --profile-dir ~/.opencode` (ad-hoc) or `--profile <name>` (from a
+  `[profiles]` map in config) overlays a host directory of agents/commands/
+  skills onto the image's baseline instructions — so a caged session can use
+  *your* setup, reused across sessions.
+- **Credentials never cross the boundary.** tjor stages only an allow-list of
+  definition subdirectories (`agent`/`agents`, `command`/`commands`,
+  `skill`/`skills`, `prompt`/`prompts`, `mode`/`modes`) **host-side**, and
+  mounts only that staged dir read-only. An `auth.json` / API key sitting
+  beside the definitions (as in a real `~/.opencode`) is never copied and
+  cannot reach the cage — verified in CI (a secret placed in the source appears
+  nowhere in the container). An out-of-tree symlink is refused. The staged
+  definitions overlay the baseline (your definition wins on conflict),
+  symlink-safe.
+- Opt-in *is* the trust decision: a profile is you naming your own directory,
+  so `--profile`/`--profile-dir` needs no separate `tjor trust` (unlike a repo's
+  `.tjor/`, which rides along with code). A profile carries instructions the
+  agent will follow; its content must already be in the active harness's format
+  (tjor deploys, it doesn't translate).
+
 ## [0.8.0] — 2026-09-05 — Claude Code + Copilot CLI fully wired
 
 ### Added
