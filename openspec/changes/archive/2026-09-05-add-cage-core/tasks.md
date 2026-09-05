@@ -1,5 +1,7 @@
 # Tasks: add-cage-core
 
+> Archived 2026-09-05. Post-archival hardening (commit 0a1ed2f and successors) refined several items below — rawtcp disabled, version-independent IP guard, narrowed capabilities; design.md was corrected in place, this task list was not.
+
 ## 1. Policy engine (egress-policy)
 
 - [x] 1.1 Implement the matcher module: precedence chain (host blocks → path allows → path blocks → default), normalization, asymmetric encoded-form matching — verified by unit tests covering every egress-policy spec scenario

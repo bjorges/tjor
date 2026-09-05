@@ -9,6 +9,11 @@ allowlist (matched with the shared policy host matcher — no second matcher).
 
 Fail-closed: an invalid or missing identity strips every ``x-agent-*``
 header from every request.
+
+Path privacy: ``TJOR_WORKTREE`` arrives as a full host filesystem path (and
+stays one in the cage environment), but on the wire only its basename is
+carried — a full path leaks the host OS username and directory layout to
+every ``inject_hosts`` destination.
 """
 
 from __future__ import annotations
@@ -16,7 +21,7 @@ from __future__ import annotations
 import re
 import sys
 from dataclasses import dataclass, field
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Mapping
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -34,6 +39,10 @@ SCHEMA: dict[str, str] = {
 }
 
 _VALUE_RE = re.compile(r"^[\x21-\x7e][\x20-\x7e]{0,254}[\x21-\x7e]$|^[\x21-\x7e]$")
+
+# headers whose env value is a host filesystem path: only the basename may
+# reach the wire (full paths leak username/directory structure off-host)
+_BASENAME_HEADERS = {"x-agent-worktree"}
 
 
 @dataclass
@@ -55,6 +64,8 @@ def load_identity(env: Mapping[str, str]) -> Identity:
         raw = env.get(var, "")
         if not raw:
             continue
+        if header in _BASENAME_HEADERS:
+            raw = PurePosixPath(raw).name or raw
         if not _VALUE_RE.match(raw):
             errors.append(f"{var} has a malformed value")
             continue

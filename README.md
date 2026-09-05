@@ -2,7 +2,7 @@
 
 > *tjor* (Norwegian, nynorsk): **tether** — the rope that lets an animal graze freely, but only within a safe radius.
 
-tjor runs AI coding agents (Claude Code, opencode, GitHub Copilot CLI) inside a portable, fail-closed container cage with per-session state and lifecycle. The agent works at full speed inside the boundary — and the boundary, not the prompt, is the policy. Per-session identity metadata and a credential broker are the next deltas on the roadmap (below), not shipped features.
+tjor runs AI coding agents (Claude Code, opencode, GitHub Copilot CLI) inside a portable, fail-closed container cage with per-session state and identity. The agent works at full speed inside the boundary — and the boundary, not the prompt, is the policy. Per-session identity metadata (D1) is shipped; a credential broker and session lifecycle UX are the next deltas on the roadmap (below).
 
 **Status: pre-alpha, working skeleton.** The cage core runs: fail-closed egress with an adversarial conformance suite (10/10 probes green), opencode doing real work inside. Specs live in [`openspec/`](openspec/), decisions in [`docs/decisions/`](docs/decisions/).
 
@@ -41,7 +41,7 @@ A compose-based container cage reproducing production-validated decisions:
 - **Dual-homed egress proxy** (explicit mode) with a fail-closed host/path allowlist and a DNS sidecar with zone-scoped forwarding.
 - **Non-root agent user; writable repo mounts; per-session state roots** — a profile proven to sustain real daily work, hardened in tested increments.
 - **Tiered guarantees**: a core that works on any Docker runtime, plus loud-when-absent hardening add-ons (e.g. AppArmor on runtimes that support it).
-- **Session identity (D1)**: every session carries a frozen identity (`TJOR_SESSION_ID`, `--task` id, harness, repo, worktree) as environment inside the cage and as the vendor-neutral `x-agent-*` schema on the wire — the proxy strips forged or unknown identity headers toward every host (a session structurally cannot impersonate another) and injects the identity set only toward hosts you list in `identity.inject_hosts` (e.g. your LLM endpoints).
+- **Session identity (D1)**: every session carries a frozen identity (`TJOR_SESSION_ID`, `--task` id, harness, repo, worktree) as environment inside the cage and as the vendor-neutral `x-agent-*` schema on the wire (host filesystem paths are trimmed to their basename on the wire) — the proxy strips forged or unknown identity headers toward every host (a session structurally cannot impersonate another) and injects the identity set only toward hosts you list in `identity.inject_hosts` (e.g. your LLM endpoints).
 
 Plus the remaining roadmap deltas — **specced and tracked in issues #2–#4, not yet built**:
 

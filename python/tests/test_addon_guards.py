@@ -79,6 +79,61 @@ class TestIdentityAtTheAddon:
         assert final == {} and stripped == {"x-agent-session-id": "sess-1"}
 
 
+class TestApplyIdentityMultidict:
+    """_apply_identity against mitmproxy's real Headers multidict — plain
+    dicts (used elsewhere) cannot exhibit duplicate-name behavior. Skipped
+    where mitmproxy is not installed (run locally via uv with mitmproxy)."""
+
+    def make(self):
+        import pytest
+
+        pytest.importorskip("mitmproxy")
+        import types
+
+        from mitmproxy.http import Headers
+
+        addon = load_addon()
+        import tjor_identity as ti
+
+        addon.IDENTITY = ti.load_identity({"TJOR_SESSION_ID": "sess-1", "TJOR_HARNESS": "opencode"})
+        addon.INJECT_HOSTS = ["inject.test"]
+
+        def flow(host, pairs):
+            return types.SimpleNamespace(
+                request=types.SimpleNamespace(
+                    headers=Headers([(k.encode(), v.encode()) for k, v in pairs]),
+                    host=host,
+                )
+            )
+
+        return addon, flow
+
+    def test_duplicate_forged_headers_all_removed(self):
+        addon, flow = self.make()
+        f = flow("elsewhere.test", [
+            ("x-agent-session-id", "sess-1"),
+            ("x-agent-session-id", "intruder"),
+            ("x-agent-custom", "a"),
+            ("x-agent-custom", "b"),
+            ("accept", "*/*"),
+        ])
+        addon._apply_identity(f)
+        assert f.request.headers.get_all("x-agent-custom") == []
+        # duplicate values collapse; whatever survives must be the registered value
+        assert f.request.headers.get_all("x-agent-session-id") in ([], ["sess-1"])
+        assert f.request.headers["accept"] == "*/*"
+
+    def test_duplicates_toward_inject_host_replaced_wholesale(self):
+        addon, flow = self.make()
+        f = flow("inject.test", [
+            ("x-agent-session-id", "intruder"),
+            ("x-agent-session-id", "intruder-2"),
+        ])
+        addon._apply_identity(f)
+        assert f.request.headers.get_all("x-agent-session-id") == ["sess-1"]
+        assert f.request.headers.get_all("x-agent-harness") == ["opencode"]
+
+
 class TestAddressGuard:
     def test_private_resolution_denied(self):
         addon = load_addon()
@@ -123,6 +178,51 @@ class TestAddressGuard:
         addon = load_addon()
         addon._resolver = lambda host: {"100.64.0.1"}
         assert not addon.resolved_addresses_ok("allowed.test")[0]
+
+    def test_nat64_embedded_private_denied(self):
+        # 64:ff9b::/96 well-known prefix (RFC 6052): the low 32 bits encode a
+        # translated IPv4 target — a private/metadata one must not sail past.
+        addon = load_addon()
+        for raw in ("64:ff9b::10.0.0.5", "64:ff9b::169.254.169.254", "64:ff9b::a9fe:a9fe"):
+            addon._ip_cache.clear()
+            addon._resolver = lambda host, raw=raw: {raw}
+            ok, why = addon.resolved_addresses_ok("allowed.test")
+            assert not ok, raw
+
+    def test_nat64_embedded_public_passes(self):
+        # The prefix itself is legitimately routable; only the embedded
+        # address decides — a public target through NAT64 must not be blocked.
+        addon = load_addon()
+        addon._resolver = lambda host: {"64:ff9b::8.8.8.8"}
+        assert addon.resolved_addresses_ok("allowed.test")[0]
+
+    def test_nat64_local_use_prefix_denied(self):
+        addon = load_addon()  # 64:ff9b:1::/48 — RFC 8215, never globally reachable
+        addon._resolver = lambda host: {"64:ff9b:1::8.8.8.8"}
+        assert not addon.resolved_addresses_ok("allowed.test")[0]
+
+    def test_6to4_embedded_private_denied(self):
+        addon = load_addon()  # 2002:0a00:0005:: embeds 10.0.0.5
+        addon._resolver = lambda host: {"2002:a00:5::1"}
+        assert not addon.resolved_addresses_ok("allowed.test")[0]
+
+    def test_teredo_embedded_private_client_denied(self):
+        # 2001::/32: last 32 bits are the bit-inverted client IPv4;
+        # f5ff:fffa un-obfuscates to 10.0.0.5.
+        addon = load_addon()
+        addon._resolver = lambda host: {"2001:0:4136:e378:8000:63bf:f5ff:fffa"}
+        assert not addon.resolved_addresses_ok("allowed.test")[0]
+
+    def test_documentation_and_benchmark_ranges_denied(self):
+        addon = load_addon()
+        for ip in (
+            "192.0.2.1", "198.51.100.1", "203.0.113.1", "192.88.99.1",
+            "100::1", "2001:2::1", "2001:db8::1", "3fff::1", "5f00::1",
+        ):
+            addon._ip_cache.clear()
+            addon._resolver = lambda host, ip=ip: {ip}
+            ok, why = addon.resolved_addresses_ok("allowed.test")
+            assert not ok, ip
 
     def test_zone_suffixed_literal_denied(self):
         addon = load_addon()

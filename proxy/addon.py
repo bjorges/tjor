@@ -87,28 +87,64 @@ _ip_cache: dict[str, tuple[float, bool, str]] = {}
 # Explicit non-public ranges rather than trusting ipaddress.is_global alone:
 # its CGNAT/mapped-address handling varies by Python version, and the guard
 # must not depend on which interpreter the proxy base image happens to bundle.
+# Enumerated once against the IANA special-purpose address registries
+# (iana-ipv4-special-registry, iana-ipv6-special-registry): every range that
+# is not globally reachable, plus multicast and reserved space. Transition-
+# mechanism ranges that embed an IPv4 address (mapped, NAT64, 6to4, Teredo)
+# are handled by unwrapping in _embedded_ipv4, not by listing here — the
+# outer prefix is legitimately routable; the embedded address decides.
 _DENY_NETS = [
     ipaddress.ip_network(n)
     for n in (
         "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
-        "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.168.0.0/16",
-        "198.18.0.0/15", "224.0.0.0/4", "240.0.0.0/4",
-        "::/128", "::1/128", "fc00::/7", "fe80::/10", "ff00::/8",
+        "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24",
+        "192.88.99.0/24", "192.168.0.0/16", "198.18.0.0/15",
+        "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4",
+        "::/128", "::1/128", "64:ff9b:1::/48", "100::/64", "2001:2::/48",
+        "2001:10::/28", "2001:20::/28", "2001:db8::/32", "3fff::/20",
+        "5f00::/16", "fc00::/7", "fe80::/10", "ff00::/8",
     )
 ]
+
+# The NAT64 well-known prefix (RFC 6052): the low 32 bits are a translated
+# IPv4 address, so it must be unwrapped and judged, not denied wholesale.
+_NAT64_NET = ipaddress.ip_network("64:ff9b::/96")
+
+
+def _embedded_ipv4(addr: ipaddress.IPv6Address) -> list[ipaddress.IPv4Address]:
+    """Every IPv4 address embedded in an IPv6 transition-mechanism form.
+    An IPv6 route to a translator is an IPv4 reach: judging only the outer
+    v6 form lets e.g. 64:ff9b::10.0.0.5 encode a private target straight
+    past a v4-only denylist (the NAT64/6to4/Teredo family of SSRF bypasses)."""
+    embedded: list[ipaddress.IPv4Address] = []
+    if addr.ipv4_mapped is not None:
+        embedded.append(addr.ipv4_mapped)
+    if addr in _NAT64_NET:
+        embedded.append(ipaddress.IPv4Address(int(addr) & 0xFFFF_FFFF))
+    if addr.sixtofour is not None:  # 2002::/16
+        embedded.append(addr.sixtofour)
+    if addr.teredo is not None:  # 2001::/32 — (server, client), judge both
+        embedded.extend(addr.teredo)
+    return embedded
 
 
 def _address_public(raw: str) -> tuple[bool, str]:
     """Version-independent publicness check for one address literal.
-    IPv4-mapped IPv6 is unwrapped and judged as its embedded IPv4 form."""
+    IPv4-embedding IPv6 forms (mapped, NAT64, 6to4, Teredo) are unwrapped
+    and every embedded address judged alongside the literal itself."""
     try:
         addr = ipaddress.ip_address(raw.split("%")[0])  # strip any zone id
     except ValueError:
         return False, f"unparseable address {raw!r}"
     if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
-        addr = addr.ipv4_mapped
-    if any(addr in net for net in _DENY_NETS) or not addr.is_global:
-        return False, f"non-global address {addr}"
+        addr = addr.ipv4_mapped  # a mapped literal IS its IPv4 form; judge only that
+    forms: list = [addr]
+    if isinstance(addr, ipaddress.IPv6Address):
+        forms.extend(_embedded_ipv4(addr))
+    for form in forms:
+        if any(form in net for net in _DENY_NETS) or not form.is_global:
+            detail = f" (embeds {form})" if form is not addr else ""
+            return False, f"non-global address {addr}{detail}"
     return True, ""
 
 
@@ -217,7 +253,10 @@ def _apply_identity(flow) -> None:
         if name.lower().startswith("x-agent-")
     }
     final, stripped = identity_outcome(existing, flow.request.host)
-    for name in [n for n in flow.request.headers if n.lower().startswith("x-agent-")]:
+    # set, not list: mitmproxy's multidict yields a duplicated header name once
+    # per occurrence, while del removes every occurrence — a second del on the
+    # same name would raise outside the fail-closed wrapper.
+    for name in {n for n in flow.request.headers if n.lower().startswith("x-agent-")}:
         del flow.request.headers[name]
     for name, value in final.items():
         flow.request.headers[name] = value

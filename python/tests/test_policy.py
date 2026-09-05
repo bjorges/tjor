@@ -1,6 +1,5 @@
 """Unit tests for the tjor policy engine. Each spec scenario in
-openspec/changes/add-cage-core/specs/egress-policy/spec.md maps to at
-least one test here."""
+openspec/specs/egress-policy/spec.md maps to at least one test here."""
 
 import sys
 from pathlib import Path

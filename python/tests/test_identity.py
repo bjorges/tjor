@@ -43,6 +43,18 @@ class TestLoadIdentity:
     def test_overlong_value_invalid(self):
         assert not ti.load_identity(dict(ENV, TJOR_TASK_ID="x" * 300)).valid
 
+    def test_worktree_path_trimmed_to_basename(self):
+        # full host paths leak username/directory layout; only the leaf name
+        # may reach the wire (the in-cage env var keeps the full path)
+        env = dict(ENV, TJOR_WORKTREE="/Users/alice/git/myrepo/wt-featurex")
+        ident = ti.load_identity(env)
+        assert ident.valid
+        assert ident.values["x-agent-worktree"] == "wt-featurex"
+
+    def test_worktree_trailing_slash_still_basename(self):
+        env = dict(ENV, TJOR_WORKTREE="/Users/alice/git/myrepo/wt-1/")
+        assert ti.load_identity(env).values["x-agent-worktree"] == "wt-1"
+
 
 class TestTransform:
     def test_matching_headers_pass(self):

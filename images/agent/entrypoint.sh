@@ -87,9 +87,13 @@ PY
 #    pushes need a one-time in-session `gh auth login` + `gh auth setup-git`
 #    (persisted in the session home). D2 will replace this with brokered,
 #    short-TTL credentials.
-git config --system url."https://github.com/".insteadOf "git@github.com:"
+# Idempotent across container restarts (/etc/gitconfig persists between
+# them): clear the keys first, or every restart appends duplicate values.
+git config --system --unset-all url."https://github.com/".insteadOf 2>/dev/null || true
+git config --system --unset-all url."https://gitlab.com/".insteadOf 2>/dev/null || true
+git config --system --add url."https://github.com/".insteadOf "git@github.com:"
 git config --system --add url."https://github.com/".insteadOf "ssh://git@github.com/"
-git config --system url."https://gitlab.com/".insteadOf "git@gitlab.com:"
+git config --system --add url."https://gitlab.com/".insteadOf "git@gitlab.com:"
 git config --system --add url."https://gitlab.com/".insteadOf "ssh://git@gitlab.com/"
 # Pre-wire gh as git's credential helper: after a one-time in-session
 # `gh auth login`, git push/pull to private GitHub repos just works.
