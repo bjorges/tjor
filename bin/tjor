@@ -184,6 +184,18 @@ ensure_topology() { # expects TJOR_PROJECT, TJOR_SESSION_DIR exported
     [[ -n "${ok}" ]] || die "no session CA appeared — check: docker logs ${proxy_ctr}"
     cp "${TJOR_SESSION_DIR}/proxy-ca/mitmproxy-ca-cert.pem" "${TJOR_SESSION_DIR}/ca.pem"
 
+    # Readiness: wait until mitmdump actually LISTENS. (The CA used to be
+    # docker-cp'd out of the proxy, which accidentally doubled as a boot
+    # gate; the host-generated CA removed that, so the gate must be real.)
+    local ready=""
+    for _ in $(seq 1 60); do
+        if docker exec "${proxy_ctr}" python3 -c \
+            "import socket; socket.create_connection(('127.0.0.1', ${TJOR_PROXY_PORT}), 2).close()" \
+            >/dev/null 2>&1; then ready=1; break; fi
+        sleep 1
+    done
+    [[ -n "${ready}" ]] || die "proxy never started listening on :${TJOR_PROXY_PORT} — check: docker logs ${proxy_ctr}"
+
     # Discover sidecar internal IPs. Guard against not-yet-running or
     # crash-looping containers: docker 29 renders an empty IP as the literal
     # string "invalid IP", so validate the shape and retry until stable.
