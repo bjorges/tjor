@@ -13,7 +13,7 @@
 - [x] 2.3 Generate CoreDNS zone config from the policy file (allow-zones forward, everything else local NXDOMAIN) — verified by unit tests on zone derivation and a live probe asserting NXDOMAIN + no upstream query for an unlisted zone
 - [x] 2.4 Config-hash stamping and recreate-on-drift for both sidecars — verified live: policy change between runs triggered sidecar recreation
 - [x] 2.5 Ensure no sidecar admin surface is reachable from the agent network; per-install generated credentials where a component demands one — verified by conformance probe scanning from the agent network (mitmdump/CoreDNS expose no admin surface by construction)
-- [ ] 2.6 (follow-up) Sidecar teardown on core-guarantee abort — abort currently leaves fail-closed sidecars running; tidy, not a safety issue
+- [x] 2.6 Sidecar teardown on core-guarantee abort — abort now runs compose down before exiting
 
 ## 3. Agent image (cage-image)
 
@@ -33,3 +33,16 @@
 - [x] 5.1 Conformance test container with probes: direct-egress attempt, DNS exfil via unlisted zone, encoded-path block bypass, encoded-form allow widening, admin-surface scan, CONNECT denial, dot-segment escape, default-deny — 10/10 green on Colima; second runtime (Linux engine) runs in CI (GitHub #13)
 - [ ] 5.2 End-to-end acceptance: launch a session, have opencode complete a real LLM-driven edit-build-commit task in a mounted repo — **infrastructure e2e done** (session launch, same-path mount, TLS-through-proxy, git clone through cage, blocked-host denial all verified in-cage); the LLM-driven task needs the user's interactive Copilot login inside the session (closes GitHub #12)
 - [x] 5.3 CI workflow running unit, parity, image-build, and conformance suites — .github/workflows/ci.yml (green run pending first push)
+
+## 6. External review hardening (2026-09-05)
+
+- [x] 6.1 Fail-closed exception guard around every addon decision path (an addon error can never pass a request through) — unit-tested via request_verdict/connect_verdict
+- [x] 6.2 Nested-encoding block bypass fixed: percent-decode to fixpoint; a path still decoding after the bound is denied outright (fail-closed:excessive-encoding) — unit + corpus tested at 4–10 and 20+ layers
+- [x] 6.3 ReDoS eliminated: regex glob translation replaced with an iterative two-pointer wildcard matcher — semantics + timing tested
+- [x] 6.4 Resolved-address guard (DNS-rebind/SSRF): allowed hosts resolving to any non-global address are denied; unresolvable hosts pass (nothing can flow); TJOR_IP_GUARD=off escape hatch for intranet policies — unit-tested with fake resolvers; residual TOCTOU documented in design.md
+- [x] 6.5 Symlink-safe instruction deploy in the entrypoint (charter L26): every touched component de-symlinked before root writes; chown failures warn; agent-home writability hard-checked
+- [x] 6.6 Session CA now generated constrained (pathlen:0 + EKU serverAuth, charter L25) by the launcher; verified in-cage via openssl
+- [x] 6.7 Compose hardening: cap_drop ALL (+minimal cap_add) and no-new-privileges on all services, memory limits, fail-hard sentinel defaults for undiscovered sidecar IPs
+- [x] 6.8 Bind-source verification for session dir and workspace (VM-shared-path check) on every launch; conformance cleanup trap; sidecar IP discovery hardened against docker 29's "invalid IP" rendering
+- [x] 6.9 CI: actions pinned by commit SHA; agent-image job now a 3-harness matrix with boot checks; tracked __pycache__ purged and ignored
+- [x] 6.10 Docs: README/ADR-0005 no longer claim unbuilt D1/D2 features; threat-model boundaries section added to design.md; docstrings on the security-core functions

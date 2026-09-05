@@ -93,6 +93,22 @@ is_connected() { # ctr net
     docker inspect -f '{{range $k, $v := .NetworkSettings.Networks}}{{$k}} {{end}}' "$1" | grep -qw "$2"
 }
 
+wait_internal_ip() { # svc net -> echoes a validated IP, or fails
+    local ctr ip
+    for _ in $(seq 1 30); do
+        ctr="$(compose ps -q "$1" 2>/dev/null || true)"
+        if [[ -n "${ctr}" && "$(docker inspect -f '{{.State.Running}}' "${ctr}" 2>/dev/null)" == "true" ]]; then
+            ip="$(docker inspect -f "{{(index .NetworkSettings.Networks \"$2\").IPAddress}}" "${ctr}" 2>/dev/null || true)"
+            if [[ "${ip}" =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+                echo "${ip}"
+                return 0
+            fi
+        fi
+        sleep 1
+    done
+    return 1
+}
+
 ensure_topology() { # expects TJOR_PROJECT, TJOR_SESSION_DIR exported
     local pfile session_policy corefile
     pfile="$(policy_file)"
@@ -110,6 +126,9 @@ ensure_topology() { # expects TJOR_PROJECT, TJOR_SESSION_DIR exported
     export TJOR_CONFIG_HASH
 
     build_proxy
+    ensure_session_ca
+    verify_bind_source "${TJOR_SESSION_DIR}"
+    [[ -n "${TJOR_WORKSPACE:-}" && -d "${TJOR_WORKSPACE:-}" ]] && verify_bind_source "${TJOR_WORKSPACE}"
 
     # The agent network: internal-only, launcher-managed (compose sees it as
     # external so that sidecar creation happens on the egress network first).
@@ -147,23 +166,32 @@ ensure_topology() { # expects TJOR_PROJECT, TJOR_SESSION_DIR exported
     done
 
     # Core guarantee verification: the agent network MUST be internal-only.
-    [[ "$(docker network inspect -f '{{.Internal}}' "${internal}")" == "true" ]] \
-        || { loud "CORE GUARANTEE FAILED: network ${internal} is not internal-only. Aborting."; exit 1; }
+    if [[ "$(docker network inspect -f '{{.Internal}}' "${internal}")" != "true" ]]; then
+        loud "CORE GUARANTEE FAILED: network ${internal} is not internal-only. Tearing down and aborting."
+        compose down --remove-orphans >/dev/null 2>&1 || true
+        exit 1
+    fi
 
-    # Extract the session CA *certificate* (never the key) for the agent.
+    # Hand the session CA *certificate* (never the key) to the agent. The
+    # launcher normally pre-generated it (constrained, L25); if openssl was
+    # missing, wait for the proxy to self-generate into the shared confdir.
     local proxy_ctr ok=""
     proxy_ctr="$(compose ps -q proxy)"
     for _ in $(seq 1 30); do
-        if docker cp "${proxy_ctr}:/home/mitmproxy/.mitmproxy/mitmproxy-ca-cert.pem" \
-              "${TJOR_SESSION_DIR}/ca.pem" >/dev/null 2>&1; then ok=1; break; fi
+        if [[ -s "${TJOR_SESSION_DIR}/proxy-ca/mitmproxy-ca-cert.pem" ]]; then ok=1; break; fi
         sleep 0.5
     done
-    [[ -n "${ok}" ]] || die "proxy did not produce a session CA — check: docker logs ${proxy_ctr}"
+    [[ -n "${ok}" ]] || die "no session CA appeared — check: docker logs ${proxy_ctr}"
+    cp "${TJOR_SESSION_DIR}/proxy-ca/mitmproxy-ca-cert.pem" "${TJOR_SESSION_DIR}/ca.pem"
 
-    TJOR_PROXY_IP="$(docker inspect -f "{{(index .NetworkSettings.Networks \"${internal}\").IPAddress}}" "${proxy_ctr}")"
-    TJOR_DNS_IP="$(docker inspect -f "{{(index .NetworkSettings.Networks \"${internal}\").IPAddress}}" "$(compose ps -q dns)")"
+    # Discover sidecar internal IPs. Guard against not-yet-running or
+    # crash-looping containers: docker 29 renders an empty IP as the literal
+    # string "invalid IP", so validate the shape and retry until stable.
+    TJOR_PROXY_IP="$(wait_internal_ip proxy "${internal}")" \
+        || die "proxy has no internal IP (crash loop?) — check: docker logs ${proxy_ctr}"
+    TJOR_DNS_IP="$(wait_internal_ip dns "${internal}")" \
+        || die "dns has no internal IP (crash loop?) — check: docker logs $(compose ps -q dns)"
     export TJOR_PROXY_IP TJOR_DNS_IP
-    [[ -n "${TJOR_PROXY_IP}" && -n "${TJOR_DNS_IP}" ]] || die "could not determine sidecar internal IPs"
 
     report_tiers
 }
@@ -182,7 +210,52 @@ export_static_env() {
     export TJOR_PROXY_IMAGE="tjor-proxy:local"
     TJOR_COREDNS_IMAGE="$(cfg images.coredns)"
     TJOR_PROXY_PORT="$(cfg proxy.port --default 8080)"
-    export TJOR_COREDNS_IMAGE TJOR_PROXY_PORT
+    TJOR_IP_GUARD="$([ "$(cfg proxy.ip_guard --default true)" = "false" ] && echo off || echo on)"
+    TJOR_AGENT_MEM="$(cfg limits.agent_mem --default 4g)"
+    TJOR_PROXY_MEM="$(cfg limits.proxy_mem --default 1g)"
+    TJOR_DNS_MEM="$(cfg limits.dns_mem --default 256m)"
+    TJOR_CONFORMANCE_MEM="$(cfg limits.conformance_mem --default 512m)"
+    export TJOR_COREDNS_IMAGE TJOR_PROXY_PORT TJOR_IP_GUARD
+    export TJOR_AGENT_MEM TJOR_PROXY_MEM TJOR_DNS_MEM TJOR_CONFORMANCE_MEM
+}
+
+ensure_session_ca() {
+    # Pre-generate the session MITM CA with the charter L25 constraints:
+    # pathlen:0 (key disclosure yields leaf-only interception, never a
+    # delegable intermediate) and EKU serverAuth. mitmproxy reads it from
+    # its confdir; only the certificate is ever handed to the agent.
+    local cadir="${TJOR_SESSION_DIR}/proxy-ca"
+    mkdir -p "${cadir}"
+    [[ -s "${cadir}/mitmproxy-ca.pem" ]] && return 0
+    if command -v openssl >/dev/null 2>&1; then
+        openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
+            -keyout "${cadir}/ca-key.pem" -out "${cadir}/mitmproxy-ca-cert.pem" \
+            -subj "/CN=tjor session CA/O=tjor" \
+            -addext "basicConstraints=critical,CA:TRUE,pathlen:0" \
+            -addext "keyUsage=critical,keyCertSign,cRLSign" \
+            -addext "extendedKeyUsage=serverAuth" >/dev/null 2>&1
+        cat "${cadir}/ca-key.pem" "${cadir}/mitmproxy-ca-cert.pem" > "${cadir}/mitmproxy-ca.pem"
+        chmod 600 "${cadir}/ca-key.pem" "${cadir}/mitmproxy-ca.pem"
+        chmod 644 "${cadir}/mitmproxy-ca-cert.pem"
+        if ! openssl x509 -in "${cadir}/mitmproxy-ca-cert.pem" -text -noout | grep -q "pathlen:0"; then
+            warn "generated session CA lacks pathlen:0 — check your openssl version"
+        fi
+    else
+        warn "openssl not found — the proxy will self-generate an UNCONSTRAINED CA (no pathlen:0). Install openssl for the constrained one."
+    fi
+}
+
+verify_bind_source() {
+    # VM-based runtimes (Colima, Docker Desktop) share only configured host
+    # paths; a bind source outside them silently appears EMPTY inside the
+    # VM. Compare: if the dir has content on the host, a container must see
+    # content too.
+    local dir="$1"
+    [[ -n "$(ls -A "${dir}" 2>/dev/null)" ]] || return 0   # empty on host: nothing to compare
+    if ! docker run --rm -v "${dir}:/tjor-check:ro" --entrypoint /bin/sh "${TJOR_PROXY_IMAGE}" \
+            -c '[ -n "$(ls -A /tjor-check)" ]' >/dev/null 2>&1; then
+        die "${dir} is not shared with the Docker VM — bind mounts of it appear EMPTY in containers. Move it under \$HOME or add it to the VM's shared paths (colima/Docker Desktop file sharing)."
+    fi
 }
 
 session_setup() { # $1 = harness
@@ -259,13 +332,15 @@ cmd_conformance() {
     export TJOR_LAUNCH_DIR="${TJOR_SESSION_DIR}"
     mkdir -p "${TJOR_SESSION_DIR}/home"
     export_static_env
+    # Clean up even when interrupted — an aborted run must not leak
+    # containers, networks, or the temp session dir.
+    trap 'compose down --volumes --remove-orphans >/dev/null 2>&1 || true;
+          docker network rm "${TJOR_PROJECT}_internal" >/dev/null 2>&1 || true;
+          rm -rf "${TJOR_SESSION_DIR}"' EXIT INT TERM
     build_conformance
     ensure_topology
     local rc=0
     "${COMPOSE[@]}" -f "${TJOR_ROOT}/compose.yaml" run --rm conformance || rc=$?
-    compose down --volumes --remove-orphans >/dev/null 2>&1 || true
-    docker network rm "${TJOR_PROJECT}_internal" >/dev/null 2>&1 || true
-    rm -rf "${TJOR_SESSION_DIR}"
     if ((rc == 0)); then echo "tjor: conformance PASSED — the boundary holds" >&2
     else loud "conformance FAILED (rc=${rc}) — the boundary does NOT hold"; fi
     return "${rc}"

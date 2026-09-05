@@ -13,6 +13,8 @@
     {"url": "https://api.vendor.test/v1/data", "allowed": true, "rule": "host-allow"},
     {"url": "https://api.vendor.test/v1/telemetry/send", "allowed": false, "rule": "path-block"},
     {"url": "https://api.vendor.test/v1/%74elemetry/send", "allowed": false, "rule": "path-block"},
+    {"url": "https://api.vendor.test/v1/%2525252574elemetry/send", "allowed": false, "rule": "path-block"},
+    {"url": "https://allowed.test/%2525252525252525252525252525252525252574", "allowed": false, "rule": "fail-closed:excessive-encoding"},
     {"url": "https://api.vendor.test/v1/foo/%2e%2e/telemetry/x", "allowed": false, "rule": "path-block"},
     {"url": "https://ALLOWED.TEST./x", "allowed": true, "rule": "host-allow"},
     {"url": "https://allowed.test:8443/x", "allowed": true, "rule": "host-allow"},

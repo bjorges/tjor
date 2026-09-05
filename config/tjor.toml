@@ -3,6 +3,17 @@
 
 [proxy]
 port = 8080
+# Deny any allowed hostname that resolves to a non-global address (DNS-
+# rebind / SSRF guard). Set false only if your allowlist includes intranet
+# hosts on private ranges.
+ip_guard = true
+
+[limits]
+# Memory caps per service (docker mem_limit syntax).
+agent_mem = "4g"
+proxy_mem = "1g"
+dns_mem = "256m"
+conformance_mem = "512m"
 
 [dns]
 # Extra DNS zones to forward beyond those derived from the policy allow-list.

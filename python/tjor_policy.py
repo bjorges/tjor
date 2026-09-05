@@ -30,7 +30,7 @@ import tomllib
 from dataclasses import dataclass, field
 from urllib.parse import unquote, urlsplit
 
-MAX_DECODE_ROUNDS = 4
+MAX_DECODE_ROUNDS = 16  # if a path is still decoding after this, it is denied outright
 
 VALID_MODES = ("strict-allow", "default-allow")
 _TOP_KEYS = {"mode", "hosts", "paths"}
@@ -51,6 +51,11 @@ class Verdict:
 
 @dataclass
 class Policy:
+    """Parsed egress policy. ``valid=False`` means the source was missing,
+    unparseable, or malformed in ANY way — evaluate()/evaluate_connect()
+    then deny everything. Never construct a valid=True Policy from
+    unvalidated input; go through parse_policy()/load_policy()."""
+
     valid: bool
     mode: str = "strict-allow"
     host_allow: list[str] = field(default_factory=list)
@@ -60,16 +65,34 @@ class Policy:
     errors: list[str] = field(default_factory=list)
 
 
-def _glob_to_re(pattern: str) -> re.Pattern:
-    out = []
-    for ch in pattern:
-        if ch == "*":
-            out.append(".*")
-        elif ch == "?":
-            out.append(".")
+def _wildcard_match(pattern: str, text: str) -> bool:
+    """Iterative glob match (``*`` spans anything, ``?`` one char).
+
+    Deliberately not regex-based: chained wildcards compiled to ``.*``
+    backtrack catastrophically on attacker-influenced paths (ReDoS). This is
+    the classic two-pointer algorithm, O(len(pattern) * len(text)) worst
+    case, no backtracking blowup.
+    """
+    pi = ti = 0
+    star = -1
+    mark = 0
+    while ti < len(text):
+        if pi < len(pattern) and (pattern[pi] == "?" or pattern[pi] == text[ti]):
+            pi += 1
+            ti += 1
+        elif pi < len(pattern) and pattern[pi] == "*":
+            star = pi
+            mark = ti
+            pi += 1
+        elif star != -1:
+            pi = star + 1
+            mark += 1
+            ti = mark
         else:
-            out.append(re.escape(ch))
-    return re.compile("^" + "".join(out) + "$", re.DOTALL)
+            return False
+    while pi < len(pattern) and pattern[pi] == "*":
+        pi += 1
+    return pi == len(pattern)
 
 
 def _canon_host(host: str) -> str:
@@ -86,11 +109,15 @@ def _canon_host(host: str) -> str:
 def host_matches(pattern: str, host: str) -> bool:
     """Glob host match. ``*`` spans any characters including dots, so
     ``*.example.com`` matches every depth of subdomain but not the apex."""
-    return bool(_glob_to_re(pattern.strip().casefold().rstrip(".")).match(_canon_host(host)))
+    return _wildcard_match(pattern.strip().casefold().rstrip("."), _canon_host(host))
 
 
 def path_matches(pattern: str, path: str) -> bool:
-    return bool(_glob_to_re(pattern).match(path))
+    """Glob path match against ONE form of a path. Callers are responsible
+    for the any-form (block) / all-form (allow) asymmetry over
+    :func:`path_forms` — never call this on a raw path alone for a security
+    decision. Case-sensitive by design (paths are)."""
+    return _wildcard_match(pattern, path)
 
 
 def remove_dot_segments(path: str) -> str:
@@ -111,21 +138,30 @@ def remove_dot_segments(path: str) -> str:
     return out or "/"
 
 
-def path_forms(path: str) -> list[str]:
+def path_forms(path: str) -> tuple[list[str], bool]:
     """Every form of the path an upstream server might effectively see:
     the raw string, dot-segment-resolved, and each percent-decoding round
-    to a fixpoint (bounded). Order is deterministic; entries unique."""
+    down to the fixpoint. Returns ``(forms, complete)``.
+
+    ``complete`` is False when the path was STILL decoding after
+    MAX_DECODE_ROUNDS — meaning the true final form was never inspected.
+    Callers must treat an incomplete decode as a denial (fail-closed):
+    a bounded window that silently stops decoding is exactly the nested-
+    encoding block bypass this function exists to prevent.
+    """
     forms: list[str] = []
     cur = path or "/"
-    for _ in range(MAX_DECODE_ROUNDS):
+    complete = False
+    for _ in range(MAX_DECODE_ROUNDS + 1):
         for f in (cur, remove_dot_segments(cur)):
             if f not in forms:
                 forms.append(f)
         decoded = unquote(cur)
         if decoded == cur:
+            complete = True
             break
         cur = decoded
-    return forms
+    return forms, complete
 
 
 def _type_err(errors: list[str], where: str) -> None:
@@ -158,6 +194,13 @@ def _rule_list(value, where: str, errors: list[str]) -> list[tuple[str, str]]:
 
 
 def parse_policy(text: str, source: str = "<inline>") -> Policy:
+    """Parse policy TOML into a Policy, fail-closed.
+
+    Strict by design: unknown keys anywhere (a typo'd ``blokc`` would
+    silently weaken the policy), wrong types, and invalid modes all yield
+    ``valid=False`` — which downstream means deny-everything — rather than
+    a best-effort partial policy.
+    """
     errors: list[str] = []
     try:
         data = tomllib.loads(text)
@@ -207,6 +250,11 @@ def load_policy(path: str) -> Policy:
 
 
 def evaluate(policy: Policy, url: str) -> Verdict:
+    """The egress decision for one URL. Order (fixed, tested):
+    invalid policy → deny; unparseable URL/host or excessive encoding →
+    deny; host blocklist (all-forms allow carve-outs may override) →
+    any-form path blocks → mode default (strict-allow: host must be
+    allowlisted). Every path not explicitly allowed ends in a deny."""
     if not policy.valid:
         return Verdict(False, "fail-closed:invalid-policy")
 
@@ -219,7 +267,11 @@ def evaluate(policy: Policy, url: str) -> Verdict:
     if not host or not re.fullmatch(r"[a-z0-9._:\-]+", host):
         return Verdict(False, "fail-closed:bad-url")
 
-    forms = path_forms(path)
+    forms, complete = path_forms(path)
+    if not complete:
+        # Still percent-decoding after MAX_DECODE_ROUNDS: the final form was
+        # never inspected, so no rule can be trusted to have seen it.
+        return Verdict(False, "fail-closed:excessive-encoding")
 
     # 1. Host blocklist, with all-forms allow carve-outs.
     for pattern in policy.host_block:
