@@ -42,6 +42,42 @@ class TestFailClosedWrapper:
         assert not addon.request_verdict("https://blocked.test/x", "blocked.test").allowed
 
 
+class TestIdentityAtTheAddon:
+    def make(self):
+        addon = load_addon()
+        import tjor_identity as ti
+        addon.IDENTITY = ti.load_identity({"TJOR_SESSION_ID": "sess-1", "TJOR_HARNESS": "opencode"})
+        addon.INJECT_HOSTS = ["inject.test"]
+        return addon
+
+    def test_forged_stripped_and_logged(self, capsys):
+        addon = self.make()
+        final, stripped = addon.identity_outcome({"x-agent-session-id": "intruder"}, "other.test")
+        assert final == {} and stripped == {"x-agent-session-id": "intruder"}
+        addon._log_stripped("other.test", stripped)
+        assert "stripped forged" in capsys.readouterr().err
+
+    def test_log_rate_limited(self, capsys):
+        addon = self.make()
+        for _ in range(200):
+            addon._log_stripped("h.test", {"x-agent-session-id": "x"})
+        lines = capsys.readouterr().err.strip().splitlines()
+        assert 20 <= len(lines) <= 22  # first 20 + every 100th, not 200
+
+    def test_inject_only_on_configured_host(self):
+        addon = self.make()
+        final, _ = addon.identity_outcome({}, "inject.test")
+        assert final.get("x-agent-session-id") == "sess-1"
+        final, _ = addon.identity_outcome({}, "elsewhere.test")
+        assert final == {}
+
+    def test_exception_fails_closed(self, monkeypatch):
+        addon = self.make()
+        monkeypatch.setattr(addon.tjor_identity, "should_inject", lambda *a: 1 / 0)
+        final, stripped = addon.identity_outcome({"x-agent-session-id": "sess-1"}, "x.test")
+        assert final == {} and stripped == {"x-agent-session-id": "sess-1"}
+
+
 class TestAddressGuard:
     def test_private_resolution_denied(self):
         addon = load_addon()
