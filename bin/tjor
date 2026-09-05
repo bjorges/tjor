@@ -143,7 +143,7 @@ ensure_topology() { # expects TJOR_PROJECT, TJOR_SESSION_DIR exported
     # external so that sidecar creation happens on the egress network first).
     local internal="${TJOR_PROJECT}_internal"
     docker network inspect "${internal}" >/dev/null 2>&1 \
-        || docker network create --internal "${internal}" >/dev/null
+        || docker network create --internal --label "tjor.session=${TJOR_SESSION}" "${internal}" >/dev/null
 
     # Recreate sidecars on config drift (charter L12): compare the stamp on
     # the running containers with the hash of the config we just generated.
@@ -285,7 +285,7 @@ verify_bind_source() {
     fi
 }
 
-session_setup() { # $1 = harness, $2 = task id (optional)
+session_setup() { # $1 = harness, $2 = task id (optional), $3 = session name (optional)
     local ws root sid in_repo=""
     if ws="$(git rev-parse --show-toplevel 2>/dev/null)"; then in_repo=1; else
         ws="$(pwd)"
@@ -294,6 +294,15 @@ session_setup() { # $1 = harness, $2 = task id (optional)
     # shellcheck disable=SC2088  # literal ~ is expanded on the next line
     root="$(cfg session.root --default "~/.tjor/sessions")"; root="${root/#\~/$HOME}"
     sid="$(basename "${ws}" | tr -cd 'a-zA-Z0-9_.-' | tr '[:upper:]' '[:lower:]')-$(printf %s "${ws}" | sha256 | cut -c1-8)"
+    # Named sessions (D3): the name folds into the id, so every downstream
+    # per-session resource (topology, state root, identity, CA) separates
+    # automatically (charter L29).
+    if [[ -n "${3:-}" ]]; then
+        [[ "$3" =~ ^[A-Za-z0-9._-]{1,32}$ ]] || die "--session must match [A-Za-z0-9._-]{1,32}"
+        sid="${sid}-$(tr '[:upper:]' '[:lower:]' <<<"$3")"
+    fi
+    TJOR_LAUNCHED_AT="$(date +%s)"
+    export TJOR_LAUNCHED_AT
 
     # Session identity (D1): frozen at launch, delivered to the agent (env)
     # and to the proxy (x-agent-* verification / opt-in injection).
@@ -332,40 +341,271 @@ session_setup() { # $1 = harness, $2 = task id (optional)
 }
 
 cmd_run() {
-    local harness="opencode" task=""
+    local harness="opencode" task="" name="" detach=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --harness) harness="$2"; shift 2 ;;
             --task) task="$2"; shift 2 ;;
+            --session) name="$2"; shift 2 ;;
+            --detach|-d) detach=1; shift ;;
             --) shift; break ;;
             *) break ;;
         esac
     done
-    session_setup "${harness}" "${task}"
+    session_setup "${harness}" "${task}" "${name}"
     docker image inspect "${TJOR_AGENT_IMAGE}" >/dev/null 2>&1 || build_agent "${harness}"
     ensure_topology
     echo "tjor: session ${TJOR_SESSION} — workspace ${TJOR_WORKSPACE}" >&2
-    if [[ $# -gt 0 ]]; then
-        exec_compose_run agent "$@"
-    else
-        case "${harness}" in
-            claude) exec_compose_run agent claude ;;
-            copilot) exec_compose_run agent copilot ;;
-            *) exec_compose_run agent opencode ;;
-        esac
-    fi
+    local -a agent_cmd=()
+    if [[ $# -gt 0 ]]; then agent_cmd=("$@")
+    else case "${harness}" in claude) agent_cmd=(claude) ;; copilot) agent_cmd=(copilot) ;; *) agent_cmd=(opencode) ;; esac; fi
+    run_agent "${detach}" "${agent_cmd[@]}"
 }
 
-exec_compose_run() { exec "${COMPOSE[@]}" -f "${TJOR_ROOT}/compose.yaml" run --rm "$@"; }
+# Launch the agent DETACHED and persistent, then (unless --detach) attach to
+# it. Detached + no --rm is what makes `tjor attach` meaningful: the
+# container outlives the launching terminal, so a dropped connection leaves a
+# session to reattach to (compose run --rm would delete it the moment the
+# client went away). Cleanup is `tjor down` / `tjor gc`, not --rm.
+run_agent() { # $1 = detach flag, $2.. = command
+    local detach="$1"; shift
+    local ctr running code
+    ctr="$(compose run -d agent "$@")" || die "failed to start the agent container"
+    if [[ -n "${detach}" ]]; then
+        echo "tjor: session ${TJOR_SESSION} started detached — attach with: tjor attach ${TJOR_SESSION}" >&2
+        return 0
+    fi
+    running="$(docker inspect -f '{{.State.Running}}' "${ctr}" 2>/dev/null || echo false)"
+    if [[ "${running}" == "true" ]]; then
+        echo "tjor: attached — detach without stopping the agent: ctrl-p ctrl-q" >&2
+        docker attach --sig-proxy=false "${ctr}" || true
+    fi
+    code="$(docker inspect -f '{{.State.ExitCode}}' "${ctr}" 2>/dev/null || echo 0)"
+    exit "${code:-0}"
+}
 
 cmd_down() {
-    session_setup "opencode"
+    local name=""
+    [[ "${1:-}" == "--session" ]] && name="$2"
+    session_setup "opencode" "" "${name}"
+    # Persistent agent (compose run -d) containers aren't reliably caught by
+    # `down --remove-orphans`; remove this session's by label explicitly.
+    docker ps -aq --filter "label=tjor.session=${TJOR_SESSION}" | xargs -r docker rm -f >/dev/null 2>&1 || true
     compose down --volumes --remove-orphans
     docker network rm "${TJOR_PROJECT}_internal" >/dev/null 2>&1 || true
     echo "tjor: session topology ${TJOR_PROJECT} removed (state in ${TJOR_SESSION_DIR} preserved)" >&2
 }
 
-cmd_status() { session_setup "opencode"; compose ps; }
+cmd_status() {
+    local name=""
+    [[ "${1:-}" == "--session" ]] && name="$2"
+    session_setup "opencode" "" "${name}"
+    compose ps
+}
+
+# ---------------------------------------------------------------- lifecycle
+
+humanize_age() { # seconds -> compact age
+    local s=$1
+    if ((s < 3600)); then echo "$((s / 60))m"
+    elif ((s < 86400)); then echo "$((s / 3600))h"
+    else echo "$((s / 86400))d"; fi
+}
+
+iso_to_epoch() {
+    python3 -c '
+import sys, datetime
+s = sys.argv[1].split(".")[0].removesuffix("Z")
+try:
+    print(int(datetime.datetime.fromisoformat(s + "+00:00").timestamp()))
+except Exception:
+    print(0)' "$1" 2>/dev/null || echo 0
+}
+
+cmd_ls() {
+    # Discovery is label-driven; container names are never parsed.
+    local now
+    now="$(date +%s)"
+    declare -A total agents_running any_running ws task launched
+    while IFS=$'|' read -r state sid wsp tsk lat role; do
+        [[ -n "${sid}" ]] || continue
+        total[${sid}]=$((${total[${sid}]:-0} + 1))
+        [[ "${state}" == "running" && "${role}" == "agent" ]] && agents_running[${sid}]=$((${agents_running[${sid}]:-0} + 1))
+        [[ "${state}" == "running" ]] && any_running[${sid}]=1
+        [[ -n "${wsp}" ]] && ws[${sid}]="${wsp}"
+        [[ -n "${tsk}" ]] && task[${sid}]="${tsk}"
+        [[ -n "${lat}" ]] && launched[${sid}]="${lat}"
+    done < <(docker ps -a --filter label=tjor.session \
+        --format '{{.State}}|{{.Label "tjor.session"}}|{{.Label "tjor.workspace"}}|{{.Label "tjor.task"}}|{{.Label "tjor.launched-at"}}|{{.Label "tjor.role"}}')
+    if ((${#total[@]} == 0)); then
+        echo "tjor: no sessions" >&2
+        return 0
+    fi
+    printf '%-40s %-9s %-7s %-6s %-40s %s\n' SESSION STATE AGENTS AGE WORKSPACE TASK
+    local sid state age
+    {
+        for sid in "${!total[@]}"; do
+            if ((${agents_running[${sid}]:-0} > 0)); then state="RUNNING"
+            elif [[ -n "${any_running[${sid}]:-}" ]]; then state="IDLE"
+            else state="EXITED"; fi
+            # Re-verify the core guarantee for anything still running: the
+            # launch-time check gets a repeatable checkpoint here.
+            if [[ -n "${any_running[${sid}]:-}" ]] \
+               && [[ "$(docker network inspect -f '{{.Internal}}' "tjor-${sid}_internal" 2>/dev/null)" != "true" ]]; then
+                state="DEGRADED"
+                loud "session ${sid} is DEGRADED: its agent network is NOT internal-only — treat the boundary as broken (tjor down / gc)"
+            fi
+            age="-"
+            [[ -n "${launched[${sid}]:-}" ]] && age="$(humanize_age $((now - launched[${sid}])))"
+            printf '%-40s %-9s %-7s %-6s %-40s %s\n' "${sid}" "${state}" \
+                "${agents_running[${sid}]:-0}/${total[${sid}]}" "${age}" "${ws[${sid}]:--}" "${task[${sid}]:--}"
+        done
+    } | sort
+}
+
+cmd_attach() {
+    local want="${1:-}" chosen ctr
+    local -a rows=()
+    mapfile -t rows < <(docker ps --filter label=tjor.role=agent --filter status=running \
+        --format '{{.ID}}|{{.Label "tjor.session"}}|{{.Label "tjor.workspace"}}|{{.Label "tjor.task"}}' \
+        | { if [[ -n "${want}" ]]; then awk -F'|' -v s="${want}" '$2 == s'; else cat; fi; })
+    ((${#rows[@]} > 0)) || die "no running agent${want:+ for session ${want}} — see: tjor ls"
+    if ((${#rows[@]} == 1)); then
+        chosen="${rows[0]}"
+    elif command -v fzf >/dev/null 2>&1; then
+        chosen="$(printf '%s\n' "${rows[@]}" | fzf --delimiter='|' --with-nth=2.. --prompt='tjor attach> ')" \
+            || die "nothing selected"
+    else
+        echo "tjor: several running agents:" >&2
+        local i=1 row
+        for row in "${rows[@]}"; do echo "  ${i}) $(cut -d'|' -f2,3 <<<"${row}")" >&2; ((i += 1)); done
+        read -rp "attach to [1-${#rows[@]}]: " i
+        if ! [[ "${i}" =~ ^[0-9]+$ ]] || ((i < 1 || i > ${#rows[@]})); then die "invalid selection"; fi
+        chosen="${rows[$((i - 1))]}"
+    fi
+    ctr="$(cut -d'|' -f1 <<<"${chosen}")"
+    # Testability seam: attach's logic is candidate RESOLUTION (above); the
+    # exec below is a thin, trusted docker shell-out that cannot be driven
+    # deterministically without a real TTY. TJOR_ATTACH_DRY reports the
+    # resolved target instead of exec'ing, so tests verify the logic.
+    if [[ -n "${TJOR_ATTACH_DRY:-}" ]]; then
+        echo "$(cut -d'|' -f2 <<<"${chosen}") ${ctr}"
+        return 0
+    fi
+    echo "tjor: attaching to $(cut -d'|' -f2 <<<"${chosen}") — detach without killing it: ctrl-p ctrl-q" >&2
+    # --sig-proxy=false: interaction is through the PTY and detach is the
+    # escape sequence, so the attach client's own signals (a stray SIGTERM,
+    # timeout, a killed parent) must NOT be forwarded to tear down the agent.
+    exec docker attach --sig-proxy=false "${ctr}"
+}
+
+cmd_gc() {
+    local age_hours=24 dry="" now cutoff
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --age) age_hours="$2"; shift 2 ;;
+            --dry-run) dry=1; shift ;;
+            *) die "usage: tjor gc [--age <hours>] [--dry-run]" ;;
+        esac
+    done
+    now="$(date +%s)"
+    cutoff=$((now - age_hours * 3600))
+    # gc deletes DOCKER RESOURCES ONLY, selected by tjor labels. Session
+    # state dirs (auth!) are never touched here — that is `tjor reset`,
+    # explicit and tiered. Last activity = newest agent FinishedAt, falling
+    # back to launch time for sidecar-only sessions.
+    declare -A has_running last_activity
+    local id sid state role lat t
+    while IFS=$'|' read -r id sid state role lat; do
+        [[ -n "${sid}" ]] || continue
+        [[ "${state}" == "running" && "${role}" == "agent" ]] && has_running[${sid}]=1
+        t=0
+        if [[ "${role}" == "agent" && "${state}" != "running" ]]; then
+            t="$(iso_to_epoch "$(docker inspect -f '{{.State.FinishedAt}}' "${id}" 2>/dev/null || true)")"
+        fi
+        [[ "${t}" == 0 && -n "${lat}" ]] && t="${lat}"
+        ((t > ${last_activity[${sid}]:-0})) && last_activity[${sid}]="${t}"
+    done < <(docker ps -a --filter label=tjor.session \
+        --format '{{.ID}}|{{.Label "tjor.session"}}|{{.State}}|{{.Label "tjor.role"}}|{{.Label "tjor.launched-at"}}')
+
+    local reaped=0
+    for sid in "${!last_activity[@]}"; do
+        [[ -n "${has_running[${sid}]:-}" ]] && continue
+        ((${last_activity[${sid}]:-0} <= cutoff)) || continue
+        if [[ -n "${dry}" ]]; then
+            echo "tjor gc: would tear down session ${sid} (idle $(humanize_age $((now - last_activity[${sid}])))): containers, networks, volumes — state dir untouched"
+        else
+            echo "tjor gc: tearing down idle session ${sid}" >&2
+            # D2 HOOK: when the credential broker lands, revoke this
+            # session's brokered credentials HERE, before its resources
+            # disappear (add-session-lifecycle design, GC hook point).
+            docker ps -aq --filter "label=tjor.session=${sid}" | xargs -r docker rm -f >/dev/null 2>&1 || true
+            "${COMPOSE[@]}" -p "tjor-${sid}" down --volumes --remove-orphans >/dev/null 2>&1 || true
+            docker network rm "tjor-${sid}_internal" >/dev/null 2>&1 || true
+        fi
+        ((reaped += 1))
+    done
+
+    # Orphaned tjor-labeled networks whose session has no containers at all.
+    local net netsid
+    while read -r net; do
+        netsid="$(docker network inspect -f '{{index .Labels "tjor.session"}}' "${net}" 2>/dev/null || true)"
+        [[ -n "${netsid}" && -z "${has_running[${netsid}]:-}" && -z "${last_activity[${netsid}]:-}" ]] || continue
+        if [[ -n "${dry}" ]]; then
+            echo "tjor gc: would remove orphaned network ${net}"
+        else
+            docker network rm "${net}" >/dev/null 2>&1 || true
+        fi
+        ((reaped += 1))
+    done < <(docker network ls --filter label=tjor.session --format '{{.Name}}')
+
+    ((reaped > 0)) || echo "tjor gc: nothing to reap" >&2
+}
+
+cmd_reset() {
+    local name="" dry="" tier=""
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --session) name="$2"; shift 2 ;;
+            --dry-run) dry=1; shift ;;
+            cache|sessions|creds|all) tier="$1"; shift ;;
+            *) die "usage: tjor reset {cache|sessions|creds|all} [--session <name>] [--dry-run]" ;;
+        esac
+    done
+    [[ -n "${tier}" ]] || die "tjor reset requires an explicit tier: cache | sessions | creds | all"
+    session_setup "opencode" "" "${name}"
+    local -a paths=()
+    case "${tier}" in
+        cache) paths=("${TJOR_SESSION_DIR}/home/.cache") ;;
+        sessions) paths=(
+            "${TJOR_SESSION_DIR}/home/.local/state"
+            "${TJOR_SESSION_DIR}/home/.local/share/opencode/storage"
+            "${TJOR_SESSION_DIR}/home/.local/share/opencode/log"
+        ) ;;
+        creds) paths=(
+            "${TJOR_SESSION_DIR}/proxy-ca"
+            "${TJOR_SESSION_DIR}/ca.pem"
+            "${TJOR_SESSION_DIR}/home/.local/share/opencode/auth.json"
+            "${TJOR_SESSION_DIR}/home/.config/gh"
+        ) ;;
+        all) paths=("${TJOR_SESSION_DIR}") ;;
+    esac
+    local p found=""
+    for p in "${paths[@]}"; do
+        [[ -e "${p}" || -L "${p}" ]] || continue
+        found=1
+        if [[ -n "${dry}" ]]; then
+            echo "tjor reset: would delete ${p}"
+        else
+            # rm removes a symlink itself rather than following it, so an
+            # agent-planted link inside a tier cannot redirect the wipe
+            # outside the session root (charter L26; integration-tested).
+            rm -rf "${p}"
+            echo "tjor reset: deleted ${p}" >&2
+        fi
+    done
+    [[ -n "${found}" ]] || echo "tjor reset: nothing to delete for tier '${tier}'" >&2
+}
 
 cmd_policy() {
     [[ $# -ge 1 ]] || die "usage: tjor policy <url>"
@@ -380,6 +620,8 @@ cmd_conformance() {
     export TJOR_REPO="conformance"
     export TJOR_TASK_ID="" TJOR_WORKTREE="" TJOR_PARENT_SESSION=""
     export TJOR_INJECT_HOSTS="echo-inject.tjor-test"
+    TJOR_LAUNCHED_AT="$(date +%s)"
+    export TJOR_LAUNCHED_AT
     export TJOR_PROJECT="tjor-conformance"
     # Session dir must live under $HOME: VM-based runtimes (Colima, Docker
     # Desktop) only share user paths, and an unshared bind source silently
@@ -433,10 +675,15 @@ tjor — run AI coding agents inside a portable, fail-closed container cage
 
 usage: tjor <command> [args]
 
-  run [--harness opencode|claude|copilot] [--task <id>] [cmd...]
-                                                     launch a caged session in this repo
-  down                                               tear down this repo's session topology
-  status                                             show this repo's session containers
+  run [--harness opencode|claude|copilot] [--task <id>] [--session <name>] [--detach] [cmd...]
+                                                     launch a caged session in this repo (--detach: start without attaching)
+  ls                                                 list all sessions (and re-verify their boundaries)
+  attach [session]                                   reattach to a running agent's terminal
+  gc [--age <hours>] [--dry-run]                     reap idle session containers/networks/volumes
+  reset {cache|sessions|creds|all} [--session <name>] [--dry-run]
+                                                     tiered wipe of this repo's session state
+  down [--session <name>]                            tear down this repo's session topology
+  status [--session <name>]                          show this repo's session containers
   policy <url>                                       evaluate a URL against the active egress policy
   conformance                                        run the adversarial conformance suite
   doctor [--full]                                    check host deps, policy, guarantees (--full: + conformance)
@@ -452,6 +699,10 @@ main() {
     preflight
     case "${cmd}" in
         run) cmd_run "$@" ;;
+        ls) cmd_ls "$@" ;;
+        attach) cmd_attach "$@" ;;
+        gc) cmd_gc "$@" ;;
+        reset) cmd_reset "$@" ;;
         down) cmd_down "$@" ;;
         status) cmd_status "$@" ;;
         policy) cmd_policy "$@" ;;

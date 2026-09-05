@@ -25,6 +25,21 @@ disposable. `tjor run --harness claude` / `--harness copilot` select other
 harnesses (images build on first use). `tjor policy <url>` previews an
 egress verdict; `tjor down` removes a repo's topology.
 
+Managing sessions (D3):
+
+```console
+$ tjor ls                         # every session, with a live boundary re-check
+$ tjor run --session review       # a second, isolated session in the same repo
+$ tjor attach review              # reattach to a running agent (detach: ctrl-p ctrl-q)
+$ tjor gc --dry-run               # what would be reaped (idle containers/networks)
+$ tjor reset cache --dry-run      # tiered state wipe: cache | sessions | creds | all
+```
+
+`tjor ls` re-verifies each running session's internal-only network and flags a
+tampered one as **DEGRADED**. `gc` only ever deletes docker resources it
+labelled — never your session state; wiping state is `reset`'s explicit,
+tiered, dry-runnable job.
+
 The egress policy lives at `~/.config/tjor/policy.toml` (falling back to
 [`config/policy.toml`](config/policy.toml)) — strict allow-list by default,
 and a policy file that fails to parse denies everything.
