@@ -31,10 +31,16 @@ root = "~/.tjor/sessions"
 opencode = "1.18.28"
 claude_code = "2.1.260"   # npm exact-version pin (registry integrity applies)
 copilot = "1.0.83"        # npm exact-version pin
+# Official gh release binary, not the distro package: Debian's build ships a
+# malformed trailing-space User-Agent in API calls, which the proxy's strict
+# HTTP/2 validation rightly rejects.
+gh = "2.100.0"
 
 [versions.sha256]
 opencode_linux_arm64 = "ccb0d39467eeccc52cdfe1cccad0114304366cb42073b906d970a487ca5b4497"
 opencode_linux_x64 = "42add0fb1f13bdfd13855adc11cdaf2944c149377a873732168cdfd234fec7c3"
+gh_linux_arm64 = "ea4e7a581a32ccad6cc7923cb1576ac5859ba4b9a16ab22eb8f8a96e78e2e961"
+gh_linux_amd64 = "e4d4bb4498e8d007abe545b6568926793ace1b6447da598294a610018cb164be"
 
 [images]
 # Sidecar and base images pinned by digest (charter L11).

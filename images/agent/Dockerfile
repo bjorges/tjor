@@ -7,13 +7,36 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl git gh openssh-client jq ripgrep less procps \
+        ca-certificates curl git openssh-client jq ripgrep less procps \
         gosu python3 unzip \
     && rm -rf /var/lib/apt/lists/*
 
+ARG TARGETARCH
+
+# gh from the official release, sha256-gated. Not the distro package: Debian's
+# build sends a trailing-space User-Agent that strict HTTP/2 proxies reject.
+ARG GH_VERSION
+ARG GH_SHA256_ARM64
+ARG GH_SHA256_AMD64
+RUN set -eu; \
+    case "${TARGETARCH:-}" in \
+        arm64) gh_arch="arm64"; gh_sha="${GH_SHA256_ARM64}" ;; \
+        *) gh_arch="amd64"; gh_sha="${GH_SHA256_AMD64}" ;; \
+    esac; \
+    [ -n "${GH_VERSION}" ] && [ -n "${gh_sha}" ] || { echo "missing gh version/sha build args" >&2; exit 1; }; \
+    curl -fsSLo /tmp/gh.tgz \
+        "https://github.com/cli/cli/releases/download/v${GH_VERSION}/gh_${GH_VERSION}_linux_${gh_arch}.tar.gz"; \
+    echo "${gh_sha}  /tmp/gh.tgz" | sha256sum -c -; \
+    tar -C /tmp -xzf /tmp/gh.tgz; \
+    install -m 0755 "/tmp/gh_${GH_VERSION}_linux_${gh_arch}/bin/gh" /usr/local/bin/gh; \
+    rm -rf /tmp/gh.tgz "/tmp/gh_${GH_VERSION}_linux_${gh_arch}"
+
+# No X in the cage: make gh (and friends) print auth URLs instead of failing
+# to exec a browser.
+ENV BROWSER=echo
+
 # HARNESS is a comma list: any of opencode, claude, copilot.
 ARG HARNESS=opencode
-ARG TARGETARCH
 
 # --- opencode: single binary from GitHub releases, sha256-gated -------------
 ARG OPENCODE_VERSION

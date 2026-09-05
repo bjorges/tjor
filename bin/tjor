@@ -77,6 +77,9 @@ build_agent() { # $1 = harness list (comma separated)
         --build-arg OPENCODE_SHA256_X64="$(cfg versions.sha256.opencode_linux_x64)" \
         --build-arg CLAUDE_CODE_VERSION="$(cfg versions.claude_code)" \
         --build-arg COPILOT_VERSION="$(cfg versions.copilot)" \
+        --build-arg GH_VERSION="$(cfg versions.gh)" \
+        --build-arg GH_SHA256_ARM64="$(cfg versions.sha256.gh_linux_arm64)" \
+        --build-arg GH_SHA256_AMD64="$(cfg versions.sha256.gh_linux_amd64)" \
         -t "tjor-agent-${harness//,/-}:local" "${TJOR_ROOT}"
 }
 
@@ -399,6 +402,7 @@ main() {
     local cmd="${1:-}"
     [[ -n "${cmd}" ]] || { usage; exit 1; }
     shift || true
+    case "${cmd}" in help|-h|--help) usage; exit 0 ;; esac
     preflight
     case "${cmd}" in
         run) cmd_run "$@" ;;
