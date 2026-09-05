@@ -104,6 +104,12 @@ git config --system --add url."https://github.com/".insteadOf "git@github.com:"
 git config --system --add url."https://github.com/".insteadOf "ssh://git@github.com/"
 git config --system --add url."https://gitlab.com/".insteadOf "git@gitlab.com:"
 git config --system --add url."https://gitlab.com/".insteadOf "ssh://git@gitlab.com/"
+# Trust every bind-mounted repo regardless of the uid git runs as: git's
+# dubious-ownership check guards shared multi-user hosts, but the cage is a
+# single-user isolated environment working on the user's own mounted repos
+# (and with runtime-uid-aligned images the owner uid may differ from git's).
+git config --system --unset-all safe.directory 2>/dev/null || true
+git config --system --add safe.directory '*'
 if [[ -n "${TJOR_BROKER_ENABLED:-}" ]]; then
     # Credential broker (D2): git must ATTEMPT auth so the proxy can inject
     # the real, short-TTL credential. Wire a helper that returns a fixed
