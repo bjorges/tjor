@@ -86,6 +86,10 @@ git config --system url."https://github.com/".insteadOf "git@github.com:"
 git config --system --add url."https://github.com/".insteadOf "ssh://git@github.com/"
 git config --system url."https://gitlab.com/".insteadOf "git@gitlab.com:"
 git config --system --add url."https://gitlab.com/".insteadOf "ssh://git@gitlab.com/"
+# Pre-wire gh as git's credential helper: after a one-time in-session
+# `gh auth login`, git push/pull to private GitHub repos just works.
+git config --system credential."https://github.com".helper '!gh auth git-credential'
+git config --system credential."https://gist.github.com".helper '!gh auth git-credential'
 
 # 4. Ownership + writability. chown may legitimately fail on uid-mapped VM
 #    mounts (Colima virtiofs) — warn, then hard-verify the invariant that

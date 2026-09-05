@@ -18,5 +18,5 @@ Practical notes:
 - SSH egress does not exist here: git remotes for GitHub/GitLab are
   rewritten to HTTPS automatically. Anonymous pulls of public repos just
   work; for private repos or pushes, ask the user to run `gh auth login`
-  followed by `gh auth setup-git` once in this session — never attempt to
-  work around the missing SSH transport.
+  once in this session (the credential helper is pre-wired) — never attempt
+  to work around the missing SSH transport.

@@ -31,7 +31,7 @@
 ## 5. Conformance & acceptance
 
 - [x] 5.1 Conformance test container with probes: direct-egress attempt, DNS exfil via unlisted zone, encoded-path block bypass, encoded-form allow widening, admin-surface scan, CONNECT denial, dot-segment escape, default-deny — 10/10 green on Colima; second runtime (Linux engine) runs in CI (GitHub #13)
-- [ ] 5.2 End-to-end acceptance: launch a session, have opencode complete a real LLM-driven edit-build-commit task in a mounted repo — **infrastructure e2e done** (session launch, same-path mount, TLS-through-proxy, git clone through cage, blocked-host denial all verified in-cage); the LLM-driven task needs the user's interactive Copilot login inside the session (closes GitHub #12)
+- [x] 5.2 End-to-end acceptance: launch a session, have opencode complete a real LLM-driven task in a mounted repo — done 2026-09-05: the user ran real LLM-driven sessions (git inspection/pull workflows) in the cage; infrastructure e2e (same-path mount, TLS-through-proxy, clone through cage, blocked-host denial) verified earlier; GitHub #12 closed by the user. Dogfooding surfaced and fixed the SSH-remote gap (HTTPS rewrite + gh in image)
 - [x] 5.3 CI workflow running unit, parity, image-build, and conformance suites — .github/workflows/ci.yml (green run pending first push)
 
 ## 6. External review hardening (2026-09-05)
