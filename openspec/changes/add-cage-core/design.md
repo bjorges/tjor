@@ -26,6 +26,13 @@ Greenfield repo; the constraints are ADR 0004 (design baseline) and `docs/clean-
 - **State layout:** `~/.tjor/sessions/<session-id>/` holds harness XDG dirs (bind-mounted, L14) and metadata; images never contain state. Same-path workspace mounting via `git rev-parse --show-toplevel` (L15).
 - **Conformance suite as its own container** on the agent network, runnable by CI and by `tjor doctor`; probes map 1:1 to spec scenarios.
 
+## Threat-model boundaries (from the 2026-09-05 external review)
+
+- **Docker API users are trusted.** The core-guarantee check (internal-only network) runs at launch; nothing re-verifies it live, so a host actor with docker-socket access could reconnect networks afterward (TOCTOU). That actor is root-equivalent on the host and can defeat any launcher check — continuous re-verification is a D3/GC-loop candidate (issue #10), not a v0.1 boundary.
+- **Launcher/entrypoint self-integrity is delivery's job, not runtime's.** The scripts are distributed via git (and later a signed brew formula); a self-checksum is theater against an attacker who can modify the script, since they can modify the checker. The checksum gates protect *downloads into images* (charter L23), which is the claim the docs make.
+- **CONNECT defer-tunnels terminate at mitmproxy.** No TLS/TCP passthrough is configured; a deferred carve-out tunnel only carries data if interception succeeds, after which request-stage policy applies — interception failure (pinned certs, non-TLS protocols) closes the connection. Enabling any passthrough option would reopen this as a hole; treat that option as forbidden.
+- **The resolved-address guard has a residual TOCTOU**: the addon checks resolution at verdict time, mitmproxy re-resolves at connect time; a rebind inside that window (sub-second, cached 30s) is theoretically possible. Closing it fully means pinning the connect address to the checked one (candidate follow-up in issue #10).
+
 ## Risks / Trade-offs
 
 - **Harness-vendor endpoint split (allow function, block telemetry) is empirical** and may break on harness updates → conformance/regression run covers "harness still does real work" (proposal §2.3 lesson); policy is data, fixable without release.

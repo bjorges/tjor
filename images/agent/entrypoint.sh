@@ -16,31 +16,80 @@ else
     echo "tjor-entrypoint: WARNING: no session CA mounted — TLS through the proxy will fail" >&2
 fi
 
-# 2. Session home is a bind mount; make sure the skeleton exists.
-install -d "${AGENT_HOME}/.config/opencode" "${AGENT_HOME}/.local/share" "${AGENT_HOME}/.local/state"
-
-# 3. Deploy instruction cargo (overwrite; image is the source of truth).
-if [[ -d /opt/tjor/instructions/opencode ]]; then
-    cp -Rf /opt/tjor/instructions/opencode/. "${AGENT_HOME}/.config/opencode/"
-fi
-
-# 4. Harness self-update is an image concern, never a session one (charter
-#    L13): merge autoupdate=false into opencode's config, keep user settings.
+# 2. Deploy instruction cargo and enforce autoupdate=false — symlink-safe
+#    (charter L26): the home dir is agent-writable and persists across
+#    sessions, so a previous session could have planted symlinks to redirect
+#    these root-privileged writes. Every touched component is checked and
+#    de-symlinked before any write. No agent process runs concurrently with
+#    this (the harness starts only at the exec below), so a point-in-time
+#    sweep is race-free.
 python3 - <<'PY'
-import json, pathlib
-path = pathlib.Path("/home/agent/.config/opencode/opencode.json")
+import json
+import pathlib
+import shutil
+
+HOME = pathlib.Path("/home/agent")
+CARGO = pathlib.Path("/opt/tjor/instructions/opencode")
+CFG = HOME / ".config" / "opencode"
+
+
+def desymlink(path: pathlib.Path) -> None:
+    """Remove a symlink (or non-dir obstruction) at any component of path
+    below HOME, then ensure path exists as a real directory."""
+    parts = [p for p in [*reversed(path.parents), path] if HOME in p.parents or p == HOME]
+    for p in parts:
+        if p == HOME:
+            continue
+        if p.is_symlink() or (p.exists() and not p.is_dir()):
+            p.unlink()
+    path.mkdir(parents=True, exist_ok=True)
+
+
+def safe_write_target(path: pathlib.Path) -> pathlib.Path:
+    if path.is_symlink():
+        path.unlink()
+    return path
+
+
+desymlink(CFG)
+desymlink(HOME / ".local" / "share")
+desymlink(HOME / ".local" / "state")
+
+if CARGO.is_dir():
+    for src in sorted(CARGO.rglob("*")):
+        dst = CFG / src.relative_to(CARGO)
+        if src.is_dir():
+            desymlink(dst)
+        else:
+            shutil.copyfile(src, safe_write_target(dst))
+
+# Harness self-update is an image concern, never a session one (charter L13):
+# merge autoupdate=false into opencode's config, keep other user settings.
+cfgfile = safe_write_target(CFG / "opencode.json")
 try:
-    data = json.loads(path.read_text()) if path.exists() else {}
+    data = json.loads(cfgfile.read_text()) if cfgfile.exists() else {}
     if not isinstance(data, dict):
         data = {}
 except Exception:
     data = {}
 data["autoupdate"] = False
-path.write_text(json.dumps(data, indent=2) + "\n")
+cfgfile.write_text(json.dumps(data, indent=2) + "\n")
 PY
 
-chown -R agent:agent "${AGENT_HOME}/.config/opencode" 2>/dev/null || true
-chown agent:agent "${AGENT_HOME}" 2>/dev/null || true
+# 3. Ownership + writability. chown may legitimately fail on uid-mapped VM
+#    mounts (Colima virtiofs) — warn, then hard-verify the invariant that
+#    actually matters: the agent user can write its home.
+if ! chown -R agent:agent "${AGENT_HOME}/.config/opencode" 2>/dev/null; then
+    echo "tjor-entrypoint: WARNING: chown of ${AGENT_HOME}/.config/opencode failed (uid-mapped mount?)" >&2
+fi
+if ! chown agent:agent "${AGENT_HOME}" 2>/dev/null; then
+    echo "tjor-entrypoint: WARNING: chown of ${AGENT_HOME} failed (uid-mapped mount?)" >&2
+fi
+if ! gosu agent test -w "${AGENT_HOME}"; then
+    echo "tjor-entrypoint: ERROR: ${AGENT_HOME} is not writable by the agent user — refusing to start." >&2
+    echo "                 Rebuild with --harness matching your host uid (tjor passes AGENT_UID automatically)." >&2
+    exit 1
+fi
 
-# 5. Drop privileges and hand over.
+# 4. Drop privileges and hand over.
 exec gosu agent env HOME="${AGENT_HOME}" USER=agent "$@"

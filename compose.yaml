@@ -18,22 +18,30 @@ networks:
     name: ${TJOR_PROJECT:-tjor}_internal
   egress: {}
 
-volumes:
-  # Per-session mitmproxy confdir: holds the session CA. Only the CERT is
-  # ever extracted for the agent; the private key never leaves this volume.
-  proxy-confdir: {}
+# The proxy confdir (session CA) is a session-dir bind mount: the launcher
+# pre-generates a CONSTRAINED CA there (basicConstraints pathlen:0 + EKU
+# serverAuth, charter L25). Only the CERT is ever mounted into the agent;
+# the private key stays in the sidecar-only directory.
 
 services:
   proxy:
     image: ${TJOR_PROXY_IMAGE:?}
     networks: [egress]
     restart: unless-stopped
+    mem_limit: ${TJOR_PROXY_MEM:-1g}
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    # Image entrypoint (as root) stats the bind-mounted confdir, aligns the
+    # mitmproxy user to its owning uid (usermod), then drops privileges.
+    cap_add: [SETUID, SETGID, CHOWN, DAC_OVERRIDE, DAC_READ_SEARCH, FOWNER]
+    environment:
+      TJOR_IP_GUARD: ${TJOR_IP_GUARD:-on}
     labels:
       tjor.role: proxy
       tjor.confighash: ${TJOR_CONFIG_HASH:-unset}
     volumes:
       - ${TJOR_SESSION_DIR:?}/policy.toml:/policy/policy.toml:ro
-      - proxy-confdir:/home/mitmproxy/.mitmproxy
+      - ${TJOR_SESSION_DIR:?}/proxy-ca:/home/mitmproxy/.mitmproxy
     command:
       [
         "mitmdump",
@@ -48,6 +56,10 @@ services:
     image: ${TJOR_COREDNS_IMAGE:?}
     networks: [egress]
     restart: unless-stopped
+    mem_limit: ${TJOR_DNS_MEM:-256m}
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    cap_add: [NET_BIND_SERVICE]   # binds :53
     labels:
       tjor.role: dns
       tjor.confighash: ${TJOR_CONFIG_HASH:-unset}
@@ -59,10 +71,19 @@ services:
     profiles: [agent]
     image: ${TJOR_AGENT_IMAGE:-tjor-agent-opencode:local}
     networks: [internal]
+    mem_limit: ${TJOR_AGENT_MEM:-4g}
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    cap_add: [SETUID, SETGID, CHOWN, DAC_OVERRIDE, FOWNER]   # entrypoint setup, then gosu drop
+    # The sidecar IPs are discovered by the launcher after network connect.
+    # The fallbacks are DELIBERATELY invalid sentinels, not usable values:
+    # an unset DNS IP makes docker refuse to create the container, and an
+    # unset proxy IP points at an unresolvable name on a closed network —
+    # a missing discovery step fails hard instead of silently downgrading.
     dns:
-      - ${TJOR_DNS_IP:-127.0.0.11}
+      - ${TJOR_DNS_IP:-unset-dns-ip}
     environment:
-      HTTP_PROXY: &proxyurl http://${TJOR_PROXY_IP:-0.0.0.0}:${TJOR_PROXY_PORT:-8080}
+      HTTP_PROXY: &proxyurl http://${TJOR_PROXY_IP:-unset-proxy-ip}:${TJOR_PROXY_PORT:-8080}
       HTTPS_PROXY: *proxyurl
       http_proxy: *proxyurl
       https_proxy: *proxyurl
@@ -84,8 +105,11 @@ services:
     profiles: [conformance]
     image: ${TJOR_CONFORMANCE_IMAGE:-tjor-conformance:local}
     networks: [internal]
+    mem_limit: ${TJOR_CONFORMANCE_MEM:-512m}
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
     dns:
-      - ${TJOR_DNS_IP:-127.0.0.11}
+      - ${TJOR_DNS_IP:-unset-dns-ip}
     environment:
       TJOR_PROXY_IP: ${TJOR_PROXY_IP:-}
       TJOR_DNS_IP: ${TJOR_DNS_IP:-}

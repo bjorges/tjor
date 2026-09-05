@@ -12,33 +12,44 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: true
 
+# Actions pinned by commit SHA (charter L23: mutable tags are not pins).
 jobs:
   unit:
     name: unit + parity + lint
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.12"
       - run: pip install pytest
-      - name: unit, corpus, and call-site parity tests
+      - name: unit, corpus, call-site parity, and addon-guard tests
         run: python -m pytest python/tests -q
       - name: shellcheck
         run: shellcheck bin/tjor images/agent/entrypoint.sh
 
   agent-image:
-    name: agent image build (checksum-gated, amd64)
+    name: agent image (${{ matrix.harness }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - harness: opencode
+            binary: opencode
+          - harness: claude
+            binary: claude
+          - harness: copilot
+            binary: copilot
     steps:
-      - uses: actions/checkout@v4
-      - name: build opencode agent image
-        run: ./bin/tjor build
-      - name: image contract — non-root user, harness present, no leaked build tokens
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: build ${{ matrix.harness }} agent image (checksum/pin-gated)
+        run: ./bin/tjor build --harness ${{ matrix.harness }}
+      - name: image contract — non-root user, harness present, cargo present
         run: |
-          docker run --rm --entrypoint bash tjor-agent-opencode:local -c '
+          docker run --rm --entrypoint bash tjor-agent-${{ matrix.harness }}:local -c '
             [ "$(su agent -c "id -u")" != "0" ] || { echo "agent is root"; exit 1; }
-            command -v opencode >/dev/null || { echo "opencode missing"; exit 1; }
+            command -v ${{ matrix.binary }} >/dev/null || { echo "${{ matrix.binary }} missing"; exit 1; }
             test -f /opt/tjor/instructions/opencode/AGENTS.md || { echo "instruction cargo missing"; exit 1; }
           '
 
@@ -46,6 +57,6 @@ jobs:
     name: conformance (live topology, Linux engine)
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: run adversarial conformance suite
         run: ./bin/tjor conformance

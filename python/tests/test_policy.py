@@ -130,9 +130,53 @@ class TestMatching:
         assert tp.remove_dot_segments("") == "/"
 
     def test_path_forms_bounded_and_unique(self):
-        forms = tp.path_forms("/%2564ocs/../x")
+        forms, complete = tp.path_forms("/%2564ocs/../x")
+        assert complete
         assert len(forms) == len(set(forms))
         assert "/x" in forms  # fully decoded and resolved form present
+
+    def test_deeply_nested_encoding_cannot_evade_block(self):
+        policy = make(BASE)
+        # 4..10 layers of %-nesting around "telemetry" — every one must be
+        # decoded to the fixpoint and caught by the any-form block rule.
+        for layers in range(4, 11):
+            enc = "%74elemetry"
+            for _ in range(layers - 1):
+                enc = enc.replace("%", "%25", 1)
+            verdict = tp.evaluate(policy, f"https://good.test/v1/{enc}/x")
+            assert not verdict.allowed and verdict.rule == "path-block", (layers, enc)
+
+    def test_excessive_encoding_fails_closed(self):
+        policy = make('mode = "default-allow"')
+        enc = "%74"
+        for _ in range(tp.MAX_DECODE_ROUNDS + 5):
+            enc = enc.replace("%", "%25", 1)
+        verdict = tp.evaluate(policy, f"https://any.test/{enc}")
+        assert not verdict.allowed and verdict.rule == "fail-closed:excessive-encoding"
+
+    def test_wildcard_matcher_semantics(self):
+        cases = [
+            ("*", "anything/at/all", True),
+            ("", "", True),
+            ("", "x", False),
+            ("a*", "a", True),
+            ("*a*b*", "xxaxxbxx", True),
+            ("*a*b*", "xxbxxaxx", False),
+            ("?", "x", True),
+            ("?", "", False),
+            ("/api/*/data/*", "/api/v1/data/x", True),
+            ("/api/*/data/*", "/api/v1/other/x", False),
+        ]
+        for pattern, text, expected in cases:
+            assert tp._wildcard_match(pattern, text) is expected, (pattern, text)
+
+    def test_wildcard_matcher_no_redos(self):
+        import time
+        pattern = "*/a/*/b/*/c/*/d/*"
+        text = "/" + "x" * 8000
+        start = time.monotonic()
+        tp._wildcard_match(pattern, text)
+        assert time.monotonic() - start < 0.5  # regex .* chains take far longer
 
     def test_bad_url_denied(self):
         policy = make(BASE)
