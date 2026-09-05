@@ -3,9 +3,9 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.4.1] — 2026-09-05 — Security fixes (external review round 5)
 
-### Fixed (external review round 5)
+### Fixed
 - **Broker revoke-on-teardown now actually fires.** `tjor down`/`gc`
   previously force-removed the proxy (SIGKILL), so mitmdump's `done()` hook —
   where credential revocation lives — never ran; auto-expiry was the *only*
