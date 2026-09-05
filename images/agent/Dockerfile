@@ -7,7 +7,7 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates curl git openssh-client jq ripgrep less procps \
+        ca-certificates curl git gh openssh-client jq ripgrep less procps \
         gosu python3 unzip \
     && rm -rf /var/lib/apt/lists/*
 

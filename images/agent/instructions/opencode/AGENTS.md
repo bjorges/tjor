@@ -15,3 +15,8 @@ Practical notes:
   to obtain or reconstruct credentials the environment does not provide.
 - Your home directory persists across container restarts; the container
   itself is disposable.
+- SSH egress does not exist here: git remotes for GitHub/GitLab are
+  rewritten to HTTPS automatically. Anonymous pulls of public repos just
+  work; for private repos or pushes, ask the user to run `gh auth login`
+  followed by `gh auth setup-git` once in this session — never attempt to
+  work around the missing SSH transport.
