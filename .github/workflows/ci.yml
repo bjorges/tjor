@@ -22,7 +22,10 @@ jobs:
       - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
         with:
           python-version: "3.14"
-      - run: pip install pytest mitmproxy
+      # mitmproxy pinned to the version the proxy image runs (config/tjor.toml
+      # images.mitmproxy) so the multidict tests exercise the real behavior,
+      # not a future release that only happens to pass here.
+      - run: pip install pytest 'mitmproxy==12.1.2'
       - name: unit, corpus, call-site parity, and addon-guard tests
         run: python -m pytest python/tests -q
       - name: shellcheck
@@ -81,6 +84,8 @@ jobs:
   lifecycle:
     name: lifecycle (live sessions, Linux engine)
     runs-on: ubuntu-latest
+    needs: [agent-image]   # don't declare lifecycle green if the image/gate job failed
+    timeout-minutes: 20    # bound orphaned docker state if the live test hangs
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - name: run session-lifecycle integration test

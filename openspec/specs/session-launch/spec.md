@@ -7,7 +7,7 @@ The launcher contract: how a session starts, where its state lives, how the work
 
 ### Requirement: Per-session state root
 
-Each session SHALL have its own state root on the host, from which the harness's state/config directories are bind-mounted, so sessions and auth survive container recreation while containers stay disposable.
+Each session SHALL have its own state root on the host, from which the harness's state/config directories are bind-mounted, so sessions and auth survive container recreation. The container itself holds no durable state — all durable state lives in the state root — so a container can be removed and recreated without loss. (Container *lifetime* is governed by "Agents launch detached and persist independently of the launching client" below: containers persist until explicit teardown rather than being auto-removed.)
 
 #### Scenario: Container recreated mid-project
 - **WHEN** a session's container is removed and relaunched with the same session
@@ -76,6 +76,8 @@ Every agent container the launcher starts SHALL carry labels identifying the ses
 ### Requirement: Agents launch detached and persist independently of the launching client
 
 The launcher SHALL start the agent container detached so it outlives the launching terminal, then attach to it (unless `--detach` is given, which returns immediately after start). A dropped or killed attach client SHALL NOT stop or remove the agent container; container removal is only via `tjor down` or `tjor gc`. Passing a one-shot command still runs it to completion and propagates its exit code.
+
+**Threat-model note (posture change).** This replaced the earlier auto-removed (`--rm`) container model. The trade-off is deliberate: reattach requires the container to survive a dropped client, which *lengthens the window* in which a compromised agent's container lingers before teardown. This is accepted because the structural boundary (internal-only network, fail-closed egress, non-root, absent host credentials) holds for the container's whole lifetime whether it is 1 minute or 1 day — persistence does not widen what the agent can reach, only how long an idle container exists. `tjor gc` reaps idle containers on a bound; `tjor ls` re-verifies each running session's boundary on demand. See ADR 0006.
 
 #### Scenario: Dropped terminal leaves a reattachable session
 - **WHEN** the client attached to a running agent is killed

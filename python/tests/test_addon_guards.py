@@ -206,6 +206,27 @@ class TestAddressGuard:
         addon._resolver = lambda host: {"2002:a00:5::1"}
         assert not addon.resolved_addresses_ok("allowed.test")[0]
 
+    def test_ipv4_compatible_embedded_private_denied(self):
+        # Deprecated ::/96 IPv4-compatible form: ::169.254.169.254, ::10.0.0.1
+        # embed an IPv4 target and must be unwrapped like the other forms.
+        addon = load_addon()
+        for raw in ("::169.254.169.254", "::10.0.0.1", "::a9fe:a9fe"):
+            addon._ip_cache.clear()
+            addon._resolver = lambda host, raw=raw: {raw}
+            assert not addon.resolved_addresses_ok("allowed.test")[0], raw
+
+    def test_ipv4_compatible_embedded_public_passes(self):
+        addon = load_addon()
+        addon._resolver = lambda host: {"::8.8.8.8"}
+        assert addon.resolved_addresses_ok("allowed.test")[0]
+
+    def test_extra_iana_reserved_ranges_denied(self):
+        addon = load_addon()  # the round-4 additions to _DENY_NETS
+        for ip in ("255.255.255.255", "2001::1", "100:0:0:1::1"):
+            addon._ip_cache.clear()
+            addon._resolver = lambda host, ip=ip: {ip}
+            assert not addon.resolved_addresses_ok("allowed.test")[0], ip
+
     def test_teredo_embedded_private_client_denied(self):
         # 2001::/32: last 32 bits are the bit-inverted client IPv4;
         # f5ff:fffa un-obfuscates to 10.0.0.5.

@@ -79,6 +79,8 @@ check "distinct internal networks" \
     docker network inspect "tjor-${SID_A}_internal" "tjor-${SID_B}_internal"
 check "distinct state roots" bash -c \
     "test -d '${HOME}/.tjor/sessions/${SID_A}/home' && test -d '${HOME}/.tjor/sessions/${SID_B}/home'"
+check "relaunching a running session id is refused (collision guard)" bash -c \
+    "cd '${REPO}' && ! '${T}' run --detach --session a sleep 60 >/dev/null 2>&1"
 
 # ---- 1.2 ls + degradation ------------------------------------------------------
 "${T}" ls > "${SCRATCH}/ls.out" 2>/dev/null
@@ -150,6 +152,25 @@ check "reset removed the planted symlink itself" bash -c \
     "! test -e '${SDIR}/home/.cache' && ! test -L '${SDIR}/home/.cache'"
 check "symlink escape failed: outside canary survived" test -f "${OUTSIDE}/canary"
 
+# INTERMEDIATE-symlink escape on a NESTED tier: swap home/.local/share/opencode
+# (an ancestor of the sessions/creds targets) for a symlink pointing outside
+# the session, where the escape target has REAL content the wipe would hit.
+# reset must REFUSE — rm -rf follows symlinks in a path prefix.
+mkdir -p "${OUTSIDE}/storage"
+echo escape-victim > "${OUTSIDE}/storage/victim"
+rm -rf "${SDIR}/home/.local/share/opencode"
+ln -s "${OUTSIDE}" "${SDIR}/home/.local/share/opencode"
+"${T}" reset sessions --session a > "${SCRATCH}/reset-nested.out" 2>&1
+check "reset refuses a tier with an intermediate symlink ancestor" \
+    grep -qi "REFUSING" "${SCRATCH}/reset-nested.out"
+check "intermediate-symlink escape failed: outside victim survived" test -f "${OUTSIDE}/storage/victim"
+rm -f "${SDIR}/home/.local/share/opencode"   # remove the planted link
+rm -rf "${OUTSIDE}/storage"
+mkdir -p "${SDIR}/home/.local/share/opencode/storage" "${SDIR}/home/.config/gh"
+echo x > "${SDIR}/home/.local/state/s1"
+echo x > "${SDIR}/home/.local/share/opencode/storage/h1"
+echo x > "${SDIR}/home/.local/share/opencode/auth.json"
+
 "${T}" reset sessions --session a >/dev/null 2>&1
 check "reset sessions wiped history, kept auth" bash -c \
     "! test -e '${SDIR}/home/.local/share/opencode/storage/h1' && test -f '${SDIR}/home/.local/share/opencode/auth.json'"
@@ -158,6 +179,7 @@ check "reset creds wiped auth and CA" bash -c \
     "! test -e '${SDIR}/home/.local/share/opencode/auth.json' && ! test -e '${SDIR}/proxy-ca'"
 "${T}" reset all --session a >/dev/null 2>&1
 check "reset all removed the state dir" bash -c "! test -d '${SDIR}'"
+
 
 echo
 echo "lifecycle: ${PASS} passed, ${FAIL} failed"

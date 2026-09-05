@@ -2,9 +2,9 @@
 
 > *tjor* (Norwegian, nynorsk): **tether** — the rope that lets an animal graze freely, but only within a safe radius.
 
-tjor runs AI coding agents (Claude Code, opencode, GitHub Copilot CLI) inside a portable, fail-closed container cage with per-session state and identity. The agent works at full speed inside the boundary — and the boundary, not the prompt, is the policy. Per-session identity metadata (D1) is shipped; a credential broker and session lifecycle UX are the next deltas on the roadmap (below).
+tjor runs AI coding agents (Claude Code, opencode, GitHub Copilot CLI) inside a portable, fail-closed container cage with per-session state, identity, and lifecycle. The agent works at full speed inside the boundary — and the boundary, not the prompt, is the policy. Per-session identity metadata (D1) and the session lifecycle UX (D3 — `ls`/`attach`/`gc`/`reset`, named and detached sessions) are shipped; a credential broker (D2) and an optional LLM gateway (D4) are the remaining deltas on the roadmap (below).
 
-**Status: pre-alpha, working skeleton.** The cage core runs: fail-closed egress with an adversarial conformance suite (10/10 probes green), opencode doing real work inside. Specs live in [`openspec/`](openspec/), decisions in [`docs/decisions/`](docs/decisions/).
+**Status: pre-alpha, working skeleton.** The cage core runs: fail-closed egress with an adversarial conformance suite (15/15 probes green), opencode doing real work inside. Specs live in [`openspec/`](openspec/), decisions in [`docs/decisions/`](docs/decisions/).
 
 ## Quickstart
 
@@ -20,8 +20,11 @@ $ /path/to/tjor/bin/tjor run     # caged opencode session in this repo
 ```
 
 Sessions are per-repo: state (harness auth, history) persists under
-`~/.tjor/sessions/<session>/` across container restarts; the containers stay
-disposable. `tjor run --harness claude` / `--harness copilot` select other
+`~/.tjor/sessions/<session>/` across container restarts, while the container
+holds no durable state (all of it lives in the state root). Containers are
+persistent — they survive a dropped terminal so you can reattach — and are
+removed by `tjor down` or `tjor gc`, not automatically (see ADR 0006).
+`tjor run --harness claude` / `--harness copilot` select other
 harnesses (images build on first use). `tjor policy <url>` previews an
 egress verdict; `tjor down` removes a repo's topology.
 
@@ -56,14 +59,14 @@ A compose-based container cage reproducing production-validated decisions:
 - **Dual-homed egress proxy** (explicit mode) with a fail-closed host/path allowlist and a DNS sidecar with zone-scoped forwarding.
 - **Non-root agent user; writable repo mounts; per-session state roots** — a profile proven to sustain real daily work, hardened in tested increments.
 - **Tiered guarantees**: a core that works on any Docker runtime, plus loud-when-absent hardening add-ons (e.g. AppArmor on runtimes that support it).
-- **Session identity (D1)**: every session carries a frozen identity (`TJOR_SESSION_ID`, `--task` id, harness, repo, worktree) as environment inside the cage and as the vendor-neutral `x-agent-*` schema on the wire (host filesystem paths are trimmed to their basename on the wire) — the proxy strips forged or unknown identity headers toward every host (a session structurally cannot impersonate another) and injects the identity set only toward hosts you list in `identity.inject_hosts` (e.g. your LLM endpoints).
+- **Session identity (D1, shipped)**: every session carries a frozen identity (`TJOR_SESSION_ID`, `--task` id, harness, repo, worktree) as environment inside the cage and as the vendor-neutral `x-agent-*` schema on the wire (host filesystem paths are trimmed to their basename on the wire) — the proxy strips forged or unknown identity headers toward every host (a session structurally cannot impersonate another) and injects the identity set only toward hosts you list in `identity.inject_hosts` (e.g. your LLM endpoints).
+- **Session lifecycle (D3, shipped)**: `ls` (with live boundary re-check), `attach`, `gc`, tiered `reset`, and concurrent named/detached sessions per repo — see the Quickstart above.
 
-Plus the remaining roadmap deltas — **specced and tracked in issues #2–#4, not yet built**:
+Remaining roadmap deltas — **specced and tracked in issues #2 and #4, not yet built**:
 
 | Delta | Design target |
 |---|---|
 | **D2 — Credential broker** | Short-TTL, per-session credentials; target: opaque call-bound handles exchanged at the proxy boundary — the sandbox can *use* credentials, never *possess* them. |
-| **D3 — Session lifecycle** | Deterministic naming, labels, attach picker, GC of containers and expired credentials (today: per-repo sessions with persistent state, no GC/attach UX). |
 | **D4 — LLM gateway (optional)** | LiteLLM sidecar on the egress network; backend-agnostic. |
 
 See [`docs/clean-room-charter.md`](docs/clean-room-charter.md) for the operational lessons this build is grounded in, and the provenance rules it is built under.

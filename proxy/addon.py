@@ -100,26 +100,35 @@ _DENY_NETS = [
         "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.0.2.0/24",
         "192.88.99.0/24", "192.168.0.0/16", "198.18.0.0/15",
         "198.51.100.0/24", "203.0.113.0/24", "224.0.0.0/4", "240.0.0.0/4",
-        "::/128", "::1/128", "64:ff9b:1::/48", "100::/64", "2001:2::/48",
-        "2001:10::/28", "2001:20::/28", "2001:db8::/32", "3fff::/20",
-        "5f00::/16", "fc00::/7", "fe80::/10", "ff00::/8",
+        "255.255.255.255/32",
+        "::/128", "::1/128", "64:ff9b:1::/48", "100::/64", "100:0:0:1::/64",
+        "2001::/23", "2001:2::/48", "2001:10::/28", "2001:20::/28",
+        "2001:db8::/32", "3fff::/20", "5f00::/16", "fc00::/7", "fe80::/10",
+        "ff00::/8",
     )
 ]
 
 # The NAT64 well-known prefix (RFC 6052): the low 32 bits are a translated
 # IPv4 address, so it must be unwrapped and judged, not denied wholesale.
 _NAT64_NET = ipaddress.ip_network("64:ff9b::/96")
+# The deprecated IPv4-compatible prefix (::/96): also embeds an IPv4 address
+# in its low 32 bits. Modern kernels no longer route it, but a fix that
+# claims to close the transition-embedding CLASS must unwrap it too.
+_V4COMPAT_NET = ipaddress.ip_network("::/96")
 
 
 def _embedded_ipv4(addr: ipaddress.IPv6Address) -> list[ipaddress.IPv4Address]:
     """Every IPv4 address embedded in an IPv6 transition-mechanism form.
     An IPv6 route to a translator is an IPv4 reach: judging only the outer
     v6 form lets e.g. 64:ff9b::10.0.0.5 encode a private target straight
-    past a v4-only denylist (the NAT64/6to4/Teredo family of SSRF bypasses)."""
+    past a v4-only denylist (the NAT64/6to4/Teredo/v4-compatible family of
+    SSRF bypasses)."""
     embedded: list[ipaddress.IPv4Address] = []
     if addr.ipv4_mapped is not None:
         embedded.append(addr.ipv4_mapped)
     if addr in _NAT64_NET:
+        embedded.append(ipaddress.IPv4Address(int(addr) & 0xFFFF_FFFF))
+    if addr in _V4COMPAT_NET and int(addr) & 0xFFFF_FFFF:  # skip ::/:: (all-zero) and ::1 (caught as-is)
         embedded.append(ipaddress.IPv4Address(int(addr) & 0xFFFF_FFFF))
     if addr.sixtofour is not None:  # 2002::/16
         embedded.append(addr.sixtofour)

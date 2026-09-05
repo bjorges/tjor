@@ -354,6 +354,14 @@ cmd_run() {
     done
     session_setup "${harness}" "${task}" "${name}"
     docker image inspect "${TJOR_AGENT_IMAGE}" >/dev/null 2>&1 || build_agent "${harness}"
+    # Collision guard: a session id already backing a running agent must not
+    # be launched again — a second unnamed `tjor run` in the same workspace
+    # would otherwise share this one's CA/network/identity, and a later
+    # `tjor down`/`gc` would tear down both at once. Refuse with a clear path
+    # forward (attach, or name the second session).
+    if docker ps -q --filter "label=tjor.role=agent" --filter "label=tjor.session=${TJOR_SESSION}" --filter status=running | grep -q .; then
+        die "session ${TJOR_SESSION} is already running — reattach with 'tjor attach ${TJOR_SESSION}', or start a separate one with --session <name>"
+    fi
     ensure_topology
     echo "tjor: session ${TJOR_SESSION} — workspace ${TJOR_WORKSPACE}" >&2
     local -a agent_cmd=()
@@ -427,7 +435,9 @@ cmd_ls() {
     local now
     now="$(date +%s)"
     declare -A total agents_running any_running ws task launched
-    while IFS=$'|' read -r state sid wsp tsk lat role; do
+    # Field-separate on US (\x1f), not '|': a workspace path can contain a
+    # literal pipe, which would misparse and mislabel a running session.
+    while IFS=$'\x1f' read -r state sid wsp tsk lat role; do
         [[ -n "${sid}" ]] || continue
         total[${sid}]=$((${total[${sid}]:-0} + 1))
         [[ "${state}" == "running" && "${role}" == "agent" ]] && agents_running[${sid}]=$((${agents_running[${sid}]:-0} + 1))
@@ -436,7 +446,7 @@ cmd_ls() {
         [[ -n "${tsk}" ]] && task[${sid}]="${tsk}"
         [[ -n "${lat}" ]] && launched[${sid}]="${lat}"
     done < <(docker ps -a --filter label=tjor.session \
-        --format '{{.State}}|{{.Label "tjor.session"}}|{{.Label "tjor.workspace"}}|{{.Label "tjor.task"}}|{{.Label "tjor.launched-at"}}|{{.Label "tjor.role"}}')
+        --format $'{{.State}}\x1f{{.Label "tjor.session"}}\x1f{{.Label "tjor.workspace"}}\x1f{{.Label "tjor.task"}}\x1f{{.Label "tjor.launched-at"}}\x1f{{.Label "tjor.role"}}')
     if ((${#total[@]} == 0)); then
         echo "tjor: no sessions" >&2
         return 0
@@ -516,7 +526,7 @@ cmd_gc() {
     # back to launch time for sidecar-only sessions.
     declare -A has_running last_activity
     local id sid state role lat t
-    while IFS=$'|' read -r id sid state role lat; do
+    while IFS=$'\x1f' read -r id sid state role lat; do
         [[ -n "${sid}" ]] || continue
         [[ "${state}" == "running" && "${role}" == "agent" ]] && has_running[${sid}]=1
         t=0
@@ -526,7 +536,7 @@ cmd_gc() {
         [[ "${t}" == 0 && -n "${lat}" ]] && t="${lat}"
         ((t > ${last_activity[${sid}]:-0})) && last_activity[${sid}]="${t}"
     done < <(docker ps -a --filter label=tjor.session \
-        --format '{{.ID}}|{{.Label "tjor.session"}}|{{.State}}|{{.Label "tjor.role"}}|{{.Label "tjor.launched-at"}}')
+        --format $'{{.ID}}\x1f{{.Label "tjor.session"}}\x1f{{.State}}\x1f{{.Label "tjor.role"}}\x1f{{.Label "tjor.launched-at"}}')
 
     local reaped=0
     for sid in "${!last_activity[@]}"; do
@@ -593,18 +603,45 @@ cmd_reset() {
     local p found=""
     for p in "${paths[@]}"; do
         [[ -e "${p}" || -L "${p}" ]] || continue
+        # charter L26: rm removes a *leaf* symlink safely, but it FOLLOWS a
+        # symlink anywhere in the path PREFIX — so an agent that swaps an
+        # intermediate dir (e.g. home/.local/share/opencode) for a symlink
+        # could redirect the wipe outside the session. Refuse unless every
+        # ancestor of the target is a real directory under the session root.
+        if ! ancestors_are_real_dirs "${TJOR_SESSION_DIR}" "${p}"; then
+            loud "reset: REFUSING ${p} — a symlink in its path could redirect deletion outside the session (charter L26)"
+            continue
+        fi
         found=1
         if [[ -n "${dry}" ]]; then
             echo "tjor reset: would delete ${p}"
         else
-            # rm removes a symlink itself rather than following it, so an
-            # agent-planted link inside a tier cannot redirect the wipe
-            # outside the session root (charter L26; integration-tested).
             rm -rf "${p}"
             echo "tjor reset: deleted ${p}" >&2
         fi
     done
     [[ -n "${found}" ]] || echo "tjor reset: nothing to delete for tier '${tier}'" >&2
+}
+
+# Every ancestor of <target>, from <root> down to target's parent, must be a
+# real directory (not a symlink, not a non-dir). The leaf itself may be a
+# symlink — rm removes the link, not its target. Returns non-zero on any
+# violation, including target not being under root.
+ancestors_are_real_dirs() { # $1 root, $2 target
+    local root="$1" target="$2" parent rel cur comp
+    [[ "${target}" == "${root}/"* ]] || { [[ "${target}" == "${root}" ]] && return 0 || return 1; }
+    parent="$(dirname "${target}")"
+    [[ -L "${root}" ]] && return 1
+    rel="${parent#"${root}"}"; rel="${rel#/}"
+    cur="${root}"
+    local IFS='/'
+    for comp in ${rel}; do
+        [[ -z "${comp}" ]] && continue
+        cur="${cur}/${comp}"
+        [[ -L "${cur}" ]] && return 1
+        [[ -e "${cur}" && ! -d "${cur}" ]] && return 1
+    done
+    return 0
 }
 
 cmd_policy() {
