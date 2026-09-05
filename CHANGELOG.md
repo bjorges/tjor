@@ -3,6 +3,36 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [0.9.1] — 2026-09-05 — Security hardening (trust-review + read-only commands)
+
+### Security
+- **Terminal-escape injection in `tjor trust` (critical).** The trust review
+  piped the untrusted `.tjor` file to the terminal raw, so a hostile config
+  could embed ANSI/OSC/bidi escapes to hide or spoof what the operator reviews —
+  approving bytes other than what they saw, defeating the content-hash gate. A
+  new `tjor_safeprint` renders every C0/C1 control, DEL, and Unicode
+  format/bidi code point as a visible token; wired into the trust review **and**
+  the denial-log display (a denied hostname is attacker-influenced too), and the
+  proxy sanitizes the host as it writes the denial log.
+- **Read-only commands no longer mint credentials.** `status`/`down`/`reset`/
+  `denials` ran the full launch path just to resolve a session path — so under a
+  kube broker source (v0.7.0), `tjor denials` minted a live ServiceAccount token
+  and `down` minted one while tearing down. `session_setup` is split into
+  `resolve_session` (no side effects) + `session_setup` (resolve + broker); the
+  read-only and teardown commands use the former.
+
+### Changed
+- `tjor trust` is a genuine two-step gate: `--show` reviews only; approval needs
+  interactive confirmation or `--yes`. `tjor policy add` re-approving a *trusted
+  repo* policy is now confirmed (or `--yes`), not silent — an agent's suggested
+  `policy add` can't quietly re-bless a repo file.
+- `tjor policy add` verifies the host actually reached the effective allow-list
+  (a regex insert into a preceding multi-line string is valid TOML but a silent
+  no-op — now refused loudly); `tjor trust` approve writes the store `0o600`
+  atomically (was a write-then-chmod TOCTOU); the denial log is capped per
+  session; `--dir` sensitive-path refusal now also covers
+  `~/.local/share/keyrings` and `~/.password-store`.
+
 ## [0.9.0] — 2026-09-05 — Agent profiles (opt-in, credential-safe)
 
 ### Added
