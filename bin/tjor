@@ -35,6 +35,7 @@ preflight() {
     elif command -v docker-compose >/dev/null 2>&1; then COMPOSE=(docker-compose)
     else missing+=("docker compose v2 (plugin or docker-compose binary) — brew install docker-compose"); fi
     command -v shasum >/dev/null || command -v sha256sum >/dev/null || missing+=("shasum or sha256sum")
+    command -v openssl >/dev/null || missing+=("openssl — required to generate the constrained (pathlen:0) session CA")
     if ((${#missing[@]})); then
         echo "tjor: missing host dependencies:" >&2
         printf '  - %s\n' "${missing[@]}" >&2
@@ -251,6 +252,7 @@ ensure_session_ca() {
     # its confdir; only the certificate is ever handed to the agent.
     local cadir="${TJOR_SESSION_DIR}/proxy-ca"
     mkdir -p "${cadir}"
+    chmod 700 "${cadir}"
     [[ -s "${cadir}/mitmproxy-ca.pem" ]] && return 0
     if command -v openssl >/dev/null 2>&1; then
         openssl req -x509 -newkey rsa:2048 -nodes -days 365 \
@@ -393,7 +395,8 @@ cmd_conformance() {
     # containers, networks, or the temp session dir.
     trap 'compose down --volumes --remove-orphans >/dev/null 2>&1 || true;
           docker network rm "${TJOR_PROJECT}_internal" >/dev/null 2>&1 || true;
-          rm -rf "${TJOR_SESSION_DIR}"' EXIT INT TERM
+          rm -rf "${TJOR_SESSION_DIR}"' EXIT
+    trap 'exit 130' INT TERM   # make Ctrl-C exit promptly; EXIT trap cleans up
     # The identity probes talk to an echo fixture on a container-network
     # (non-global) address; the rebind guard would rightly deny that, so it
     # is off HERE ONLY. The guard itself is covered by unit tests.

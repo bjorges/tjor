@@ -152,6 +152,38 @@ def p_admin_surfaces():
     assert not open_ports, f"admin/management ports reachable from agent network: {open_ports}"
 
 
+@probe("raw TCP passthrough is disabled (tunnels cannot smuggle non-HTTP bytes)")
+def p_rawtcp_disabled():
+    # Open a legitimate CONNECT tunnel to the echo fixture, then speak
+    # something that is neither TLS nor HTTP. With mitmproxy's rawtcp
+    # default (true!) these bytes would be relayed verbatim and the echo
+    # HTTP server would answer with its distinctive BaseHTTP 400. The cage
+    # must never relay them (rawtcp=false).
+    with socket.create_connection((PROXY_IP, PROXY_PORT), timeout=10) as sock:
+        sock.sendall(
+            b"CONNECT echo-noinject.tjor-test:8080 HTTP/1.1\r\n"
+            b"Host: echo-noinject.tjor-test:8080\r\n\r\n"
+        )
+        reader = sock.makefile("rb")
+        status = reader.readline()
+        assert b" 200" in status, f"CONNECT to allowed host failed: {status!r}"
+        while reader.readline() not in (b"\r\n", b""):
+            pass
+        # Not TLS (first byte != 0x16), not HTTP (non-ASCII method), but
+        # newline-terminated so a relayed-to HTTP server WOULD answer.
+        sock.sendall(b"\x00\x01\x02\x03 not-tls-not-http\r\n\r\n")
+        sock.settimeout(6)
+        received = b""
+        try:
+            while chunk := sock.recv(4096):
+                received += chunk
+        except (TimeoutError, OSError):
+            pass
+    assert b"BaseHTTP" not in received, (
+        f"raw bytes were RELAYED to the upstream (rawtcp passthrough active): {received[:80]!r}"
+    )
+
+
 @probe("identity: forged x-agent-* headers are stripped before egress")
 def p_zid_forged_stripped():
     arrived = echo_headers(

@@ -39,16 +39,29 @@ def deep_merge(base: dict, override: dict) -> dict:
     return out
 
 
+class ConfigError(SystemExit):
+    """Broken configuration is a hard, *clearly reported* error — never a
+    silent skip (that could weaken policy) and never a raw traceback."""
+
+    def __init__(self, message: str):
+        super().__init__(f"tjor_cfg: ERROR: {message}")
+
+
 def _load(path: Path) -> dict:
-    with open(path, "rb") as fh:
-        return tomllib.load(fh)
+    try:
+        with open(path, "rb") as fh:
+            return tomllib.load(fh)
+    except tomllib.TOMLDecodeError as exc:
+        raise ConfigError(f"{path}: invalid TOML: {exc}")
+    except OSError as exc:
+        raise ConfigError(f"{path}: unreadable: {exc}")
 
 
 def effective() -> dict:
     config = _load(DEFAULTS)  # defaults must exist; failure here is a broken install
     user = user_config_path()
     if user.is_file():
-        config = deep_merge(config, _load(user))  # a broken user config is a hard error, not a silent skip
+        config = deep_merge(config, _load(user))
     return config
 
 

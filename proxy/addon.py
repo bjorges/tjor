@@ -80,9 +80,36 @@ def decide_connect(host: str) -> tjor_policy.Verdict:
 # --------------------------------------------------- resolved-address guard
 
 _IP_GUARD = os.environ.get("TJOR_IP_GUARD", "on").lower() not in ("off", "0", "false")
-_IP_TTL_SECONDS = 30.0
+_IP_TTL_SECONDS = 10.0  # trust window per host; re-resolution TOCTOU is bounded by this
 _IP_CACHE_MAX = 1024
 _ip_cache: dict[str, tuple[float, bool, str]] = {}
+
+# Explicit non-public ranges rather than trusting ipaddress.is_global alone:
+# its CGNAT/mapped-address handling varies by Python version, and the guard
+# must not depend on which interpreter the proxy base image happens to bundle.
+_DENY_NETS = [
+    ipaddress.ip_network(n)
+    for n in (
+        "0.0.0.0/8", "10.0.0.0/8", "100.64.0.0/10", "127.0.0.0/8",
+        "169.254.0.0/16", "172.16.0.0/12", "192.0.0.0/24", "192.168.0.0/16",
+        "198.18.0.0/15", "224.0.0.0/4", "240.0.0.0/4",
+        "::/128", "::1/128", "fc00::/7", "fe80::/10", "ff00::/8",
+    )
+]
+
+
+def _address_public(raw: str) -> tuple[bool, str]:
+    """Version-independent publicness check for one address literal.
+    IPv4-mapped IPv6 is unwrapped and judged as its embedded IPv4 form."""
+    try:
+        addr = ipaddress.ip_address(raw.split("%")[0])  # strip any zone id
+    except ValueError:
+        return False, f"unparseable address {raw!r}"
+    if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
+        addr = addr.ipv4_mapped
+    if any(addr in net for net in _DENY_NETS) or not addr.is_global:
+        return False, f"non-global address {addr}"
+    return True, ""
 
 
 def _system_resolver(host: str) -> set[str]:
@@ -93,7 +120,7 @@ _resolver = _system_resolver  # injectable for tests
 
 
 def resolved_addresses_ok(host: str) -> tuple[bool, str]:
-    """True unless the host resolves to any non-global address."""
+    """True unless the host resolves to any non-public address."""
     host = tjor_policy._canon_host(host)
     now = time.monotonic()
     hit = _ip_cache.get(host)
@@ -101,7 +128,8 @@ def resolved_addresses_ok(host: str) -> tuple[bool, str]:
         return hit[1], hit[2]
 
     try:
-        addresses = {str(ipaddress.ip_address(host))}
+        ipaddress.ip_address(host.split("%")[0])
+        addresses = {host}  # IP literal (possibly zone-suffixed): judge directly
     except ValueError:
         try:
             addresses = _resolver(host)
@@ -110,13 +138,8 @@ def resolved_addresses_ok(host: str) -> tuple[bool, str]:
 
     ok, why = True, ""
     for raw in addresses:
-        try:
-            addr = ipaddress.ip_address(raw.split("%")[0])
-        except ValueError:
-            ok, why = False, f"unparseable address {raw!r}"
-            break
-        if not addr.is_global:
-            ok, why = False, f"non-global address {addr}"
+        ok, why = _address_public(raw)
+        if not ok:
             break
 
     if len(_ip_cache) >= _IP_CACHE_MAX:

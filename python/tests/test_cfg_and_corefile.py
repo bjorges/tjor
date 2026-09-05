@@ -35,6 +35,16 @@ class TestConfigMerge:
     def test_get_missing_returns_default(self):
         assert tjor_cfg.get({}, "no.such.key", "fallback") == "fallback"
 
+    def test_broken_user_config_is_a_clean_hard_error(self, tmp_path, monkeypatch):
+        import pytest
+
+        user = tmp_path / "config.toml"
+        user.write_text("[proxy\nbroken")
+        monkeypatch.setenv("TJOR_USER_CONFIG", str(user))
+        with pytest.raises(SystemExit) as exc:
+            tjor_cfg.effective()
+        assert "invalid TOML" in str(exc.value)
+
 
 class TestCorefile:
     def test_zones_derived_from_allow_list(self):

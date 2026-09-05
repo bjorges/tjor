@@ -52,6 +52,23 @@ jobs:
             command -v ${{ matrix.binary }} >/dev/null || { echo "${{ matrix.binary }} missing"; exit 1; }
             test -f /opt/tjor/instructions/opencode/AGENTS.md || { echo "instruction cargo missing"; exit 1; }
           '
+      - name: checksum gate must reject a tampered artifact (negative path)
+        if: matrix.harness == 'opencode'
+        run: |
+          cfg() { python3 python/tjor_cfg.py get "$1"; }
+          if docker build -f images/agent/Dockerfile \
+              --build-arg BASE_IMAGE="$(cfg images.debian)" \
+              --build-arg HARNESS=opencode \
+              --build-arg OPENCODE_VERSION="$(cfg versions.opencode)" \
+              --build-arg OPENCODE_SHA256_ARM64=deadbeef \
+              --build-arg OPENCODE_SHA256_X64=deadbeef \
+              --build-arg GH_VERSION="$(cfg versions.gh)" \
+              --build-arg GH_SHA256_ARM64="$(cfg versions.sha256.gh_linux_arm64)" \
+              --build-arg GH_SHA256_AMD64="$(cfg versions.sha256.gh_linux_amd64)" \
+              -t tjor-agent-tampered:ci . >/dev/null 2>&1; then
+            echo "FATAL: a tampered checksum still built — the gate is defanged"; exit 1
+          fi
+          echo "checksum gate held against tampered artifact"
 
   conformance:
     name: conformance (live topology, Linux engine)

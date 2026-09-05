@@ -111,6 +111,25 @@ class TestAddressGuard:
             ok, why = addon.resolved_addresses_ok("allowed.test")
             assert not ok, ip
 
+    def test_ipv4_mapped_ipv6_unwrapped(self):
+        addon = load_addon()
+        for raw in ("::ffff:169.254.169.254", "::ffff:10.0.0.5", "::ffff:100.64.0.1"):
+            addon._ip_cache.clear()
+            addon._resolver = lambda host, raw=raw: {raw}
+            ok, why = addon.resolved_addresses_ok("allowed.test")
+            assert not ok, raw
+
+    def test_cgnat_denied_regardless_of_is_global(self):
+        addon = load_addon()
+        addon._resolver = lambda host: {"100.64.0.1"}
+        assert not addon.resolved_addresses_ok("allowed.test")[0]
+
+    def test_zone_suffixed_literal_denied(self):
+        addon = load_addon()
+        addon._resolver = lambda host: (_ for _ in ()).throw(AssertionError("must not resolve literals"))
+        ok, _ = addon.resolved_addresses_ok("fe80::1%eth0")
+        assert not ok
+
     def test_ip_literal_checked_directly(self):
         addon = load_addon()
         addon._resolver = lambda host: (_ for _ in ()).throw(AssertionError("must not resolve literals"))

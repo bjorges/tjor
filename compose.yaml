@@ -31,9 +31,9 @@ services:
     mem_limit: ${TJOR_PROXY_MEM:-1g}
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
-    # Image entrypoint (as root) stats the bind-mounted confdir, aligns the
-    # mitmproxy user to its owning uid (usermod), then drops privileges.
-    cap_add: [SETUID, SETGID, CHOWN, DAC_OVERRIDE, DAC_READ_SEARCH, FOWNER]
+    # tjor's own entrypoint (as root) stats the bind-mounted confdir, aligns
+    # the mitmproxy user's uid (usermod), then drops privileges via gosu.
+    cap_add: [SETUID, SETGID, CHOWN, DAC_READ_SEARCH]
     environment:
       TJOR_IP_GUARD: ${TJOR_IP_GUARD:-on}
       # Session identity registration (D1): the proxy verifies outbound
@@ -52,6 +52,11 @@ services:
     volumes:
       - ${TJOR_SESSION_DIR:?}/policy.toml:/policy/policy.toml:ro
       - ${TJOR_SESSION_DIR:?}/proxy-ca:/home/mitmproxy/.mitmproxy
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; socket.create_connection(('127.0.0.1', ${TJOR_PROXY_PORT:-8080}), 3).close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     command:
       [
         "mitmdump",
@@ -60,6 +65,11 @@ services:
         "--listen-port", "${TJOR_PROXY_PORT:-8080}",
         "-s", "/addon/addon.py",
         "--set", "stream_large_bodies=1m",
+        # rawtcp DEFAULTS TO TRUE in mitmproxy: without this, a non-TLS/non-
+        # HTTP byte stream through a CONNECT tunnel is relayed raw, bypassing
+        # request-stage policy (found by external re-review; conformance
+        # probes this now).
+        "--set", "rawtcp=false",
       ]
 
   dns:
@@ -84,12 +94,13 @@ services:
     mem_limit: ${TJOR_AGENT_MEM:-4g}
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
-    cap_add: [SETUID, SETGID, CHOWN, DAC_OVERRIDE, FOWNER]   # entrypoint setup, then gosu drop
+    cap_add: [SETUID, SETGID, CHOWN, DAC_OVERRIDE]   # entrypoint setup (writes into agent-owned home), then gosu drop
     # The sidecar IPs are discovered by the launcher after network connect.
     # The fallbacks are DELIBERATELY invalid sentinels, not usable values:
-    # an unset DNS IP makes docker refuse to create the container, and an
-    # unset proxy IP points at an unresolvable name on a closed network —
-    # a missing discovery step fails hard instead of silently downgrading.
+    # docker rejects a non-IP dns value at CREATE time (verified: 'invalid
+    # argument "unset-dns-ip" for "--dns" flag'), and the unset proxy
+    # sentinel points at an unresolvable name on a closed network — a
+    # missing discovery step fails hard instead of silently downgrading.
     dns:
       - ${TJOR_DNS_IP:-unset-dns-ip}
     environment:

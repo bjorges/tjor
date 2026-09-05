@@ -46,8 +46,13 @@ def desymlink(path: pathlib.Path) -> None:
 
 
 def safe_write_target(path: pathlib.Path) -> pathlib.Path:
-    if path.is_symlink():
-        path.unlink()
+    # Remove symlinks AND any non-regular-file obstruction (FIFO, socket,
+    # directory) an earlier session may have planted where we write.
+    if path.is_symlink() or (path.exists() and not path.is_file()):
+        if path.is_dir() and not path.is_symlink():
+            shutil.rmtree(path)
+        else:
+            path.unlink()
     return path
 
 
