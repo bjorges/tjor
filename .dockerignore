@@ -4,6 +4,7 @@
 *
 !python/tjor_policy.py
 !proxy/addon.py
+!proxy/entrypoint.sh
 !images/agent/entrypoint.sh
 !images/agent/instructions
 !images/conformance/probes.py
