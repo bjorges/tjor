@@ -101,6 +101,9 @@ build_agent() { # $1 = harness list (comma separated)
         --build-arg GH_VERSION="$(cfg versions.gh)" \
         --build-arg GH_SHA256_ARM64="$(cfg versions.sha256.gh_linux_arm64)" \
         --build-arg GH_SHA256_AMD64="$(cfg versions.sha256.gh_linux_amd64)" \
+        --build-arg KUBECTL_VERSION="$(cfg versions.kubectl)" \
+        --build-arg KUBECTL_SHA256_ARM64="$(cfg versions.sha256.kubectl_linux_arm64)" \
+        --build-arg KUBECTL_SHA256_AMD64="$(cfg versions.sha256.kubectl_linux_amd64)" \
         -t "tjor-agent-${harness//,/-}:local" "${TJOR_ROOT}"
 }
 
@@ -313,13 +316,23 @@ with os.fdopen(fd, "w") as fh:
 PY
 }
 
+# Kube broker (#26): the current kubeconfig context's API server URL, or fail.
+# Delegates all cluster-auth complexity (exec plugins, client certs, OIDC) to
+# the user's working kubectl — we only read the resolved server address.
+kube_server_url() {
+    local server
+    server="$(kubectl config view --minify -o 'jsonpath={.clusters[0].cluster.server}' 2>/dev/null)" || return 1
+    [[ -n "${server}" ]] || return 1
+    printf '%s' "${server}"
+}
+
 prepare_broker() {
     # Credential broker (D2): assemble the broker config into the SESSION DIR
     # (mounted only into the proxy sidecar, egress side), resolving secrets
     # host-side so nothing sensitive is ever passed to the agent. Sets
     # TJOR_BROKER_* for compose. Fail-closed: any problem disables injection
     # loudly rather than silently downgrading to a long-lived token.
-    export TJOR_BROKER_CONFIG_MOUNT="" TJOR_BROKER_HOSTS="" TJOR_BROKER_ENABLED="" TJOR_BROKER_DIR=""
+    export TJOR_BROKER_CONFIG_MOUNT="" TJOR_BROKER_HOSTS="" TJOR_BROKER_ENABLED="" TJOR_BROKER_DIR="" TJOR_KUBE_SERVER=""
     local source; source="$(cfg broker.source --default '')"
     [[ -n "${source}" ]] || return 0
     local dir="${TJOR_SESSION_DIR}/broker"
@@ -342,6 +355,37 @@ prepare_broker() {
                 || { warn "broker source=github-app needs app_id, installation_id, and a readable private_key_path — broker disabled"; return 0; }
             local repos; repos="$(cfg broker.repositories --default '[]')"
             write_broker_json "${dir}/broker.json" github-app "${app}" "${inst}" "${keypath}" "${repos}" ;;
+        kube)
+            # Mint a short-TTL SA token host-side (kubectl does the cluster
+            # auth), inject it like a pat toward the API server host ONLY. The
+            # agent gets a placeholder kubeconfig; the real token stays in the
+            # proxy. RBAC on the SA is the cluster-enforced action policy.
+            command -v kubectl >/dev/null 2>&1 \
+                || { warn "broker source=kube needs kubectl on the host — broker disabled"; return 0; }
+            local sa ns ttl server api
+            sa="$(cfg broker.kube_sa --default '')"
+            ns="$(cfg broker.kube_namespace --default default)"
+            ttl="$(cfg broker.kube_duration --default 1h)"
+            [[ -n "${sa}" ]] \
+                || { warn "broker source=kube needs broker.kube_sa (the ServiceAccount to mint a token for) — broker disabled"; return 0; }
+            # API server: pinned override, else derived from the active context.
+            server="$(cfg broker.kube_api_host --default '')"
+            if [[ -z "${server}" ]]; then
+                server="$(kube_server_url)" \
+                    || { warn "broker source=kube: could not read the API server from your kubeconfig ('kubectl config view --minify') — set broker.kube_api_host or fix your context. Broker disabled."; return 0; }
+            fi
+            server="$(python3 "${TJOR_ROOT}/python/tjor_kube.py" url "${server}" 2>/dev/null)" \
+                && api="$(python3 "${TJOR_ROOT}/python/tjor_kube.py" host "${server}" 2>/dev/null)" \
+                || { warn "broker source=kube: could not parse an API host from the server URL — broker disabled"; return 0; }
+            local token
+            token="$(kubectl create token "${sa}" --namespace "${ns}" --duration "${ttl}" 2>/dev/null)" \
+                || { warn "broker source=kube: 'kubectl create token ${sa} -n ${ns}' failed — your kubectl identity needs 'create' on the SA's serviceaccounts/token subresource, and the SA must exist. Broker disabled."; return 0; }
+            [[ -n "${token}" ]] \
+                || { warn "broker source=kube: kubectl returned an empty token — broker disabled"; return 0; }
+            write_broker_json "${dir}/broker.json" pat "${token}"
+            hosts="${api}"                       # inject ONLY toward the API server host
+            export TJOR_KUBE_SERVER="${server}"  # the agent renders a placeholder kubeconfig for this server
+            echo "tjor: kube broker — minted a short-TTL token for SA ${ns}/${sa}; allow the API host in your egress policy:  tjor policy add ${api}" >&2 ;;
         *) warn "unknown broker.source '${source}' — broker disabled"; return 0 ;;
     esac
     export TJOR_BROKER_CONFIG_MOUNT="${dir}/broker.json"
@@ -1050,4 +1094,9 @@ main() {
     esac
 }
 
-main "$@"
+# Source-guard: a test can `source` this file to unit-test its functions (e.g.
+# the kube-broker mint/derive path with a mocked kubectl) without running the
+# CLI. When executed normally, BASH_SOURCE[0] == $0 and main runs as before.
+if [[ "${BASH_SOURCE[0]}" == "${0}" ]]; then
+    main "$@"
+fi

@@ -52,3 +52,11 @@ The build context SHALL be deny-by-default: only explicitly re-included paths (t
 #### Scenario: State directory adjacent to the Dockerfile
 - **WHEN** a state or credential file exists in the build directory but is not an explicit COPY source
 - **THEN** it is absent from the build context and the image
+
+### Requirement: Agent image includes kubectl
+
+The agent image SHALL include a pinned, checksum-verified `kubectl` so a caged session can operate against a Kubernetes cluster (used with the kube broker source).
+
+#### Scenario: kubectl present and pinned
+- **WHEN** the agent image is built
+- **THEN** `kubectl` is on PATH at the version pinned in config, installed through a checksum gate

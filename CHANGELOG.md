@@ -3,6 +3,27 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [0.7.0] — 2026-09-05 — Kubernetes credential broker
+
+### Added
+- **Kube broker source** (#26): `[broker] source = "kube"` lets a caged agent
+  operate a Kubernetes cluster **without ever holding a cluster credential**.
+  At each launch tjor mints a short-TTL ServiceAccount token on the host
+  (`kubectl create token <kube_sa> -n <kube_namespace> --duration
+  <kube_duration>`, using your kubeconfig for cluster auth) and the proxy
+  injects it as the bearer token toward the API server host **only** — derived
+  from your current context, or pinned via `kube_api_host`. The agent gets a
+  placeholder kubeconfig; the real token stays in the proxy sidecar and never
+  enters the cage. **RBAC is the action policy**: bind the SA to whatever Role
+  fits the session and the cluster rejects anything beyond it, by construction —
+  the boundary, not the prompt. Reuses the D2 `pat` injection path (already
+  conformance-tested); fail-closed and loud if `kubectl` is absent or minting
+  fails. Allow the API host in your egress policy (tjor prints the exact `tjor
+  policy add` line at launch).
+- The agent image now ships a pinned, checksum-gated `kubectl` (per-arch); the
+  entrypoint renders the placeholder kubeconfig with the same tested
+  `tjor_kube.py` the launcher uses to derive the API host.
+
 ## [0.6.1] — 2026-09-05 — Security hardening (external review, v0.5 round)
 
 ### Security

@@ -100,6 +100,39 @@ prints an integrity notice. For a verified pull, pin the image by digest
 false`. See [ADR 0008](docs/decisions/0008-prebuilt-image-trust.md) and
 [INSTALL.md](INSTALL.md).
 
+## Kubernetes access (kube broker)
+
+Let a caged agent operate a cluster **without ever holding a cluster
+credential**, and with the cluster's own RBAC — not the prompt — as the action
+policy. With `source = "kube"`, at each launch tjor mints a short-TTL
+ServiceAccount token on the host (using *your* kubeconfig for cluster auth) and
+the proxy injects it as the bearer token toward the API server host only. The
+agent gets a placeholder kubeconfig; the real token stays in the proxy sidecar.
+
+```toml
+# ~/.config/tjor/config.toml  (or a trusted .tjor/config.toml)
+[broker]
+source = "kube"
+kube_sa = "agent-readonly"     # a ServiceAccount you've bound to a Role
+kube_namespace = "dev"
+kube_duration = "1h"           # token TTL; no in-cage refresh
+# kube_api_host = "https://…"  # optional; else derived from your current context
+```
+
+Then allow the API server host in the egress policy — tjor prints the exact
+line at launch:
+
+```console
+$ tjor policy add api.my-cluster.example.com
+```
+
+**RBAC is the boundary.** Bind `kube_sa` to whatever `Role` fits the session
+(read-only to debug, a namespaced role for a scoped task); a mutating call the
+agent attempts is rejected by the cluster, by construction. Requires `kubectl`
+on the host (it does the cluster auth) and that your identity can `create` the
+SA's `serviceaccounts/token`. The token is short-lived with no refresh — a
+session outliving it re-launches. See the kube-broker design under `openspec/`.
+
 ## Why
 
 Prompt-level rules are advisory. Harness-level permissions are harness-specific. The only guarantees that hold for *any* harness — including one running with permissions disabled — are structural: what the process can physically reach. tjor's design is corroborated by multiple independent production systems that converged on the same conclusion: restrict the environment, not the agent.
@@ -114,7 +147,7 @@ A compose-based container cage reproducing production-validated decisions:
 - **Tiered guarantees**: a core that works on any Docker runtime, plus loud-when-absent hardening add-ons (e.g. AppArmor on runtimes that support it).
 - **Session identity (D1, shipped)**: every session carries a frozen identity (`TJOR_SESSION_ID`, `--task` id, harness, repo, worktree) as environment inside the cage and as the vendor-neutral `x-agent-*` schema on the wire (host filesystem paths are trimmed to their basename on the wire) — the proxy strips forged or unknown identity headers toward every host (a session structurally cannot impersonate another) and injects the identity set only toward hosts you list in `identity.inject_hosts` (e.g. your LLM endpoints).
 - **Session lifecycle (D3, shipped)**: `ls` (with live boundary re-check), `attach`, `gc`, tiered `reset`, and concurrent named/detached sessions per repo — see the Quickstart above.
-- **Credential broker (D2, shipped)**: short-TTL, per-session GitHub credentials injected at the proxy toward configured hosts only — the agent holds a placeholder and never possesses the real secret (proven by a container scan in CI). Configure `[broker]` in your tjor config: `source = "github-app"` (App installation token, ~1h, repo-scoped) or `source = "pat"` (static token, still kept out of the sandbox). See ADR 0007.
+- **Credential broker (D2, shipped)**: short-TTL, per-session credentials injected at the proxy toward configured hosts only — the agent holds a placeholder and never possesses the real secret (proven by a container scan in CI). Configure `[broker]` in your tjor config: `source = "github-app"` (App installation token, ~1h, repo-scoped), `source = "pat"` (static token, still kept out of the sandbox), or `source = "kube"` (a short-TTL Kubernetes ServiceAccount token — see [Kubernetes access](#kubernetes-access-kube-broker) below). See ADR 0007.
 
 Remaining roadmap delta — **specced and tracked in issue #4, not yet built**:
 

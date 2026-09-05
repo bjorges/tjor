@@ -168,6 +168,30 @@ else
     git config --system credential."https://gist.github.com".helper '!gh auth git-credential'
 fi
 
+# 3b. Kube broker (#26): render a PLACEHOLDER kubeconfig so caged `kubectl`
+#     sends `Authorization: Bearer <placeholder>` and the proxy overwrites it
+#     with the real short-TTL SA token (which never enters the cage). Uses the
+#     SAME tjor_kube.py the launcher used to derive the host. TLS to the
+#     (proxy-MITM'd) API server is trusted via the session CA in CA_BUNDLE.
+#     Symlink-safe: the home persists, so a prior session could have planted a
+#     symlink here — de-symlink the dir and target before this root-owned write.
+if [[ -n "${TJOR_BROKER_ENABLED:-}" && -n "${TJOR_KUBE_SERVER:-}" ]]; then
+    kube_dir="${AGENT_HOME}/.kube"
+    [[ -L "${kube_dir}" || ( -e "${kube_dir}" && ! -d "${kube_dir}" ) ]] && rm -rf "${kube_dir}"
+    mkdir -p "${kube_dir}"
+    kube_cfg="${kube_dir}/config"
+    [[ -L "${kube_cfg}" || ( -e "${kube_cfg}" && ! -f "${kube_cfg}" ) ]] && rm -rf "${kube_cfg}"
+    if python3 /opt/tjor/python/tjor_kube.py config "${TJOR_KUBE_SERVER}" "${CA_BUNDLE}" >"${kube_cfg}.tmp" 2>/dev/null; then
+        mv -f "${kube_cfg}.tmp" "${kube_cfg}"
+        chmod 600 "${kube_cfg}"
+        chown -R agent:agent "${kube_dir}" 2>/dev/null || true
+    else
+        rm -f "${kube_cfg}.tmp"
+        echo "tjor-entrypoint: WARNING: failed to render kube placeholder config" >&2
+    fi
+    unset kube_dir kube_cfg
+fi
+
 # 4. Ownership + writability. The setup above runs as root and creates XDG
 #    dirs (.config, .local/share, .local/state) root-owned; chown them to the
 #    agent uid (= the host user) so the session state stays host-manageable

@@ -28,6 +28,8 @@ jobs:
       - run: pip install pytest 'mitmproxy==12.1.2'
       - name: unit, corpus, call-site parity, and addon-guard tests
         run: python -m pytest python/tests -q
+      - name: kube broker wiring (mocked kubectl, no cluster) (#26)
+        run: bash tests/integration/kube_test.sh
       - name: shellcheck
         # --severity=warning: fail on real bugs (warning/error), not info-level
         # findings like SC2317 (trap-invoked functions look "unreachable"),
@@ -55,10 +57,15 @@ jobs:
         run: ./bin/tjor build --harness ${{ matrix.harness }}
       - name: image contract — non-root user, harness present, cargo present
         run: |
-          docker run --rm --entrypoint bash tjor-agent-${{ matrix.harness }}:local -c '
+          want_kubectl="$(python3 python/tjor_cfg.py get versions.kubectl)"
+          docker run --rm --entrypoint bash -e WANT_KUBECTL="${want_kubectl}" tjor-agent-${{ matrix.harness }}:local -c '
             [ "$(su agent -c "id -u")" != "0" ] || { echo "agent is root"; exit 1; }
             command -v ${{ matrix.binary }} >/dev/null || { echo "${{ matrix.binary }} missing"; exit 1; }
             test -f /opt/tjor/instructions/opencode/AGENTS.md || { echo "instruction cargo missing"; exit 1; }
+            # kube broker (#26): pinned kubectl + the tjor_kube.py the entrypoint renders with
+            command -v kubectl >/dev/null || { echo "kubectl missing"; exit 1; }
+            kubectl version --client 2>/dev/null | grep -q "v${WANT_KUBECTL}" || { echo "kubectl not at pinned v${WANT_KUBECTL}"; kubectl version --client; exit 1; }
+            test -f /opt/tjor/python/tjor_kube.py || { echo "tjor_kube.py missing from image"; exit 1; }
           '
       - name: checksum gate must reject a tampered artifact (negative path)
         if: matrix.harness == 'opencode'
@@ -73,6 +80,9 @@ jobs:
               --build-arg GH_VERSION="$(cfg versions.gh)" \
               --build-arg GH_SHA256_ARM64="$(cfg versions.sha256.gh_linux_arm64)" \
               --build-arg GH_SHA256_AMD64="$(cfg versions.sha256.gh_linux_amd64)" \
+              --build-arg KUBECTL_VERSION="$(cfg versions.kubectl)" \
+              --build-arg KUBECTL_SHA256_ARM64="$(cfg versions.sha256.kubectl_linux_arm64)" \
+              --build-arg KUBECTL_SHA256_AMD64="$(cfg versions.sha256.kubectl_linux_amd64)" \
               -t tjor-agent-tampered:ci . >/dev/null 2>&1; then
             echo "FATAL: a tampered checksum still built — the gate is defanged"; exit 1
           fi

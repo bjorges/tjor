@@ -140,6 +140,10 @@ services:
       # so git attempts auth; the proxy overwrites it with the real token.
       # The real credential is never passed to the agent.
       TJOR_BROKER_ENABLED: ${TJOR_BROKER_ENABLED:-}
+      # Kube broker (#26): the API server URL the entrypoint renders a
+      # PLACEHOLDER kubeconfig for (empty unless the kube broker is active).
+      # Only the server address — never a token — is passed to the agent.
+      TJOR_KUBE_SERVER: ${TJOR_KUBE_SERVER:-}
       # Host uid for runtime alignment (uid-agnostic image, #21).
       TJOR_AGENT_UID: ${TJOR_AGENT_UID:-}
     volumes:

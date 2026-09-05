@@ -47,6 +47,9 @@ jobs:
             echo "gh=$(cfg versions.gh)"
             echo "gh_arm=$(cfg versions.sha256.gh_linux_arm64)"
             echo "gh_amd=$(cfg versions.sha256.gh_linux_amd64)"
+            echo "kubectl=$(cfg versions.kubectl)"
+            echo "kubectl_arm=$(cfg versions.sha256.kubectl_linux_arm64)"
+            echo "kubectl_amd=$(cfg versions.sha256.kubectl_linux_amd64)"
           } >> "$GITHUB_OUTPUT"
       - name: build & push ${{ matrix.harness }} (amd64+arm64)
         uses: docker/build-push-action@4f58ea79222b3b9dc2c8bbdd6debcef730109a75 # v6
@@ -67,6 +70,9 @@ jobs:
             GH_VERSION=${{ steps.args.outputs.gh }}
             GH_SHA256_ARM64=${{ steps.args.outputs.gh_arm }}
             GH_SHA256_AMD64=${{ steps.args.outputs.gh_amd }}
+            KUBECTL_VERSION=${{ steps.args.outputs.kubectl }}
+            KUBECTL_SHA256_ARM64=${{ steps.args.outputs.kubectl_arm }}
+            KUBECTL_SHA256_AMD64=${{ steps.args.outputs.kubectl_amd }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/tjor-agent-${{ matrix.harness }}:${{ steps.v.outputs.version }}
             ghcr.io/${{ github.repository_owner }}/tjor-agent-${{ matrix.harness }}:latest
