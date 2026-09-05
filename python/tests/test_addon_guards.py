@@ -59,10 +59,11 @@ class TestIdentityAtTheAddon:
 
     def test_log_rate_limited(self, capsys):
         addon = self.make()
+        capsys.readouterr()  # drain import-time output
         for _ in range(200):
             addon._log_stripped("h.test", {"x-agent-session-id": "x"})
-        lines = capsys.readouterr().err.strip().splitlines()
-        assert 20 <= len(lines) <= 22  # first 20 + every 100th, not 200
+        lines = [l for l in capsys.readouterr().err.splitlines() if "stripped forged" in l]
+        assert len(lines) == 22  # first 20 + #100 + #200, not 200
 
     def test_inject_only_on_configured_host(self):
         addon = self.make()
