@@ -4,6 +4,7 @@
 *
 !python/tjor_policy.py
 !python/tjor_identity.py
+!python/tjor_broker.py
 !images/conformance/echo.py
 !proxy/addon.py
 !proxy/entrypoint.sh

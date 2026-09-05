@@ -6,11 +6,20 @@ set -euo pipefail
 
 AGENT_HOME=/home/agent
 
-# 1. Trust the session CA (the egress proxy re-signs all TLS).
+# 1. Trust the session CA (the egress proxy re-signs all TLS). Append it
+#    directly to the system bundle that git/curl read — instant, and avoids
+#    update-ca-certificates, whose per-cert rehashing is pathologically slow
+#    under a VM runtime and stalled session startup. Node reads the CA via
+#    NODE_EXTRA_CA_CERTS (set in the image), independent of the bundle.
+CA_BUNDLE=/etc/ssl/certs/ca-certificates.crt
 if [[ -s /etc/tjor/ca/ca.pem ]]; then
     cp /etc/tjor/ca/ca.pem /usr/local/share/ca-certificates/tjor-session-ca.crt
-    if ! update-ca-certificates >/dev/null 2>&1; then
-        echo "tjor-entrypoint: WARNING: system CA install failed — TLS through the proxy will fail" >&2
+    # Idempotent via a unique marker — do NOT grep the PEM itself, whose
+    # boilerplate lines (-----BEGIN CERTIFICATE-----) match every cert in the
+    # bundle and would make it look already-present.
+    if ! grep -q '# tjor session CA' "${CA_BUNDLE}" 2>/dev/null; then
+        printf '\n# tjor session CA\n' >> "${CA_BUNDLE}"
+        cat /etc/tjor/ca/ca.pem >> "${CA_BUNDLE}"
     fi
 else
     echo "tjor-entrypoint: WARNING: no session CA mounted — TLS through the proxy will fail" >&2
@@ -95,10 +104,22 @@ git config --system --add url."https://github.com/".insteadOf "git@github.com:"
 git config --system --add url."https://github.com/".insteadOf "ssh://git@github.com/"
 git config --system --add url."https://gitlab.com/".insteadOf "git@gitlab.com:"
 git config --system --add url."https://gitlab.com/".insteadOf "ssh://git@gitlab.com/"
-# Pre-wire gh as git's credential helper: after a one-time in-session
-# `gh auth login`, git push/pull to private GitHub repos just works.
-git config --system credential."https://github.com".helper '!gh auth git-credential'
-git config --system credential."https://gist.github.com".helper '!gh auth git-credential'
+if [[ -n "${TJOR_BROKER_ENABLED:-}" ]]; then
+    # Credential broker (D2): git must ATTEMPT auth so the proxy can inject
+    # the real, short-TTL credential. Wire a helper that returns a fixed
+    # PLACEHOLDER (never a real secret) — the proxy overwrites the
+    # Authorization header toward the broker's destination hosts. Overrides
+    # any gh helper so no real token is ever sourced inside the cage.
+    git config --system credential."https://github.com".helper \
+        '!f() { echo username=x-access-token; echo password=tjor-broker-placeholder; }; f'
+    git config --system credential."https://gist.github.com".helper \
+        '!f() { echo username=x-access-token; echo password=tjor-broker-placeholder; }; f'
+else
+    # Pre-wire gh as git's credential helper: after a one-time in-session
+    # `gh auth login`, git push/pull to private GitHub repos just works.
+    git config --system credential."https://github.com".helper '!gh auth git-credential'
+    git config --system credential."https://gist.github.com".helper '!gh auth git-credential'
+fi
 
 # 4. Ownership + writability. The setup above runs as root and creates XDG
 #    dirs (.config, .local/share, .local/state) root-owned; chown them to the

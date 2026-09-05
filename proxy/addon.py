@@ -30,6 +30,7 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import tjor_broker
 import tjor_identity
 import tjor_policy
 
@@ -44,6 +45,20 @@ if not IDENTITY.valid:
         file=sys.stderr,
         flush=True,
     )
+
+# Credential broker (D2): host-scoped Authorization injection. The broker
+# config and any key live ONLY in this sidecar (egress side, unreachable
+# from the agent network). The agent holds a placeholder; the proxy swaps in
+# the real, short-TTL credential toward the destination host(s) only.
+BROKER = None
+BROKER_HOSTS = tjor_identity.parse_inject_hosts(os.environ.get("TJOR_BROKER_HOSTS", ""))
+_broker_config = os.environ.get("TJOR_BROKER_CONFIG", "")
+if _broker_config and BROKER_HOSTS:
+    try:
+        BROKER = tjor_broker.BrokerState(tjor_broker.load_config(_broker_config))
+    except (OSError, ValueError) as exc:
+        print(f"tjor: broker config invalid — no credential will be injected: {exc}",
+              file=sys.stderr, flush=True)
 
 _cache: dict = {"mtime": None, "policy": None}
 
@@ -273,6 +288,37 @@ def _apply_identity(flow) -> None:
         _log_stripped(flow.request.host, stripped)
 
 
+# ---------------------------------------------------------- credential broker
+
+def broker_authorization(host: str) -> str | None:
+    """Testable seam: the Authorization value to inject toward `host`, or
+    None if this host is not a broker destination or no credential is
+    available (fail-closed)."""
+    if BROKER is None or not tjor_identity.should_inject(BROKER_HOSTS, host):
+        return None
+    try:
+        return BROKER.authorization()
+    except Exception as exc:  # noqa: BLE001
+        print(f"tjor: broker error — no credential injected: {exc!r}", file=sys.stderr, flush=True)
+        return None
+
+
+def _apply_broker(flow) -> None:
+    """Toward a broker destination host, replace Authorization with the real
+    short-TTL credential. The agent only ever holds a placeholder; whatever
+    it sent is overwritten. Fail-closed: if no credential is available, the
+    placeholder is STRIPPED (never forwarded) so the upstream rejects rather
+    than the agent's placeholder leaking or a stale token being used."""
+    host = flow.request.host
+    if BROKER is None or not tjor_identity.should_inject(BROKER_HOSTS, host):
+        return
+    auth = broker_authorization(host)
+    if "authorization" in flow.request.headers:
+        del flow.request.headers["authorization"]
+    if auth is not None:
+        flow.request.headers["authorization"] = auth
+
+
 # ------------------------------------------------------------ mitmproxy glue
 
 class TjorPolicy:
@@ -293,6 +339,7 @@ class TjorPolicy:
         verdict = request_verdict(flow.request.pretty_url, flow.request.host)
         if verdict.allowed:
             _apply_identity(flow)
+            _apply_broker(flow)
         if not verdict.allowed:
             flow.response = http.Response.make(
                 403,
@@ -307,6 +354,18 @@ class TjorPolicy:
                     "x-tjor-rule": verdict.rule,
                 },
             )
+
+    def done(self) -> None:
+        # Best-effort revocation on proxy shutdown (tjor down / gc gives the
+        # sidecar a stop grace period). Installation tokens also auto-expire
+        # (~1h), the reliable backstop; PATs have nothing to revoke.
+        if BROKER is not None:
+            try:
+                BROKER.teardown()
+                print("tjor: broker credential revoked on shutdown", file=sys.stderr, flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"tjor: broker revoke on shutdown failed (token auto-expires): {exc!r}",
+                      file=sys.stderr, flush=True)
 
 
 addons = [TjorPolicy()]

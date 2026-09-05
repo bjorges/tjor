@@ -46,6 +46,11 @@ services:
       TJOR_WORKTREE: ${TJOR_WORKTREE:-}
       TJOR_PARENT_SESSION: ${TJOR_PARENT_SESSION:-}
       TJOR_INJECT_HOSTS: ${TJOR_INJECT_HOSTS:-}
+      # Credential broker (D2): config lives ONLY here (egress side). Empty
+      # when disabled. The addon injects the real credential toward
+      # TJOR_BROKER_HOSTS only; the agent never sees it.
+      TJOR_BROKER_CONFIG: ${TJOR_BROKER_ENABLED:+/broker/broker.json}
+      TJOR_BROKER_HOSTS: ${TJOR_BROKER_HOSTS:-}
     labels:
       tjor.role: proxy
       tjor.session: ${TJOR_SESSION:-}
@@ -54,6 +59,9 @@ services:
     volumes:
       - ${TJOR_SESSION_DIR:?}/policy.toml:/policy/policy.toml:ro
       - ${TJOR_SESSION_DIR:?}/proxy-ca:/home/mitmproxy/.mitmproxy
+      # Broker dir (config + App key) mounted read-only into the proxy ONLY.
+      # Points at a real dir when disabled (compose needs an existing source).
+      - ${TJOR_BROKER_DIR:-${TJOR_SESSION_DIR:?}/proxy-ca}:/broker:ro
     healthcheck:
       test: ["CMD", "python3", "-c", "import socket; socket.create_connection(('127.0.0.1', ${TJOR_PROXY_PORT:-8080}), 3).close()"]
       interval: 30s
@@ -123,6 +131,10 @@ services:
       TJOR_REPO: ${TJOR_REPO:-}
       TJOR_WORKTREE: ${TJOR_WORKTREE:-}
       TJOR_PARENT_SESSION: ${TJOR_PARENT_SESSION:-}
+      # Broker (D2): tells the entrypoint to wire a PLACEHOLDER git credential
+      # so git attempts auth; the proxy overwrites it with the real token.
+      # The real credential is never passed to the agent.
+      TJOR_BROKER_ENABLED: ${TJOR_BROKER_ENABLED:-}
     volumes:
       - ${TJOR_SESSION_DIR:?}/home:/home/agent
       - ${TJOR_WORKSPACE:-/dev/null}:${TJOR_WORKSPACE:-/tmp/.tjor-nows}
@@ -158,6 +170,9 @@ services:
       TJOR_DNS_IP: ${TJOR_DNS_IP:-}
       TJOR_PROXY_PORT: ${TJOR_PROXY_PORT:-8080}
       TJOR_SESSION_ID: ${TJOR_SESSION_ID:-}
+      # The stub broker token the proxy injects; the probe asserts it arrives
+      # at the echo host AND is absent from this container.
+      TJOR_TEST_BROKER_TOKEN: ${TJOR_TEST_BROKER_TOKEN:-}
 
   # Egress-side header-echo fixture (conformance only): the identity probes
   # need an "upstream" that reflects what actually arrived after the proxy's
@@ -171,6 +186,7 @@ services:
         aliases:
           - echo-inject.tjor-test
           - echo-noinject.tjor-test
+          - echo-broker.tjor-test
     mem_limit: 128m
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]

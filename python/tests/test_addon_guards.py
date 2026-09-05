@@ -5,6 +5,8 @@ import importlib.util
 import sys
 from pathlib import Path
 
+import pytest
+
 PY_DIR = Path(__file__).resolve().parents[1]
 REPO = PY_DIR.parent
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -132,6 +134,67 @@ class TestApplyIdentityMultidict:
         addon._apply_identity(f)
         assert f.request.headers.get_all("x-agent-session-id") == ["sess-1"]
         assert f.request.headers.get_all("x-agent-harness") == ["opencode"]
+
+
+class TestBrokerInjection:
+    def make(self, source_hosts="github.com", cred="tok-123"):
+        addon = load_addon()
+        import tjor_broker as tb
+        addon.BROKER_HOSTS = addon.tjor_identity.parse_inject_hosts(source_hosts)
+        addon.BROKER = tb.BrokerState({"source": "pat", "token": cred}, clock=lambda: 0.0) if cred else None
+        return addon
+
+    def test_authorization_injected_for_destination(self):
+        addon = self.make()
+        assert addon.broker_authorization("github.com") == "token tok-123"
+        assert addon.broker_authorization("api.github.com") is None  # not in hosts here
+        assert addon.broker_authorization("evil.test") is None
+
+    def test_disabled_when_no_broker(self):
+        addon = self.make(cred=None)
+        assert addon.broker_authorization("github.com") is None
+
+    def test_apply_broker_replaces_placeholder(self):
+        pytest.importorskip("mitmproxy")
+        import types
+        from mitmproxy.http import Headers
+
+        addon = self.make()
+        flow = types.SimpleNamespace(request=types.SimpleNamespace(
+            host="github.com",
+            headers=Headers([(b"authorization", b"Basic cGxhY2Vob2xkZXI=")]),
+        ))
+        addon._apply_broker(flow)
+        assert flow.request.headers["authorization"] == "token tok-123"
+
+    def test_apply_broker_strips_when_no_credential(self, capsys):
+        pytest.importorskip("mitmproxy")
+        import types
+        import tjor_broker as tb
+        from mitmproxy.http import Headers
+
+        addon = self.make()
+        # a broker configured but unable to mint -> strip the placeholder, inject nothing
+        addon.BROKER = tb.BrokerState({"source": "pat"}, clock=lambda: 0.0)  # no token -> None
+        flow = types.SimpleNamespace(request=types.SimpleNamespace(
+            host="github.com",
+            headers=Headers([(b"authorization", b"Basic cGxhY2Vob2xkZXI=")]),
+        ))
+        addon._apply_broker(flow)
+        assert "authorization" not in flow.request.headers
+
+    def test_apply_broker_untouched_for_non_destination(self):
+        pytest.importorskip("mitmproxy")
+        import types
+        from mitmproxy.http import Headers
+
+        addon = self.make()
+        flow = types.SimpleNamespace(request=types.SimpleNamespace(
+            host="other.test",
+            headers=Headers([(b"authorization", b"Bearer agent-own")]),
+        ))
+        addon._apply_broker(flow)
+        assert flow.request.headers["authorization"] == "Bearer agent-own"
 
 
 class TestAddressGuard:

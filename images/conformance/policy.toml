@@ -5,7 +5,7 @@ mode = "strict-allow"
 [hosts]
 allow = [
   "allowed.test", "*.allowed.test", "api.vendor.test",
-  "echo-inject.tjor-test", "echo-noinject.tjor-test",
+  "echo-inject.tjor-test", "echo-noinject.tjor-test", "echo-broker.tjor-test",
 ]
 block = ["blocked.test", "*.telemetry.test"]
 

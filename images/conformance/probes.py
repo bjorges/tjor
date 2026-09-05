@@ -22,6 +22,7 @@ PROXY_IP = os.environ.get("TJOR_PROXY_IP", "")
 DNS_IP = os.environ.get("TJOR_DNS_IP", "")
 PROXY_PORT = int(os.environ.get("TJOR_PROXY_PORT", "8080"))
 SESSION_ID = os.environ.get("TJOR_SESSION_ID", "")
+BROKER_TOKEN = os.environ.get("TJOR_TEST_BROKER_TOKEN", "")
 
 RESULTS: list[tuple[bool, str, str]] = []
 
@@ -212,6 +213,31 @@ def p_zid_no_leak():
     arrived = echo_headers("echo-noinject.tjor-test")
     leaked = [k for k in arrived if k.startswith("x-agent-")]
     assert not leaked, f"identity leaked to a non-inject host: {leaked}"
+
+
+@probe("broker: real credential injected toward the destination host")
+def p_broker_injected():
+    if not BROKER_TOKEN:
+        raise AssertionError("TJOR_TEST_BROKER_TOKEN not set")
+    arrived = echo_headers("echo-broker.tjor-test")
+    assert arrived.get("authorization") == f"token {BROKER_TOKEN}", \
+        f"expected injected token, got {arrived.get('authorization')!r}"
+
+
+@probe("broker: the agent's placeholder is overwritten, never forwarded")
+def p_broker_overwrites_placeholder():
+    arrived = echo_headers(
+        "echo-broker.tjor-test",
+        {"authorization": "Basic eC1hY2Nlc3MtdG9rZW46dGpvci1icm9rZXItcGxhY2Vob2xkZXI="},
+    )
+    assert arrived.get("authorization") == f"token {BROKER_TOKEN}", "placeholder was not overwritten"
+    assert "placeholder" not in arrived.get("authorization", ""), "placeholder leaked upstream"
+
+
+@probe("broker: credential does not leak to a non-destination host")
+def p_broker_no_leak():
+    arrived = echo_headers("echo-noinject.tjor-test", {"authorization": "Bearer agent-own"})
+    assert BROKER_TOKEN not in str(arrived), "broker token leaked to a non-destination host"
 
 
 def main() -> int:

@@ -15,6 +15,28 @@ ip_guard = true
 # forged or unknown x-agent-* headers are stripped toward every host.
 inject_hosts = []
 
+[broker]
+# Credential broker (D2): short-TTL, per-session credentials injected at the
+# proxy toward `hosts` only — the agent holds only a placeholder, never the
+# real secret. Empty `source` = disabled (session uses in-session `gh auth
+# login`, the pre-broker default). All broker material lives ONLY in the
+# proxy sidecar (egress side, unreachable from the agent network).
+source = ""                              # "" | "github-app" | "pat"
+hosts = ["github.com", "*.github.com", "codeload.github.com"]
+
+# For source = "pat": name of a host-side env var holding the token (never
+# the token itself in config). The launcher reads it and passes it to the
+# proxy only.
+pat_env = "TJOR_GITHUB_PAT"
+
+# For source = "github-app": the App id, a path to its private key (PEM,
+# host-side, never baked into any image), the installation id, and an
+# optional repository allow-list for least-privilege scoping.
+app_id = ""
+private_key_path = ""
+installation_id = ""
+repositories = []
+
 [limits]
 # Memory caps per service (docker mem_limit syntax).
 agent_mem = "4g"
