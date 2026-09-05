@@ -56,6 +56,20 @@ echo "== nonexistent --dir aborts"
 check "a nonexistent --dir aborts the launch" bash -c \
     "cd '${A}' && ! '${T}' run --detach --session other --dir /no/such/dir-xyz true >/dev/null 2>&1"
 
+echo "== TJOR_SAFE_DIRS keeps a colon in a path intact (newline-delimited)"
+# Regression: a ':' separator would mis-split a directory path that legally
+# contains a colon, trusting a fragment and leaving the real repo untrusted.
+# Feed the entrypoint a synthetic newline-delimited list with a colon-bearing
+# path and assert git's system safe.directory holds the FULL path, not a split.
+IMG="tjor-agent-opencode:local"
+docker image inspect "${IMG}" >/dev/null 2>&1 || "${T}" build --harness opencode >/dev/null 2>&1
+SDLIST=$'/repos/plain\n/repos/has:colon/inner\n'
+GOT="$(docker run --rm -e TJOR_HARNESS=opencode -e TJOR_SAFE_DIRS="${SDLIST}" "${IMG}" \
+        git config --system --get-all safe.directory 2>/dev/null || true)"
+if grep -qxF '/repos/has:colon/inner' <<<"${GOT}"; then ok "colon-bearing path kept intact in safe.directory"; else bad "colon-bearing path missing/split (got: ${GOT//$'\n'/ | })"; fi
+if grep -qxF '/repos/plain' <<<"${GOT}"; then ok "plain path also trusted"; else bad "plain path missing"; fi
+if grep -qxF '/repos/has' <<<"${GOT}"; then bad "path was SPLIT at the colon (/repos/has present)"; else ok "path was NOT split at the colon"; fi
+
 echo
 echo "multirepo: ${PASS} passed, ${FAIL} failed"
 exit "$((FAIL > 0 ? 1 : 0))"

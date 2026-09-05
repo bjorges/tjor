@@ -3,6 +3,19 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [0.9.2] — 2026-09-05 — Robust safe.directory scoping
+
+### Fixed
+- **`TJOR_SAFE_DIRS` is now newline-delimited, not `:`-delimited.** This is the
+  list of mounted repos the launcher passes to the entrypoint to scope git's
+  `safe.directory` (the workspace + each `--dir`). A colon is legal in a Linux
+  directory path, so a `:` separator could mis-split a path containing one —
+  trusting a fragment and leaving the real repo untrusted (git would then refuse
+  it as dubiously-owned). Not exploitable (it fails closed), but a sharp edge.
+  Paths containing a newline — pathological and unrepresentable in a git config
+  value — are now refused at launch. Regression-tested: a colon-bearing path
+  stays intact in `safe.directory` and is not split.
+
 ## [0.9.1] — 2026-09-05 — Security hardening (trust-review + read-only commands)
 
 ### Security

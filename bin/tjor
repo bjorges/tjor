@@ -637,16 +637,27 @@ run_agent() { # $1 = detach flag, $2.. = command
     local ctr running code
     # Multi-repo: verify (proxy image now exists) and mount each extra dir at
     # its host path, writable.
-    local -a mounts=() dir
+    local -a mounts=() dir safe=()
     # git safe.directory is scoped to exactly the mounted repos (not '*'), so
     # only paths the operator mounted are trusted by git (see the entrypoint).
-    local safe_dirs="${TJOR_WORKSPACE:-}"
+    # The list is passed NEWLINE-delimited, not ':'-delimited: a directory path
+    # may legally contain a colon on Linux, which a ':' separator would
+    # mis-split — trusting the wrong path and leaving the real repo untrusted.
+    # A newline in a mount path is pathological (git can't represent it in a
+    # config value either) and is refused below.
+    [[ -n "${TJOR_WORKSPACE:-}" ]] && safe+=("${TJOR_WORKSPACE}")
     for dir in "${TJOR_EXTRA_DIRS[@]:-}"; do
         [[ -n "${dir}" ]] || continue
         verify_bind_source "${dir}"
         mounts+=(--volume "${dir}:${dir}")
-        safe_dirs="${safe_dirs}:${dir}"
+        safe+=("${dir}")
         echo "tjor: + repo mount ${dir}" >&2
+    done
+    local safe_dirs=""
+    for dir in "${safe[@]:-}"; do
+        [[ -n "${dir}" ]] || continue
+        [[ "${dir}" == *$'\n'* ]] && die "refusing a mount path containing a newline: ${dir}"
+        safe_dirs+="${dir}"$'\n'
     done
     export TJOR_SAFE_DIRS="${safe_dirs}"
     # Agent profile (#29): mount the credential-filtered staging dir read-only

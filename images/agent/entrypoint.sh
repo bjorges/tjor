@@ -160,8 +160,9 @@ git config --system --add url."https://gitlab.com/".insteadOf "ssh://git@gitlab.
 # different uid than the one running git — which a bind-mounted repo is,
 # whenever the owner uid differs from the (runtime-aligned) agent uid. Mark
 # the mounted repos safe so git works. SCOPED to exactly the repos the
-# operator mounted (TJOR_SAFE_DIRS: the workspace + any --dir), NOT '*', so
-# an arbitrary path is not blanket-trusted.
+# operator mounted (TJOR_SAFE_DIRS, NEWLINE-delimited: the workspace + any
+# --dir), NOT '*', so an arbitrary path is not blanket-trusted. Newline (not
+# ':') separates entries because a directory path may legally contain a colon.
 #   Residual risk (documented, ADR 0008): marking a repo safe lets git read
 #   its local .git/config, so an adversarial --dir'd third-party repo could
 #   carry a hostile core.fsmonitor/pager/hook. This is bounded by the cage
@@ -169,10 +170,10 @@ git config --system --add url."https://gitlab.com/".insteadOf "ssh://git@gitlab.
 #   operator having explicitly chosen to mount that repo.
 git config --system --unset-all safe.directory 2>/dev/null || true
 if [[ -n "${TJOR_SAFE_DIRS:-}" ]]; then
-    IFS=':' read -r -a _safe <<<"${TJOR_SAFE_DIRS}"
-    for _d in "${_safe[@]}"; do
+    # Read one path per line so a colon inside a path is preserved verbatim.
+    while IFS= read -r _d; do
         [[ -n "${_d}" ]] && git config --system --add safe.directory "${_d}"
-    done
+    done <<<"${TJOR_SAFE_DIRS}"
 fi
 if [[ -n "${TJOR_BROKER_ENABLED:-}" ]]; then
     # Credential broker (D2): git must ATTEMPT auth so the proxy can inject
