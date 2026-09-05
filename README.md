@@ -25,7 +25,9 @@ holds no durable state (all of it lives in the state root). Containers are
 persistent — they survive a dropped terminal so you can reattach — and are
 removed by `tjor down` or `tjor gc`, not automatically (see ADR 0006).
 `tjor run --harness claude` / `--harness copilot` select other
-harnesses (images build on first use). `tjor policy <url>` previews an
+harnesses (images build on first use). `tjor run --dir <path>` (repeatable)
+mounts additional repositories into the session at their host paths, so one
+agent can work across several repos at once. `tjor policy <url>` previews an
 egress verdict; `tjor down` removes a repo's topology.
 
 Managing sessions (D3):
