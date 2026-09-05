@@ -5,9 +5,14 @@
 # any host user. No topology needed; runs the image directly.
 set -euo pipefail
 
+T="${TJOR_BIN:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/bin/tjor}"
 IMAGE="${TJOR_AGENT_IMAGE:-tjor-agent-opencode:local}"
 BASE="${HOME}/.tjor/tmp/uidtest"
 PASS=0; FAIL=0
+
+# Build the image if it isn't present (CI jobs are isolated — nothing built
+# it here). `tjor build` produces the default-uid, uid-agnostic image.
+docker image inspect "${IMAGE}" >/dev/null 2>&1 || "${T}" build >/dev/null 2>&1
 ok()  { echo "ok   $1"; PASS=$((PASS + 1)); }
 bad() { echo "FAIL $1" >&2; FAIL=$((FAIL + 1)); }
 
