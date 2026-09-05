@@ -54,21 +54,33 @@ else
     echo "tjor-entrypoint: WARNING: no session CA mounted — TLS through the proxy will fail" >&2
 fi
 
-# 2. Deploy instruction cargo and enforce autoupdate=false — symlink-safe
-#    (charter L26): the home dir is agent-writable and persists across
-#    sessions, so a previous session could have planted symlinks to redirect
-#    these root-privileged writes. Every touched component is checked and
-#    de-symlinked before any write. No agent process runs concurrently with
-#    this (the harness starts only at the exec below), so a point-in-time
-#    sweep is race-free.
+# 2. Deploy instruction cargo per active harness and disable harness
+#    self-update — symlink-safe (charter L26): the home dir is agent-writable
+#    and persists across sessions, so a previous session could have planted
+#    symlinks to redirect these root-privileged writes. Every touched component
+#    is checked and de-symlinked before any write. No agent process runs
+#    concurrently with this (the harness starts only at the exec below), so a
+#    point-in-time sweep is race-free. TJOR_HARNESS names the session's
+#    harness(es) (a comma list for a multi-harness image); the ONE neutral
+#    instruction file is rendered into each harness's own dialect path
+#    (opencode AGENTS.md / claude CLAUDE.md / copilot copilot-instructions.md).
 python3 - <<'PY'
 import json
+import os
 import pathlib
 import shutil
 
 HOME = pathlib.Path("/home/agent")
-CARGO = pathlib.Path("/opt/tjor/instructions/opencode")
-CFG = HOME / ".config" / "opencode"
+NEUTRAL = pathlib.Path("/opt/tjor/instructions/AGENTS.md")
+
+# harness -> (config dir, instruction filename in that harness's dialect).
+TARGETS = {
+    "opencode": (HOME / ".config" / "opencode", "AGENTS.md"),
+    "claude":   (HOME / ".claude",              "CLAUDE.md"),
+    "copilot":  (HOME / ".copilot",             "copilot-instructions.md"),
+}
+requested = [h for h in os.environ.get("TJOR_HARNESS", "").split(",") if h in TARGETS]
+harnesses = requested or ["opencode"]
 
 
 def desymlink(path: pathlib.Path) -> None:
@@ -94,29 +106,29 @@ def safe_write_target(path: pathlib.Path) -> pathlib.Path:
     return path
 
 
-desymlink(CFG)
+# opencode keeps state under these XDG dirs; keep them real regardless.
 desymlink(HOME / ".local" / "share")
 desymlink(HOME / ".local" / "state")
 
-if CARGO.is_dir():
-    for src in sorted(CARGO.rglob("*")):
-        dst = CFG / src.relative_to(CARGO)
-        if src.is_dir():
-            desymlink(dst)
-        else:
-            shutil.copyfile(src, safe_write_target(dst))
-
-# Harness self-update is an image concern, never a session one (charter L13):
-# merge autoupdate=false into opencode's config, keep other user settings.
-cfgfile = safe_write_target(CFG / "opencode.json")
-try:
-    data = json.loads(cfgfile.read_text()) if cfgfile.exists() else {}
-    if not isinstance(data, dict):
-        data = {}
-except Exception:
-    data = {}
-data["autoupdate"] = False
-cfgfile.write_text(json.dumps(data, indent=2) + "\n")
+for h in harnesses:
+    cfg, fname = TARGETS[h]
+    desymlink(cfg)
+    if NEUTRAL.is_file():
+        shutil.copyfile(NEUTRAL, safe_write_target(cfg / fname))
+    # Harness self-update is an image concern, never a session one (charter
+    # L13). opencode has no env knob, so disable it via its config file; claude
+    # and copilot are disabled via image ENV (DISABLE_AUTOUPDATER /
+    # COPILOT_AUTO_UPDATE) and need no per-session write.
+    if h == "opencode":
+        cfgfile = safe_write_target(cfg / "opencode.json")
+        try:
+            data = json.loads(cfgfile.read_text()) if cfgfile.exists() else {}
+            if not isinstance(data, dict):
+                data = {}
+        except Exception:
+            data = {}
+        data["autoupdate"] = False
+        cfgfile.write_text(json.dumps(data, indent=2) + "\n")
 PY
 
 # 3. Git transport: SSH egress is structurally blocked (only proxied
@@ -198,7 +210,7 @@ fi
 #    (e.g. `tjor reset`) on a native-Linux engine — on a uid-mapping VM
 #    (Colima virtiofs) chown can legitimately fail, so warn, then hard-verify
 #    the invariant that actually matters: the agent user can write its home.
-for d in "${AGENT_HOME}/.config" "${AGENT_HOME}/.local"; do
+for d in "${AGENT_HOME}/.config" "${AGENT_HOME}/.local" "${AGENT_HOME}/.claude" "${AGENT_HOME}/.copilot"; do
     if [[ -d "${d}" ]] && ! chown -R agent:agent "${d}" 2>/dev/null; then
         echo "tjor-entrypoint: WARNING: chown of ${d} failed (uid-mapped mount?)" >&2
     fi

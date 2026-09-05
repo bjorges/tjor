@@ -19,7 +19,12 @@ allow = [
   "proxy.golang.org", "sum.golang.org", "crates.io", "static.crates.io", "index.crates.io",
   # LLM / harness endpoints
   "api.anthropic.com", "statsig.anthropic.com",
+  # Claude Code interactive login (OAuth); api.anthropic.com covers API-key /
+  # brokered use without these.
+  "claude.ai", "platform.claude.com",
   "api.openai.com",
+  # GitHub Copilot CLI: api.githubcopilot.com is the agentic endpoint;
+  # copilot-proxy is under *.githubusercontent.com and login under *.github.com.
   "api.githubcopilot.com", "*.githubcopilot.com",
   "opencode.ai", "*.opencode.ai",
   "models.dev", "api.models.dev",

@@ -54,6 +54,17 @@ RUN set -eu; \
 # to exec a browser.
 ENV BROWSER=echo
 
+# Harness self-update is an image concern, never a session one (charter L13):
+# the version is pinned by this image and must not drift under the agent. These
+# are env-level kill switches, always set (harmless when a harness is absent);
+# opencode has no env knob and is disabled per-session via its config file in
+# the entrypoint. claude: DISABLE_AUTOUPDATER (background) + DISABLE_UPDATES
+# (all paths). copilot: COPILOT_AUTO_UPDATE=false (its config key is currently
+# ignored upstream, so the env var is the reliable control).
+ENV DISABLE_AUTOUPDATER=1 \
+    DISABLE_UPDATES=1 \
+    COPILOT_AUTO_UPDATE=false
+
 # HARNESS is a comma list: any of opencode, claude, copilot.
 ARG HARNESS=opencode
 

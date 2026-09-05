@@ -3,6 +3,32 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [0.8.0] — 2026-09-05 — Claude Code + Copilot CLI fully wired
+
+### Added
+- **All three harnesses are now wired, not just installed** (#24). Previously
+  only opencode got instruction cargo + self-update disabled; Claude Code and
+  Copilot CLI booted but ran unconfigured. Now the entrypoint deploys the
+  cage's neutral instructions into each harness's own dialect path — opencode
+  `~/.config/opencode/AGENTS.md`, Claude Code `~/.claude/CLAUDE.md`, Copilot CLI
+  `~/.copilot/copilot-instructions.md` — from a single neutral source (no
+  content drift), symlink-safe as before. `TJOR_HARNESS` drives it (a comma
+  list works for a multi-harness image).
+- **In-session self-update is disabled for every harness** so the
+  image-pinned version can't drift under the agent: opencode via its config
+  (`autoupdate=false`), Claude Code via `DISABLE_AUTOUPDATER`/`DISABLE_UPDATES`,
+  Copilot CLI via `COPILOT_AUTO_UPDATE=false` (image ENV).
+- Default egress policy adds `claude.ai` and `platform.claude.com` for Claude
+  Code's interactive login (API-key / brokered use needs only `api.anthropic.com`,
+  already allowed).
+
+### Notes
+- CI verifies each harness through the **real entrypoint**: the neutral cargo
+  lands at the harness's dialect path and self-update is disabled (per-harness
+  matrix). A live "boots + does a real task" check needs model credentials and
+  is a documented manual step.
+- `pi` (a fourth harness) is deferred — see #34.
+
 ## [0.7.0] — 2026-09-05 — Kubernetes credential broker
 
 ### Added
