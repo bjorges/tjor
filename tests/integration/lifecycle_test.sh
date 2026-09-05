@@ -166,7 +166,9 @@ check "reset refuses a tier with an intermediate symlink ancestor" \
 check "intermediate-symlink escape failed: outside victim survived" test -f "${OUTSIDE}/storage/victim"
 rm -f "${SDIR}/home/.local/share/opencode"   # remove the planted link
 rm -rf "${OUTSIDE}/storage"
-mkdir -p "${SDIR}/home/.local/share/opencode/storage" "${SDIR}/home/.config/gh"
+# the escape-block 'reset sessions' legitimately wiped .local/state; recreate
+# every dir the tier checks below need.
+mkdir -p "${SDIR}/home/.local/state" "${SDIR}/home/.local/share/opencode/storage" "${SDIR}/home/.config/gh"
 echo x > "${SDIR}/home/.local/state/s1"
 echo x > "${SDIR}/home/.local/share/opencode/storage/h1"
 echo x > "${SDIR}/home/.local/share/opencode/auth.json"
