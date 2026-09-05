@@ -69,10 +69,12 @@ build_proxy() {
 build_agent() { # $1 = harness list (comma separated)
     local harness="$1"
     echo "tjor: building agent image (${harness}) — first build downloads pinned tools" >&2
+    # No AGENT_UID build-arg: the image is uid-agnostic (default uid baked;
+    # the entrypoint aligns to TJOR_AGENT_UID at start), so a local build is
+    # portable and matches the published image.
     docker build -f "${TJOR_ROOT}/images/agent/Dockerfile" \
         --build-arg BASE_IMAGE="$(cfg images.debian)" \
         --build-arg HARNESS="${harness}" \
-        --build-arg AGENT_UID="$(id -u)" \
         --build-arg OPENCODE_VERSION="$(cfg versions.opencode)" \
         --build-arg OPENCODE_SHA256_ARM64="$(cfg versions.sha256.opencode_linux_arm64)" \
         --build-arg OPENCODE_SHA256_X64="$(cfg versions.sha256.opencode_linux_x64)" \
@@ -88,6 +90,30 @@ build_conformance() {
     docker build -q -f "${TJOR_ROOT}/images/conformance/Dockerfile" \
         --build-arg BASE_IMAGE="$(cfg images.python)" \
         -t tjor-conformance:local "${TJOR_ROOT}" >/dev/null
+}
+
+# Pick the agent image: a prebuilt published image for this tjor version when
+# available (fast first run), else a local build. A git checkout (dev) always
+# builds locally — its code may differ from any published image. Images are
+# uid-agnostic, so a published image serves any host user.
+resolve_agent_image() { # $1 = harness ; sets TJOR_AGENT_IMAGE
+    local harness="$1"
+    export TJOR_AGENT_IMAGE="tjor-agent-${harness}:local"
+    if [[ ! -d "${TJOR_ROOT}/.git" ]] && [[ "$(cfg images.publish --default true)" == "true" ]]; then
+        local ver reg ref
+        ver="$(tr -d ' \n' < "${TJOR_ROOT}/VERSION" 2>/dev/null || true)"
+        reg="$(cfg images.registry --default ghcr.io/bjorges)"
+        if [[ -n "${ver}" ]]; then
+            ref="${reg}/tjor-agent-${harness}:${ver}"
+            if docker image inspect "${ref}" >/dev/null 2>&1 || docker pull "${ref}" >/dev/null 2>&1; then
+                export TJOR_AGENT_IMAGE="${ref}"
+                echo "tjor: using prebuilt image ${ref}" >&2
+                return 0
+            fi
+            echo "tjor: no prebuilt image for ${ver} reachable — building locally" >&2
+        fi
+    fi
+    docker image inspect "${TJOR_AGENT_IMAGE}" >/dev/null 2>&1 || build_agent "${harness}"
 }
 
 # ----------------------------------------------------------------- topology
@@ -394,6 +420,7 @@ session_setup() { # $1 = harness, $2 = task id (optional), $3 = session name (op
     TJOR_LAUNCH_DIR="$(pwd)"
     export TJOR_LAUNCH_DIR
     export TJOR_AGENT_IMAGE="tjor-agent-$1:local"
+    TJOR_AGENT_UID="$(id -u)"; export TJOR_AGENT_UID   # runtime uid alignment (uid-agnostic image)
     export_static_env
     mkdir -p "${TJOR_SESSION_DIR}/home"
     prepare_broker
@@ -425,7 +452,7 @@ cmd_run() {
         [[ "${abs}" == "${TJOR_WORKSPACE}" ]] && continue   # primary already mounted
         TJOR_EXTRA_DIRS+=("${abs}")
     done
-    docker image inspect "${TJOR_AGENT_IMAGE}" >/dev/null 2>&1 || build_agent "${harness}"
+    resolve_agent_image "${harness}"
     # Collision guard: a session id already backing a running agent must not
     # be launched again — a second unnamed `tjor run` in the same workspace
     # would otherwise share this one's CA/network/identity, and a later

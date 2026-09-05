@@ -3,6 +3,24 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [0.5.0] — 2026-09-05 — Multi-repo sessions + prebuilt images
+
+### Added
+- **Multi-repo sessions** (#20): `tjor run --dir <path>` (repeatable) mounts
+  additional repositories at their host paths, writable — one agent across
+  several repos. The primary workspace still anchors the session (id,
+  identity, cwd unchanged).
+- **Prebuilt, uid-agnostic agent images** (#21): the agent image no longer
+  bakes the host uid — the entrypoint aligns the agent user to the host uid
+  at container start, so one image serves any user. A release-tag CI workflow
+  publishes multi-arch (amd64+arm64) images to GHCR; an installed copy pulls
+  the image for its version on first run instead of building (git checkouts
+  and offline still build locally; `[images] publish = false` to force build).
+
+### Changed
+- Bind-mounted repos are trusted for git (`safe.directory = *` inside the
+  cage) so git works regardless of the uid it runs as.
+
 ## [0.4.1] — 2026-09-05 — Security fixes (external review round 5)
 
 ### Fixed

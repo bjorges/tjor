@@ -6,6 +6,20 @@ set -euo pipefail
 
 AGENT_HOME=/home/agent
 
+# 0. Runtime uid alignment — makes the image uid-AGNOSTIC so one (published)
+#    image serves any host user. If the launcher passed a host uid that
+#    differs from the built-in agent uid, re-point the agent user before any
+#    ownership work below. -o allows a non-unique uid (target may already
+#    exist in the image). The .config/.local/home chowns in step 4 then land
+#    on the aligned uid.
+if [[ -n "${TJOR_AGENT_UID:-}" && "${TJOR_AGENT_UID}" =~ ^[0-9]+$ ]]; then
+    cur_uid="$(id -u agent)"
+    if [[ "${TJOR_AGENT_UID}" != "${cur_uid}" ]]; then
+        usermod -o -u "${TJOR_AGENT_UID}" agent
+        groupmod -o -g "${TJOR_AGENT_UID}" agent 2>/dev/null || true
+    fi
+fi
+
 # 1. Trust the session CA (the egress proxy re-signs all TLS). Append it
 #    directly to the system bundle that git/curl read — instant, and avoids
 #    update-ca-certificates, whose per-cert rehashing is pathologically slow

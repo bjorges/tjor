@@ -79,7 +79,10 @@ RUN set -eu; \
     esac
 
 # Match the host user's uid so bind-mounted session state stays writable.
-ARG AGENT_UID=1000
+# Fixed default uid — the image is uid-AGNOSTIC (so one published image works
+# for any host user). The entrypoint aligns the agent user to the host uid at
+# container start (TJOR_AGENT_UID). 10001 is unlikely to collide.
+ARG AGENT_UID=10001
 RUN useradd -m -u ${AGENT_UID} -s /bin/bash agent
 
 COPY images/agent/instructions/ /opt/tjor/instructions/

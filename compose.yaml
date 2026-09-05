@@ -135,6 +135,8 @@ services:
       # so git attempts auth; the proxy overwrites it with the real token.
       # The real credential is never passed to the agent.
       TJOR_BROKER_ENABLED: ${TJOR_BROKER_ENABLED:-}
+      # Host uid for runtime alignment (uid-agnostic image, #21).
+      TJOR_AGENT_UID: ${TJOR_AGENT_UID:-}
     volumes:
       - ${TJOR_SESSION_DIR:?}/home:/home/agent
       - ${TJOR_WORKSPACE:-/dev/null}:${TJOR_WORKSPACE:-/tmp/.tjor-nows}

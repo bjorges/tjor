@@ -49,6 +49,12 @@ The egress policy lives at `~/.config/tjor/policy.toml` (falling back to
 [`config/policy.toml`](config/policy.toml)) — strict allow-list by default,
 and a policy file that fails to parse denies everything.
 
+On first run, an installed copy pulls a prebuilt, uid-agnostic agent image
+for its version from GHCR (`ghcr.io/bjorges/tjor-agent-<harness>`) instead of
+building locally; if the image can't be pulled (offline, or a dev checkout),
+it builds locally as before. `tjor build` always builds locally. Set
+`[images] publish = false` to always build.
+
 ## Why
 
 Prompt-level rules are advisory. Harness-level permissions are harness-specific. The only guarantees that hold for *any* harness — including one running with permissions disabled — are structural: what the process can physically reach. tjor's design is corroborated by multiple independent production systems that converged on the same conclusion: restrict the environment, not the agent.
