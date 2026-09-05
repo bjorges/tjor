@@ -3,6 +3,37 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [0.6.1] — 2026-09-05 — Security hardening (external review, v0.5 round)
+
+### Security
+- **uid-0 root escalation (critical):** `TJOR_AGENT_UID=0` (from `sudo tjor` or
+  a root-default container executor) aligned the agent user to uid 0, so `gosu`
+  dropped to *nothing* and the harness ran as real root — silently defeating the
+  non-root guarantee, with no test coverage. The entrypoint now refuses uid 0
+  (keeps the image's built-in non-root uid) behind a hard "agent must never be
+  uid 0" invariant; `uid_test.sh` gained uid-0 and non-numeric-uid regression
+  cases.
+- **`--dir` guardrails:** `tjor run --dir` now refuses sensitive host paths
+  (`/`, `/etc`, `/var`, `/usr`, the home directory and its ancestors, and
+  credential dirs `~/.ssh` `~/.aws` `~/.kube` `~/.gnupg` `~/.docker` `~/.config`
+  `~/.gcloud` `~/.azure`) unless `--unsafe-dir` is given, and dedupes repeated
+  `--dir` values — mounting those read-write would dissolve the very boundary
+  the cage enforces.
+
+### Changed
+- **Prebuilt-image trust (ADR 0008):** a git checkout now *always* builds the
+  agent image locally from the audited Dockerfile (never silently replaced by a
+  pull); pinning `[images.digests].<harness>` gives a **verified** pull (exactly
+  the published image, independent of the mutable tag); a bare-tag pull prints
+  an explicit integrity notice instead of being framed as a pure speed feature.
+  New `INSTALL.md` and ADR 0008 document the trade-off. `publish = true` stays
+  the default, recorded in the ADR as a pending maintainer decision rather than
+  silently flipped.
+- **`safe.directory` scoped:** git no longer trusts `*` inside the cage — only
+  the exact repos the operator mounted (the workspace + each `--dir`, via
+  `TJOR_SAFE_DIRS`), narrowing the hostile-repo git-config surface (residual
+  risk documented, bounded by the non-root agent + no-egress cage).
+
 ## [0.6.0] — 2026-09-05 — Per-repo config + policy ergonomics
 
 ### Added
