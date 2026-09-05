@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import re
 import sys
+import tomllib
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -28,6 +29,22 @@ def add_hosts(path: str, hosts: list[str]) -> None:
     parsed = tjor_policy.parse_policy(text, source=path)
     if not parsed.valid:
         raise SystemExit(f"tjor_policy_edit: refusing to write an invalid policy: {parsed.errors}")
+
+    # Semantic verification (not just "it parses"): the regex insert can land
+    # inside a triple-quoted string — e.g. a documentation/example block — that
+    # happens to precede the real [hosts] table. The result is VALID TOML whose
+    # true allow-list is unchanged, so the operator would believe a host was
+    # added while the boundary is untouched. Re-parse and confirm each host is
+    # actually in the effective hosts.allow; refuse loudly if not.
+    effective = tomllib.loads(text).get("hosts", {}).get("allow", [])
+    missing = [h for h in hosts if h not in effective]
+    if missing:
+        raise SystemExit(
+            "tjor_policy_edit: edit did NOT change the effective hosts.allow for "
+            f"{missing} — refusing to write. The allow-list insertion point could "
+            "not be located safely (a multi-line string may precede [hosts]); add "
+            "the host(s) to hosts.allow by hand."
+        )
 
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)

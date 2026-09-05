@@ -90,3 +90,26 @@ class TestPolicyEdit:
         p.write_text("mode = [broken\n")                          # unparseable
         with pytest.raises(SystemExit):
             tjor_policy_edit.add_hosts(str(p), ["a.test"])
+
+    def test_refuses_silent_noop_into_multiline_string(self, tmp_path):
+        # A triple-quoted string that CONTAINS "[hosts]\nallow = [" precedes the
+        # real table. The regex would insert into the string → valid TOML whose
+        # real allow-list is untouched. Must fail loudly, not silently no-op.
+        p = tmp_path / "policy.toml"
+        p.write_text(
+            'note = """\n'
+            'example:\n'
+            '[hosts]\n'
+            'allow = [\n'
+            '  "doc.example",\n'
+            ']\n'
+            '"""\n\n'
+            'mode = "strict-allow"\n\n'
+            '[hosts]\n'
+            'allow = [\n  "github.com",\n]\n'
+        )
+        with pytest.raises(SystemExit):
+            tjor_policy_edit.add_hosts(str(p), ["real.test"])
+        # and the real allow-list was NOT changed by the refused write
+        pol = tjor_policy.load_policy(str(p))
+        assert not tjor_policy.evaluate(pol, "https://real.test/").allowed

@@ -63,16 +63,30 @@ if _broker_config and BROKER_HOSTS:
 _cache: dict = {"mtime": None, "policy": None}
 
 DENIAL_LOG = os.environ.get("TJOR_DENIAL_LOG", "")
+_denial_log_count = 0
+# Per-session cap so a misbehaving agent hammering a denied host cannot grow the
+# log unbounded (the sibling identity-forgery logger is likewise bounded).
+_DENIAL_LOG_MAX = 1000
 
 
 def _log_denial(host: str, rule: str) -> None:
     """Append a denied egress to the session denial log (#23) so `tjor
     denials` can surface it. Best-effort — never let logging break a request."""
-    if not DENIAL_LOG:
+    global _denial_log_count
+    if not DENIAL_LOG or _denial_log_count >= _DENIAL_LOG_MAX:
         return
+    _denial_log_count += 1
+    # `host` is attacker-influenced (the destination the agent tried to reach),
+    # and this file is later printed by `tjor denials`. Keep the file itself
+    # free of terminal-control bytes — collapse anything outside printable
+    # non-space ASCII to '?' and bound the length (`tjor denials` sanitizes
+    # again at display, defense in depth).
+    safe_host = "".join(c if 0x20 < ord(c) < 0x7F else "?" for c in host)[:253] or "?"
     try:
         with open(DENIAL_LOG, "a") as fh:
-            fh.write(f"{host}\t{rule}\t{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n")
+            fh.write(f"{safe_host}\t{rule}\t{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n")
+            if _denial_log_count >= _DENIAL_LOG_MAX:
+                fh.write("...(denial log capped for this session; further denials not recorded)\n")
     except OSError:
         pass
 

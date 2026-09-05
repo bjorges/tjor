@@ -36,16 +36,30 @@ check "init scaffolds .tjor/policy.toml and config.toml" bash -c "test -f '${REP
 printf 'mode = "strict-allow"\n[hosts]\nallow = ["repo-marker.test"]\n' > "${REPO}/.tjor/policy.toml"
 check "untrusted repo policy is ignored (repo marker not allowed)" bash -c \
     "cd '${REPO}' && '${T}' policy https://repo-marker.test/ 2>/dev/null | grep -q DENY"
-( cd "${REPO}" && "${T}" trust >/dev/null 2>&1 )
+# `trust` without --yes and no TTY must REFUSE (the two-step confirm gate):
+# approval is a separate act from display, never implicit.
+check "trust refuses to approve without confirmation (no TTY, no --yes)" bash -c \
+    "cd '${REPO}' && ! '${T}' trust >/dev/null 2>&1"
+( cd "${REPO}" && "${T}" trust --yes >/dev/null 2>&1 )
 check "trusted repo policy is honored (repo marker allowed)" bash -c \
     "cd '${REPO}' && '${T}' policy https://repo-marker.test/ 2>/dev/null | grep -q ALLOW"
 printf 'mode = "strict-allow"\n[hosts]\nallow = ["changed.test"]\n' > "${REPO}/.tjor/policy.toml"
 check "editing the repo policy revokes trust" bash -c \
     "cd '${REPO}' && '${T}' policy https://changed.test/ 2>/dev/null | grep -q DENY"
 
+# Terminal-escape injection defense: a hostile .tjor file's ANSI escape must be
+# neutralized in the trust REVIEW (rendered as a visible ^[ token), never sent
+# to the terminal raw — else the operator could approve hidden/spoofed content.
+# (A raw ESC lives in a string value here; a TOML *comment* may not hold one.)
+printf 'mode = "strict-allow"\n[hosts]\nallow = ["esc\x1b[31mX.test"]\n' > "${REPO}/.tjor/policy.toml"
+check "trust review neutralizes ANSI escapes (renders ^[ marker)" bash -c \
+    "cd '${REPO}' && '${T}' trust --show 2>&1 | grep -q '\\^\\['"
+# Restore a clean, valid policy for the rest of the flow.
+printf 'mode = "strict-allow"\n[hosts]\nallow = ["added.test"]\n' > "${REPO}/.tjor/policy.toml"
+
 echo "== policy add + explain"
-( cd "${REPO}" && "${T}" trust >/dev/null 2>&1 )   # re-approve the edited policy
-( cd "${REPO}" && "${T}" policy add added.test >/dev/null 2>&1 )
+( cd "${REPO}" && "${T}" trust --yes >/dev/null 2>&1 )   # re-approve the edited policy
+( cd "${REPO}" && "${T}" policy add added.test --yes >/dev/null 2>&1 )   # repo policy: confirmed re-approve
 check "policy add makes a host allowed" bash -c \
     "cd '${REPO}' && '${T}' policy https://added.test/ 2>/dev/null | grep -q ALLOW"
 check "policy --explain names the active policy" bash -c \

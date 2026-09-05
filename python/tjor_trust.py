@@ -60,10 +60,15 @@ def approve(path: str | Path) -> str:
     for k, v in sorted(trusted.items()):
         esc = k.replace("\\", "\\\\").replace('"', '\\"')
         lines.append(f'"{esc}" = "{v}"')
+    # Create the temp file 0o600 FROM THE START (os.open with the mode), not
+    # write-then-chmod: the store is the sole authority on what a repo may widen
+    # the boundary to, so it must never exist even briefly group/world-readable
+    # (same atomic pattern as the broker secret file, which had this fixed).
     tmp = out.with_suffix(".tmp")
-    tmp.write_text("\n".join(lines) + "\n")
-    os.chmod(tmp, 0o600)
-    tmp.replace(out)
+    fd = os.open(str(tmp), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write("\n".join(lines) + "\n")
+    os.replace(str(tmp), str(out))
     return h
 
 

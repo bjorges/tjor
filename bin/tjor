@@ -481,7 +481,12 @@ verify_bind_source() {
     fi
 }
 
-session_setup() { # $1 = harness, $2 = task id (optional), $3 = session name (optional)
+# Resolve a session's identity + topology env (id, dirs, project, compose env)
+# with NO side effects — no credential minting. Read-only and teardown commands
+# (status/down/reset/denials) use this directly so they never assemble broker
+# material; under a kube broker source, session_setup would otherwise mint a
+# real short-TTL ServiceAccount token against the cluster just to resolve a path.
+resolve_session() { # $1 = harness, $2 = task id (optional), $3 = session name (optional)
     local ws root sid in_repo=""
     if ws="$(git rev-parse --show-toplevel 2>/dev/null)"; then in_repo=1; else
         ws="$(pwd)"
@@ -536,6 +541,12 @@ session_setup() { # $1 = harness, $2 = task id (optional), $3 = session name (op
     TJOR_AGENT_UID="$(id -u)"; export TJOR_AGENT_UID   # runtime uid alignment (uid-agnostic image)
     export_static_env
     mkdir -p "${TJOR_SESSION_DIR}/home"
+}
+
+# Full launch setup: resolve the session AND assemble broker material (which may
+# mint a live credential). Only the launch path (cmd_run) uses this.
+session_setup() { # $1 = harness, $2 = task id (optional), $3 = session name (optional)
+    resolve_session "$@"
     prepare_broker
 }
 
@@ -544,7 +555,7 @@ session_setup() { # $1 = harness, $2 = task id (optional), $3 = session name (op
 # home directory itself or an ancestor of it (which would expose credentials),
 # and known credential directories.
 dir_is_sensitive() { # $1 = absolute path (already symlink-resolved by pwd -P)
-    local p="$1" s
+    local p="$1" s home="${HOME%/}"   # strip any trailing slash so ${home}/x matches
     case "${p}" in
         / | /etc | /etc/* | /root | /root/* | /boot | /boot/* | /sys | /sys/* \
         | /proc | /proc/* | /dev | /dev/* \
@@ -552,9 +563,12 @@ dir_is_sensitive() { # $1 = absolute path (already symlink-resolved by pwd -P)
         | /private/etc | /private/etc/* | /private/var | /private/var/* \
         | /System | /System/*) return 0 ;;   # macOS resolves /etc,/var to /private/*
     esac
-    [[ "${p}" == "${HOME}" || "${HOME}" == "${p}/"* ]] && return 0
-    for s in .ssh .aws .gnupg .kube .docker .config .gcloud .azure; do
-        [[ "${p}" == "${HOME}/${s}" || "${p}" == "${HOME}/${s}/"* ]] && return 0
+    [[ "${p}" == "${home}" || "${home}" == "${p}/"* ]] && return 0
+    # Credential / secret-store directories. Secret Service keyrings and pass'
+    # store are independently mountable and hold live secrets.
+    for s in .ssh .aws .gnupg .kube .docker .config .gcloud .azure \
+             .local/share/keyrings .password-store; do
+        [[ "${p}" == "${home}/${s}" || "${p}" == "${home}/${s}/"* ]] && return 0
     done
     return 1
 }
@@ -671,7 +685,7 @@ graceful_proxy_stop() { # $1 = session id
 cmd_down() {
     local name=""
     [[ "${1:-}" == "--session" ]] && name="$2"
-    session_setup "opencode" "" "${name}"
+    resolve_session "opencode" "" "${name}"   # teardown: no broker mint
     graceful_proxy_stop "${TJOR_SESSION}"
     # Persistent agent (compose run -d) containers aren't reliably caught by
     # `down --remove-orphans`; remove this session's by label explicitly.
@@ -684,7 +698,7 @@ cmd_down() {
 cmd_status() {
     local name=""
     [[ "${1:-}" == "--session" ]] && name="$2"
-    session_setup "opencode" "" "${name}"
+    resolve_session "opencode" "" "${name}"   # read-only: no broker mint
     compose ps
 }
 
@@ -864,7 +878,7 @@ cmd_reset() {
         esac
     done
     [[ -n "${tier}" ]] || die "tjor reset requires an explicit tier: cache | sessions | creds | all"
-    session_setup "opencode" "" "${name}"
+    resolve_session "opencode" "" "${name}"   # state teardown: no broker mint
     # TOCTOU guard: the ancestors check and the rm are two syscalls. With the
     # persistent-container model a LIVE agent (write access to the same home
     # tree) could swap a dir for a symlink between them. Refuse to reset a
@@ -950,13 +964,34 @@ active_writable_policy() { # echoes a policy file safe to edit (never the packag
 cmd_policy() {
     if [[ "${1:-}" == "add" ]]; then
         shift
-        [[ $# -ge 1 ]] || die "usage: tjor policy add <host> [host...]"
+        local pyes="" a
+        local -a addhosts=()
+        for a in "$@"; do
+            case "${a}" in --yes|-y) pyes=1 ;; *) addhosts+=("${a}") ;; esac
+        done
+        [[ ${#addhosts[@]} -ge 1 ]] || die "usage: tjor policy add <host> [host...] [--yes]"
         local target; target="$(active_writable_policy)"
-        python3 "${TJOR_ROOT}/python/tjor_policy_edit.py" add "${target}" "$@"
-        # editing a trusted repo policy invalidates its hash — re-approve, since
-        # the user just asked for this change explicitly.
+        # Adding to a TRUSTED repo policy re-approves it (its hash changes),
+        # re-widening the boundary from a file that travels with the repo. Make
+        # that explicit and confirm it — never a silent re-approve — so an
+        # agent's suggested "tjor policy add ..." can't quietly re-bless a repo
+        # file. Adding to the user policy stays quick (no re-approval involved).
+        if [[ "${target}" == */.tjor/policy.toml ]]; then
+            loud "this WIDENS and re-approves a trusted repo policy (${target}): ${addhosts[*]}"
+            if [[ -z "${pyes}" ]]; then
+                if [[ -r /dev/tty && -t 2 ]]; then
+                    local reply=""
+                    printf 'tjor: add these host(s) and re-approve the repo policy? [y/N] ' >&2
+                    read -r reply </dev/tty || reply=""
+                    [[ "${reply}" =~ ^[Yy]([Ee][Ss])?$ ]] || die "aborted (repo policy unchanged)"
+                else
+                    die "re-approving a repo policy needs confirmation — re-run with --yes"
+                fi
+            fi
+        fi
+        python3 "${TJOR_ROOT}/python/tjor_policy_edit.py" add "${target}" "${addhosts[@]}"
         [[ "${target}" == */.tjor/policy.toml ]] && python3 "${TJOR_ROOT}/python/tjor_trust.py" approve "${target}" >/dev/null
-        echo "tjor: added to ${target}: $*" >&2
+        echo "tjor: added to ${target}: ${addhosts[*]}" >&2
         return 0
     fi
     local explain=""
@@ -990,15 +1025,43 @@ cmd_trust() {
     local root; root="$(repo_root)"
     [[ -n "${root}" ]] || die "tjor trust: run inside a git repository"
     local -a files=("${root}/.tjor/policy.toml" "${root}/.tjor/config.toml")
+    local show="" yes="" arg
+    for arg in "$@"; do
+        case "${arg}" in
+            --show) show=1 ;;
+            --yes|-y) yes=1 ;;
+            *) die "usage: tjor trust [--show] [--yes]" ;;
+        esac
+    done
     local any="" f
     for f in "${files[@]}"; do
         [[ -f "${f}" ]] || continue
         any=1
         echo "=== ${f}" >&2
-        sed 's/^/    /' "${f}" >&2
+        # Render untrusted file content through the terminal-escape sanitizer.
+        # A hostile .tjor file (planted by a repo contributor, or written by a
+        # compromised agent before review) could embed ANSI/OSC/bidi sequences
+        # to HIDE or SPOOF lines — so the operator would approve bytes other
+        # than what they saw, and the content hash then pins exactly those
+        # misrepresented bytes. Never print the raw file to the terminal.
+        python3 "${TJOR_ROOT}/python/tjor_safeprint.py" "${f}" | sed 's/^/    /' >&2
     done
     [[ -n "${any}" ]] || die "no .tjor/config.toml or .tjor/policy.toml here — scaffold with: tjor init"
-    if [[ "${1:-}" == "--show" ]]; then return 0; fi
+    # --show reviews only, never approves.
+    if [[ -n "${show}" ]]; then return 0; fi
+    # Genuine two-step gate: approval is a SEPARATE act from display, taken only
+    # after the operator has seen the (sanitized) content. --yes approves
+    # non-interactively (e.g. automation that already reviewed with --show).
+    if [[ -z "${yes}" ]]; then
+        if [[ -r /dev/tty && -t 2 ]]; then
+            local reply=""
+            printf 'tjor: approve the content shown above as trusted? [y/N] ' >&2
+            read -r reply </dev/tty || reply=""
+            [[ "${reply}" =~ ^[Yy]([Ee][Ss])?$ ]] || die "trust not granted (no approval given)"
+        else
+            die "tjor trust needs confirmation — re-run with --yes to approve non-interactively (review first: tjor trust --show)"
+        fi
+    fi
     for f in "${files[@]}"; do
         [[ -f "${f}" ]] && python3 "${TJOR_ROOT}/python/tjor_trust.py" approve "${f}" >/dev/null
     done
@@ -1008,11 +1071,14 @@ cmd_trust() {
 cmd_denials() {
     local name="" root sid dir
     [[ "${1:-}" == "--session" ]] && name="$2"
-    session_setup "opencode" "" "${name}" >/dev/null 2>&1
+    resolve_session "opencode" "" "${name}"   # read-only: no broker mint (diagnostics stay visible)
     dir="${TJOR_SESSION_DIR}"
     if [[ -s "${dir}/denials.log" ]]; then
         echo "tjor: denied egress for session ${TJOR_SESSION} (host  rule  time):" >&2
-        cat "${dir}/denials.log"
+        # The host column is attacker-influenced (the destination the agent
+        # tried to reach). Render it through the terminal-escape sanitizer so a
+        # hostile hostname can't inject ANSI/OSC sequences into this display.
+        python3 "${TJOR_ROOT}/python/tjor_safeprint.py" "${dir}/denials.log"
         echo "tjor: add any you need with: tjor policy add <host>" >&2
     else
         echo "tjor: no denied egress recorded for session ${TJOR_SESSION}" >&2
@@ -1102,10 +1168,10 @@ usage: tjor <command> [args]
   down [--session <name>]                            tear down this repo's session topology
   status [--session <name>]                          show this repo's session containers
   policy <url> [--explain]                           evaluate a URL against the active egress policy
-  policy add <host>                                  add a host to the active policy's allow list
+  policy add <host>... [--yes]                       add host(s) to the active policy (re-approving a trusted repo policy is confirmed; --yes to skip)
   denials [--session <name>]                         show egress denied in a session (then: tjor policy add <host>)
   init                                               scaffold a per-repo .tjor/ (policy + config)
-  trust [--show]                                     review + approve this repo's .tjor config (honored only once trusted)
+  trust [--show] [--yes]                             review this repo's .tjor config, then approve it (--show: review only; --yes: approve non-interactively)
   conformance                                        run the adversarial conformance suite
   doctor [--full]                                    check host deps, policy, guarantees (--full: + conformance)
   build [--harness ...]                              (re)build the images
