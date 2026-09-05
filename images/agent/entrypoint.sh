@@ -76,7 +76,18 @@ data["autoupdate"] = False
 cfgfile.write_text(json.dumps(data, indent=2) + "\n")
 PY
 
-# 3. Ownership + writability. chown may legitimately fail on uid-mapped VM
+# 3. Git transport: SSH egress is structurally blocked (only proxied
+#    HTTP(S) leaves the cage), so rewrite SSH remotes to HTTPS system-wide.
+#    Anonymous pulls of public repos work immediately; private repos and
+#    pushes need a one-time in-session `gh auth login` + `gh auth setup-git`
+#    (persisted in the session home). D2 will replace this with brokered,
+#    short-TTL credentials.
+git config --system url."https://github.com/".insteadOf "git@github.com:"
+git config --system --add url."https://github.com/".insteadOf "ssh://git@github.com/"
+git config --system url."https://gitlab.com/".insteadOf "git@gitlab.com:"
+git config --system --add url."https://gitlab.com/".insteadOf "ssh://git@gitlab.com/"
+
+# 4. Ownership + writability. chown may legitimately fail on uid-mapped VM
 #    mounts (Colima virtiofs) — warn, then hard-verify the invariant that
 #    actually matters: the agent user can write its home.
 if ! chown -R agent:agent "${AGENT_HOME}/.config/opencode" 2>/dev/null; then
@@ -91,5 +102,5 @@ if ! gosu agent test -w "${AGENT_HOME}"; then
     exit 1
 fi
 
-# 4. Drop privileges and hand over.
+# 5. Drop privileges and hand over.
 exec gosu agent env HOME="${AGENT_HOME}" USER=agent "$@"
