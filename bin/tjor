@@ -52,11 +52,29 @@ sha256() {
 
 cfg() { python3 "${TJOR_ROOT}/python/tjor_cfg.py" get "$@"; }
 
+# The active policy file, most-specific first: explicit override → a TRUSTED
+# repo .tjor/policy.toml → the user policy → the packaged default. A repo
+# policy is honored only after `tjor trust` (it can widen egress).
+repo_root() { # echoes the current repo's toplevel, or nothing
+    echo "${TJOR_WORKSPACE:-$(git rev-parse --show-toplevel 2>/dev/null || true)}"
+}
+
 policy_file() {
-    if [[ -n "${TJOR_POLICY_OVERRIDE:-}" ]]; then echo "${TJOR_POLICY_OVERRIDE}"
-    elif [[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/tjor/policy.toml" ]]; then
-        echo "${XDG_CONFIG_HOME:-$HOME/.config}/tjor/policy.toml"
-    else echo "${TJOR_ROOT}/config/policy.toml"; fi
+    if [[ -n "${TJOR_POLICY_OVERRIDE:-}" ]]; then echo "${TJOR_POLICY_OVERRIDE}"; return; fi
+    local root repo
+    root="$(repo_root)"
+    repo="${root}/.tjor/policy.toml"
+    if [[ -n "${root}" && -f "${repo}" ]]; then
+        if python3 "${TJOR_ROOT}/python/tjor_trust.py" check "${repo}" >/dev/null 2>&1; then
+            echo "${repo}"; return
+        else
+            warn "repo policy ${repo} present but NOT trusted — ignored (review + approve with: tjor trust)"
+        fi
+    fi
+    if [[ -f "${XDG_CONFIG_HOME:-$HOME/.config}/tjor/policy.toml" ]]; then
+        echo "${XDG_CONFIG_HOME:-$HOME/.config}/tjor/policy.toml"; return
+    fi
+    echo "${TJOR_ROOT}/config/policy.toml"
 }
 
 # ------------------------------------------------------------------- images
@@ -164,6 +182,7 @@ ensure_topology() { # expects TJOR_PROJECT, TJOR_SESSION_DIR exported
 
     build_proxy
     ensure_session_ca
+    touch "${TJOR_SESSION_DIR}/denials.log"   # pre-create (bind source must exist); accumulates across the session
     verify_bind_source "${TJOR_SESSION_DIR}"
     [[ -n "${TJOR_WORKSPACE:-}" && -d "${TJOR_WORKSPACE:-}" ]] && verify_bind_source "${TJOR_WORKSPACE}"
 
@@ -417,6 +436,7 @@ session_setup() { # $1 = harness, $2 = task id (optional), $3 = session name (op
     export TJOR_PROJECT="tjor-${sid}"
     export TJOR_SESSION_DIR="${root}/${sid}"
     export TJOR_WORKSPACE="${ws}"
+    export TJOR_REPO_ROOT="${ws}"   # let tjor_cfg pick up a trusted repo .tjor/config.toml
     TJOR_LAUNCH_DIR="$(pwd)"
     export TJOR_LAUNCH_DIR
     export TJOR_AGENT_IMAGE="tjor-agent-$1:local"
@@ -778,9 +798,88 @@ ancestors_are_real_dirs() { # $1 root, $2 target
     return 0
 }
 
+active_writable_policy() { # echoes a policy file safe to edit (never the packaged default)
+    local active user
+    active="$(policy_file)"
+    user="${XDG_CONFIG_HOME:-$HOME/.config}/tjor/policy.toml"
+    if [[ "${active}" == "${TJOR_ROOT}/config/policy.toml" ]]; then
+        mkdir -p "$(dirname "${user}")"; cp "${active}" "${user}"
+        echo "${user}"
+    else
+        echo "${active}"   # user policy, or a trusted repo policy
+    fi
+}
+
 cmd_policy() {
-    [[ $# -ge 1 ]] || die "usage: tjor policy <url>"
-    python3 "${TJOR_ROOT}/python/tjor_policy.py" check --policy "$(policy_file)" "$1"
+    if [[ "${1:-}" == "add" ]]; then
+        shift
+        [[ $# -ge 1 ]] || die "usage: tjor policy add <host> [host...]"
+        local target; target="$(active_writable_policy)"
+        python3 "${TJOR_ROOT}/python/tjor_policy_edit.py" add "${target}" "$@"
+        # editing a trusted repo policy invalidates its hash — re-approve, since
+        # the user just asked for this change explicitly.
+        [[ "${target}" == */.tjor/policy.toml ]] && python3 "${TJOR_ROOT}/python/tjor_trust.py" approve "${target}" >/dev/null
+        echo "tjor: added to ${target}: $*" >&2
+        return 0
+    fi
+    local explain=""
+    local -a rest=()
+    for a in "$@"; do [[ "${a}" == "--explain" ]] && explain=1 || rest+=("${a}"); done
+    [[ ${#rest[@]} -ge 1 ]] || die "usage: tjor policy <url> [--explain]  |  tjor policy add <host>"
+    local pf; pf="$(policy_file)"
+    [[ -n "${explain}" ]] && echo "tjor: active policy: ${pf}" >&2
+    python3 "${TJOR_ROOT}/python/tjor_policy.py" check --policy "${pf}" "${rest[0]}"
+}
+
+cmd_init() {
+    local root; root="$(repo_root)"
+    [[ -n "${root}" ]] || die "tjor init: run inside a git repository"
+    local dir="${root}/.tjor"
+    mkdir -p "${dir}"
+    [[ -f "${dir}/policy.toml" ]] || cp "${TJOR_ROOT}/config/policy.toml" "${dir}/policy.toml"
+    if [[ ! -f "${dir}/config.toml" ]]; then
+        cat > "${dir}/config.toml" <<'EOF'
+# Per-repo tjor config. Honored only after you approve it: `tjor trust`.
+# Layers over your user config for sessions in this repo. Example:
+# [identity]
+# inject_hosts = ["api.anthropic.com"]
+EOF
+    fi
+    echo "tjor: scaffolded ${dir}/ (policy.toml, config.toml)" >&2
+    echo "tjor: review, then approve with: tjor trust   (present but UNTRUSTED until then)" >&2
+}
+
+cmd_trust() {
+    local root; root="$(repo_root)"
+    [[ -n "${root}" ]] || die "tjor trust: run inside a git repository"
+    local -a files=("${root}/.tjor/policy.toml" "${root}/.tjor/config.toml")
+    local any="" f
+    for f in "${files[@]}"; do
+        [[ -f "${f}" ]] || continue
+        any=1
+        echo "=== ${f}" >&2
+        sed 's/^/    /' "${f}" >&2
+    done
+    [[ -n "${any}" ]] || die "no .tjor/config.toml or .tjor/policy.toml here — scaffold with: tjor init"
+    if [[ "${1:-}" == "--show" ]]; then return 0; fi
+    for f in "${files[@]}"; do
+        [[ -f "${f}" ]] && python3 "${TJOR_ROOT}/python/tjor_trust.py" approve "${f}" >/dev/null
+    done
+    echo "tjor: approved this repo's .tjor config — honored on the next launch (re-run after any edit)" >&2
+}
+
+cmd_denials() {
+    local name="" root sid dir
+    [[ "${1:-}" == "--session" ]] && name="$2"
+    session_setup "opencode" "" "${name}" >/dev/null 2>&1
+    dir="${TJOR_SESSION_DIR}"
+    if [[ -s "${dir}/denials.log" ]]; then
+        echo "tjor: denied egress for session ${TJOR_SESSION} (host  rule  time):" >&2
+        cat "${dir}/denials.log"
+        echo "tjor: add any you need with: tjor policy add <host>" >&2
+    else
+        echo "tjor: no denied egress recorded for session ${TJOR_SESSION}" >&2
+    fi
 }
 
 cmd_conformance() {
@@ -865,7 +964,11 @@ usage: tjor <command> [args]
                                                      tiered wipe of this repo's session state
   down [--session <name>]                            tear down this repo's session topology
   status [--session <name>]                          show this repo's session containers
-  policy <url>                                       evaluate a URL against the active egress policy
+  policy <url> [--explain]                           evaluate a URL against the active egress policy
+  policy add <host>                                  add a host to the active policy's allow list
+  denials [--session <name>]                         show egress denied in a session (then: tjor policy add <host>)
+  init                                               scaffold a per-repo .tjor/ (policy + config)
+  trust [--show]                                     review + approve this repo's .tjor config (honored only once trusted)
   conformance                                        run the adversarial conformance suite
   doctor [--full]                                    check host deps, policy, guarantees (--full: + conformance)
   build [--harness ...]                              (re)build the images
@@ -887,6 +990,9 @@ main() {
         down) cmd_down "$@" ;;
         status) cmd_status "$@" ;;
         policy) cmd_policy "$@" ;;
+        denials) cmd_denials "$@" ;;
+        init) cmd_init "$@" ;;
+        trust) cmd_trust "$@" ;;
         conformance) cmd_conformance "$@" ;;
         doctor) cmd_doctor "$@" ;;
         build) cmd_build "$@" ;;

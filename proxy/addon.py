@@ -62,6 +62,20 @@ if _broker_config and BROKER_HOSTS:
 
 _cache: dict = {"mtime": None, "policy": None}
 
+DENIAL_LOG = os.environ.get("TJOR_DENIAL_LOG", "")
+
+
+def _log_denial(host: str, rule: str) -> None:
+    """Append a denied egress to the session denial log (#23) so `tjor
+    denials` can surface it. Best-effort — never let logging break a request."""
+    if not DENIAL_LOG:
+        return
+    try:
+        with open(DENIAL_LOG, "a") as fh:
+            fh.write(f"{host}\t{rule}\t{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n")
+    except OSError:
+        pass
+
 
 def _current_policy() -> tjor_policy.Policy:
     try:
@@ -327,6 +341,7 @@ class TjorPolicy:
 
         verdict = connect_verdict(flow.request.host)
         if not verdict.allowed:
+            _log_denial(flow.request.host, verdict.rule)
             flow.response = http.Response.make(
                 403,
                 f"tjor egress policy: DENY CONNECT ({verdict.rule})\n".encode(),
@@ -341,6 +356,7 @@ class TjorPolicy:
             _apply_identity(flow)
             _apply_broker(flow)
         if not verdict.allowed:
+            _log_denial(flow.request.host, verdict.rule)
             flow.response = http.Response.make(
                 403,
                 (

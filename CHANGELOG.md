@@ -3,6 +3,22 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [0.6.0] — 2026-09-05 — Per-repo config + policy ergonomics
+
+### Added
+- **Policy ergonomics** (#23): `tjor denials [session]` surfaces what egress a
+  session had blocked (host + rule); `tjor policy add <host>` widens the active
+  allow-list in one command; `tjor policy <url> --explain` names the active
+  policy and the deciding rule. The proxy records each denied egress to a
+  session denial log.
+- **Per-repo config** (#22): a repo may carry `.tjor/policy.toml` and
+  `.tjor/config.toml`, honored **only after `tjor trust`** approves their exact
+  content (content-hash pinned; any edit revokes trust) — an unapproved repo
+  config is ignored with a warning. `tjor init` scaffolds a starter `.tjor/`.
+  When trusted, the repo layer sits most-specific in config/policy resolution.
+- README: install-via-brew quickstart, an egress-policy section with the
+  deny→`denials`→`policy add` loop, and the per-repo config/trust flow.
+
 ## [0.5.0] — 2026-09-05 — Multi-repo sessions + prebuilt images
 
 ### Added

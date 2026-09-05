@@ -116,6 +116,16 @@ jobs:
       - name: run multi-repo integration test
         run: tests/integration/multirepo_test.sh
 
+  ergonomics:
+    name: config + policy ergonomics (Linux engine)
+    runs-on: ubuntu-latest
+    needs: [agent-image]
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: run config + ergonomics integration test
+        run: tests/integration/ergonomics_test.sh
+
   uid:
     name: uid-agnostic image (non-default uid)
     runs-on: ubuntu-latest

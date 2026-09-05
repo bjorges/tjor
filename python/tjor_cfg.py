@@ -57,11 +57,35 @@ def _load(path: Path) -> dict:
         raise ConfigError(f"{path}: unreadable: {exc}")
 
 
+def repo_config_path() -> Path | None:
+    """The current repo's `.tjor/config.toml`, if TJOR_REPO_ROOT names a repo
+    that has one. The launcher exports TJOR_REPO_ROOT (the workspace)."""
+    root = os.environ.get("TJOR_REPO_ROOT")
+    if not root:
+        return None
+    p = Path(root) / ".tjor" / "config.toml"
+    return p if p.is_file() else None
+
+
 def effective() -> dict:
     config = _load(DEFAULTS)  # defaults must exist; failure here is a broken install
     user = user_config_path()
     if user.is_file():
         config = deep_merge(config, _load(user))
+    # Trust-gated repo layer: a repo `.tjor/config.toml` can widen the
+    # boundary, so it applies only after the user approved its content.
+    repo = repo_config_path()
+    if repo is not None:
+        import tjor_trust
+
+        if tjor_trust.is_trusted(repo):
+            config = deep_merge(config, _load(repo))
+        else:
+            print(
+                f"tjor_cfg: repo config {repo} present but NOT trusted — ignored "
+                "(review + approve with: tjor trust)",
+                file=sys.stderr,
+            )
     return config
 
 

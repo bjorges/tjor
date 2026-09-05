@@ -51,6 +51,9 @@ services:
       # TJOR_BROKER_HOSTS only; the agent never sees it.
       TJOR_BROKER_CONFIG: ${TJOR_BROKER_ENABLED:+/broker/broker.json}
       TJOR_BROKER_HOSTS: ${TJOR_BROKER_HOSTS:-}
+      # Session denial log (#23): the addon appends each denied egress here so
+      # `tjor denials` can surface what got blocked.
+      TJOR_DENIAL_LOG: /denials.log
     labels:
       tjor.role: proxy
       tjor.session: ${TJOR_SESSION:-}
@@ -62,6 +65,8 @@ services:
       # Broker dir (config + App key) mounted read-only into the proxy ONLY.
       # Points at a real dir when disabled (compose needs an existing source).
       - ${TJOR_BROKER_DIR:-${TJOR_SESSION_DIR:?}/proxy-ca}:/broker:ro
+      # Session denial log (writable): the launcher pre-creates the file.
+      - ${TJOR_SESSION_DIR:?}/denials.log:/denials.log
     healthcheck:
       test: ["CMD", "python3", "-c", "import socket; socket.create_connection(('127.0.0.1', ${TJOR_PROXY_PORT:-8080}), 3).close()"]
       interval: 30s

@@ -6,18 +6,29 @@ tjor runs AI coding agents (Claude Code, opencode, GitHub Copilot CLI) inside a 
 
 **Status: pre-alpha, working skeleton.** The cage core runs: fail-closed egress with an adversarial conformance suite (15/15 probes green), opencode doing real work inside. Specs live in [`openspec/`](openspec/), decisions in [`docs/decisions/`](docs/decisions/).
 
-## Quickstart
-
-Requires bash ≥ 4.4, python3 ≥ 3.11, git, and a Docker engine with compose v2
-(Colima, Docker Desktop, or native Linux).
+## Install
 
 ```console
-$ git clone https://github.com/bjorges/tjor && cd tjor
-$ ./bin/tjor doctor              # host preflight + policy check + guarantee tiers
-$ ./bin/tjor conformance         # adversarial suite: proves the boundary holds on YOUR runtime
-$ cd ~/your/project
-$ /path/to/tjor/bin/tjor run     # caged opencode session in this repo
+$ brew install bjorges/tap/tjor
 ```
+
+Requires a Docker engine with compose v2 — **Colima**, Docker Desktop, or a
+native Linux engine — plus bash ≥ 4.4, python3 ≥ 3.11, git, and openssl (all
+but Docker are usually already present). `tjor doctor` checks them and names
+anything missing. (No brew? Clone the repo and run `./bin/tjor`.)
+
+## Quickstart
+
+```console
+$ tjor doctor                    # host preflight + active policy + guarantee tiers
+$ tjor conformance               # adversarial suite: proves the boundary holds on YOUR runtime
+$ cd ~/your/project
+$ tjor run                       # caged opencode session in this repo
+```
+
+On first run an installed tjor pulls a prebuilt agent image (seconds), then
+drops you into a caged opencode session. The first time you need a private
+repo or a push, authenticate once inside the session: `gh auth login`.
 
 Sessions are per-repo: state (harness auth, history) persists under
 `~/.tjor/sessions/<session>/` across container restarts, while the container
@@ -45,9 +56,36 @@ tampered one as **DEGRADED**. `gc` only ever deletes docker resources it
 labelled — never your session state; wiping state is `reset`'s explicit,
 tiered, dry-runnable job.
 
-The egress policy lives at `~/.config/tjor/policy.toml` (falling back to
-[`config/policy.toml`](config/policy.toml)) — strict allow-list by default,
-and a policy file that fails to parse denies everything.
+## Egress policy — and growing it
+
+The cage is fail-closed: the agent can only reach hosts on the allow-list, and
+a policy that fails to parse denies everything. The default list covers the
+common needs (source hosting, package registries, the harness LLM endpoints).
+When something you need is blocked, the loop is:
+
+```console
+$ tjor denials                   # what got blocked in this session (host + rule)
+$ tjor policy add registry.example.com   # add it to your allow-list
+$ tjor policy https://x/ --explain       # why a URL is allowed/denied, and which policy decided
+```
+
+The active policy is, most-specific first: a **trusted** repo `.tjor/policy.toml`
+→ your `~/.config/tjor/policy.toml` → the packaged default.
+
+## Per-repo config (`.tjor/`)
+
+A repo can carry its own tjor config and egress policy so a setup travels with
+the code:
+
+```console
+$ tjor init                      # scaffold .tjor/policy.toml + .tjor/config.toml
+$ tjor trust                     # review and approve them (required before they apply)
+```
+
+Because a repo config can widen the boundary (allow a host, set a broker), it
+is **honored only after you approve it** with `tjor trust` — pinned by content
+hash, so any later edit needs re-approval. An unapproved `.tjor` config is
+ignored with a warning.
 
 On first run, an installed copy pulls a prebuilt, uid-agnostic agent image
 for its version from GHCR (`ghcr.io/bjorges/tjor-agent-<harness>`) instead of
