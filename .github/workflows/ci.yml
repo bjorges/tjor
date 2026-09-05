@@ -29,7 +29,10 @@ jobs:
       - name: unit, corpus, call-site parity, and addon-guard tests
         run: python -m pytest python/tests -q
       - name: shellcheck
-        run: shellcheck bin/tjor images/agent/entrypoint.sh proxy/entrypoint.sh tests/*.sh tests/integration/*.sh
+        # --severity=warning: fail on real bugs (warning/error), not info-level
+        # findings like SC2317 (trap-invoked functions look "unreachable"),
+        # whose exact code varies by shellcheck version.
+        run: shellcheck --severity=warning bin/tjor images/agent/entrypoint.sh proxy/entrypoint.sh tests/*.sh tests/integration/*.sh
       - name: doc-consistency (README shipped markers vs roadmap table)
         run: tests/doc_consistency.sh
 
