@@ -17,7 +17,17 @@ ok()  { echo "ok   $1"; PASS=$((PASS + 1)); }
 bad() { echo "FAIL $1" >&2; FAIL=$((FAIL + 1)); }
 
 # shellcheck disable=SC2329  # invoked via the EXIT trap
-cleanup() { rm -rf "${BASE}"; }
+cleanup() {
+    set +e
+    # The container wrote files as the aligned uid (4242/5555); on a native
+    # engine those are owned by that uid and this user can't rm them. Chown
+    # the tree back via a root container, then remove. `return 0` keeps a
+    # failed cleanup from propagating into the script's exit code.
+    [[ -d "${BASE}" ]] && docker run --rm -u 0 -v "${BASE}:/c" \
+        --entrypoint chown "${IMAGE}" -R "$(id -u):$(id -g)" /c >/dev/null 2>&1
+    rm -rf "${BASE}"
+    return 0
+}
 trap cleanup EXIT
 
 for uid in 4242 5555; do
