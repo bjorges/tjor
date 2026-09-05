@@ -194,7 +194,12 @@ ensure_topology() { # expects TJOR_PROJECT, TJOR_SESSION_DIR exported
             >/dev/null 2>&1; then ready=1; break; fi
         sleep 1
     done
-    [[ -n "${ready}" ]] || die "proxy never started listening on :${TJOR_PROXY_PORT} — check: docker logs ${proxy_ctr}"
+    if [[ -z "${ready}" ]]; then
+        echo "tjor: proxy diagnostics (state, restarts, last logs):" >&2
+        docker inspect -f 'state={{.State.Status}} restarts={{.RestartCount}} exitcode={{.State.ExitCode}}' "${proxy_ctr}" >&2 || true
+        docker logs --tail 40 "${proxy_ctr}" >&2 || true
+        die "proxy never started listening on :${TJOR_PROXY_PORT}"
+    fi
 
     # Discover sidecar internal IPs. Guard against not-yet-running or
     # crash-looping containers: docker 29 renders an empty IP as the literal
