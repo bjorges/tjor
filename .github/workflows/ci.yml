@@ -26,7 +26,7 @@ jobs:
       - name: unit, corpus, call-site parity, and addon-guard tests
         run: python -m pytest python/tests -q
       - name: shellcheck
-        run: shellcheck bin/tjor images/agent/entrypoint.sh
+        run: shellcheck bin/tjor images/agent/entrypoint.sh proxy/entrypoint.sh
 
   agent-image:
     name: agent image (${{ matrix.harness }})
