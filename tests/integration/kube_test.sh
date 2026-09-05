@@ -72,8 +72,10 @@ argv="$(cat "${WORK}/create_token_argv")"
 [[ "${argv}" == *"create token ci-runner"* && "${argv}" == *"--namespace builds"* && "${argv}" == *"--duration 30m"* ]] \
     && ok "mint command construction (SA + namespace + duration)" || bad "create token argv wrong: ${argv}"
 
-# broker.json is 0600 (secret never world-readable)
-perm="$(stat -f '%Lp' "${BJSON}" 2>/dev/null || stat -c '%a' "${BJSON}")"
+# broker.json is 0600 (secret never world-readable). GNU stat: `-c %a`; BSD
+# (macOS) stat: `-f %Lp`. Try GNU first — on Linux `stat -f` means FILESYSTEM
+# info and would succeed with the wrong output, never reaching a BSD fallback.
+perm="$(stat -c '%a' "${BJSON}" 2>/dev/null || stat -f '%Lp' "${BJSON}" 2>/dev/null)"
 [[ "${perm}" == "600" ]] && ok "broker.json is 0600" || bad "broker.json perms ${perm} != 600"
 
 # The placeholder kubeconfig the entrypoint would render carries NO token.
