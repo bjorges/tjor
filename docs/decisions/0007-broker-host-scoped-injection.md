@@ -35,6 +35,25 @@ single-use) is the tracked next step; the injection stage is deliberately the
 seam where it plugs in — the agent-facing contract (placeholder) does not
 change when the proxy-side exchange is tightened.
 
+**Known limitations (v0.1, surfaced by review).**
+
+- **The broker removes the *need* for the agent to hold a token, not its
+  *ability* to obtain one.** A user or a compromised task can still run
+  `gh auth login` inside a broker-enabled session and mint a real, long-lived
+  token via the interactive device flow (github.com and api.github.com are on
+  the allowlist). The broker guarantees that *tjor* never places a real secret
+  in the sandbox; it does not sandbox away the agent's own ability to
+  authenticate. Closing this would require blocking the auth endpoints or
+  wrapping `gh` — deferred; documented here so the "agent never holds a real
+  secret" claim is read precisely (tjor-supplied credentials, not
+  agent-minted ones).
+- **Revocation depends on a graceful proxy shutdown.** `tjor down`/`gc` now
+  stop the proxy with SIGTERM (grace period) *before* force-removal so the
+  addon's `done()` hook revokes the credential; the ~1h installation-token
+  TTL is the backstop if that shutdown is ever skipped (an out-of-band
+  `docker rm -f`). This corrects an earlier release where force-removal
+  SIGKILLed the proxy and revocation never fired.
+
 **Alternatives considered.** Broker as a separate sidecar with its own API —
 rejected: another admin surface to keep off the agent network (charter L30),
 no gain over holding the secret in the proxy that already terminates TLS.

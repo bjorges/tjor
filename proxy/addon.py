@@ -361,8 +361,12 @@ class TjorPolicy:
         # (~1h), the reliable backstop; PATs have nothing to revoke.
         if BROKER is not None:
             try:
-                BROKER.teardown()
-                print("tjor: broker credential revoked on shutdown", file=sys.stderr, flush=True)
+                ok = BROKER.teardown()
+                if ok:
+                    print("tjor: broker credential revoked on shutdown", file=sys.stderr, flush=True)
+                else:
+                    print("tjor: broker revoke on shutdown did NOT succeed (token auto-expires ~1h)",
+                          file=sys.stderr, flush=True)
             except Exception as exc:  # noqa: BLE001
                 print(f"tjor: broker revoke on shutdown failed (token auto-expires): {exc!r}",
                       file=sys.stderr, flush=True)

@@ -25,6 +25,7 @@ github-app JWT is signed with stdlib + the user's key via `openssl` if the
 from __future__ import annotations
 
 import base64
+import calendar
 import json
 import time
 import urllib.error
@@ -113,10 +114,11 @@ def mint_github_app(
     )
     if status != 201 or "token" not in data:
         raise BrokerError(f"installation-token mint failed ({status}): {data.get('message', data)}")
-    # GitHub returns expires_at as ISO 8601 Zulu.
+    # GitHub returns expires_at as ISO 8601 Zulu (UTC). Parse as UTC via
+    # calendar.timegm — time.mktime would (mis)interpret it as local time.
     exp = data.get("expires_at", "")
     try:
-        expires = time.mktime(time.strptime(exp, "%Y-%m-%dT%H:%M:%SZ"))
+        expires = calendar.timegm(time.strptime(exp, "%Y-%m-%dT%H:%M:%SZ"))
     except (ValueError, TypeError):
         expires = now + 3600
     return Credential(
@@ -184,10 +186,15 @@ class BrokerState:
         # GitHub accepts installation tokens and PATs as `Authorization: token <t>`.
         return f"token {cred.value}"
 
-    def teardown(self) -> None:
+    def teardown(self) -> bool:
+        """Revoke and forget. Returns whether revocation actually succeeded
+        (True also when there was nothing to revoke); callers must not report
+        success unconditionally."""
+        ok = True
         if self._cred is not None:
-            revoke(self._cred)
+            ok = revoke(self._cred)
             self._cred = None
+        return ok
 
 
 def load_config(path: str) -> dict:

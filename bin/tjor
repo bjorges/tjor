@@ -234,6 +234,24 @@ report_tiers() {
 }
 
 # ----------------------------------------------------------------- sessions
+# Write broker.json created 0o600 from the start (os.open with the mode) so
+# the secret never exists briefly world-readable.
+write_broker_json() { # $1 out, $2 source, then source args
+    python3 - "$@" <<'PY'
+import json, os, sys
+out, source = sys.argv[1], sys.argv[2]
+if source == "pat":
+    cfg = {"source": "pat", "token": sys.argv[3]}
+else:
+    app, inst, keypath, repos = sys.argv[3], sys.argv[4], sys.argv[5], sys.argv[6]
+    cfg = {"source": "github-app", "app_id": app, "installation_id": inst,
+           "private_key": open(keypath).read(), "repositories": json.loads(repos)}
+fd = os.open(out, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+with os.fdopen(fd, "w") as fh:
+    fh.write(json.dumps(cfg))
+PY
+}
+
 prepare_broker() {
     # Credential broker (D2): assemble the broker config into the SESSION DIR
     # (mounted only into the proxy sidecar, egress side), resolving secrets
@@ -247,26 +265,24 @@ prepare_broker() {
     mkdir -p "${dir}"; chmod 700 "${dir}"
     local hosts; hosts="$(cfg broker.hosts --default '[]' \
         | python3 -c 'import json,sys; print(",".join(json.load(sys.stdin)))')"
+    # broker.json is created 0o600 atomically by write_broker_json (os.open
+    # with the mode), so the secret is never briefly world-readable between
+    # write and a separate chmod (the dir is 700 too).
     case "${source}" in
         pat)
             local envname token; envname="$(cfg broker.pat_env --default TJOR_GITHUB_PAT)"
             token="${!envname:-}"
             [[ -n "${token}" ]] || { warn "broker source=pat but \$${envname} is empty — broker disabled"; return 0; }
-            python3 -c 'import json,sys; open(sys.argv[1],"w").write(json.dumps({"source":"pat","token":sys.argv[2]}))' \
-                "${dir}/broker.json" "${token}" ;;
+            write_broker_json "${dir}/broker.json" pat "${token}" ;;
         github-app)
             local app inst keypath; app="$(cfg broker.app_id)"; inst="$(cfg broker.installation_id)"
             keypath="$(cfg broker.private_key_path)"; keypath="${keypath/#\~/$HOME}"
             [[ -n "${app}" && -n "${inst}" && -s "${keypath}" ]] \
                 || { warn "broker source=github-app needs app_id, installation_id, and a readable private_key_path — broker disabled"; return 0; }
             local repos; repos="$(cfg broker.repositories --default '[]')"
-            python3 -c 'import json,sys
-open(sys.argv[5],"w").write(json.dumps({"source":"github-app","app_id":sys.argv[1],
-"installation_id":sys.argv[2],"private_key":open(sys.argv[3]).read(),
-"repositories":json.loads(sys.argv[4])}))' "${app}" "${inst}" "${keypath}" "${repos}" "${dir}/broker.json" ;;
+            write_broker_json "${dir}/broker.json" github-app "${app}" "${inst}" "${keypath}" "${repos}" ;;
         *) warn "unknown broker.source '${source}' — broker disabled"; return 0 ;;
     esac
-    chmod 600 "${dir}/broker.json"
     export TJOR_BROKER_CONFIG_MOUNT="${dir}/broker.json"
     export TJOR_BROKER_DIR="${dir}"
     export TJOR_BROKER_HOSTS="${hosts}"
@@ -435,10 +451,22 @@ run_agent() { # $1 = detach flag, $2.. = command
     exit "${code:-0}"
 }
 
+# Gracefully stop a session's proxy so mitmdump runs its done() hook (which
+# revokes the brokered credential). docker rm -f sends SIGKILL with no grace,
+# so the proxy MUST be stopped with SIGTERM first, before anything force-
+# removes it — otherwise revoke-on-teardown never fires (external review).
+graceful_proxy_stop() { # $1 = session id
+    local pc
+    pc="$(docker ps -q --filter "label=tjor.session=$1" --filter "label=tjor.role=proxy" | head -1)"
+    [[ -n "${pc}" ]] || return 0
+    docker stop -t 12 "${pc}" >/dev/null 2>&1 || true
+}
+
 cmd_down() {
     local name=""
     [[ "${1:-}" == "--session" ]] && name="$2"
     session_setup "opencode" "" "${name}"
+    graceful_proxy_stop "${TJOR_SESSION}"
     # Persistent agent (compose run -d) containers aren't reliably caught by
     # `down --remove-orphans`; remove this session's by label explicitly.
     docker ps -aq --filter "label=tjor.session=${TJOR_SESSION}" | xargs -r docker rm -f >/dev/null 2>&1 || true
@@ -519,33 +547,35 @@ cmd_ls() {
 cmd_attach() {
     local want="${1:-}" chosen ctr
     local -a rows=()
+    # Field-separate on US (\x1f), not '|' — a workspace path can contain a
+    # literal pipe (consistent with ls/gc).
     mapfile -t rows < <(docker ps --filter label=tjor.role=agent --filter status=running \
-        --format '{{.ID}}|{{.Label "tjor.session"}}|{{.Label "tjor.workspace"}}|{{.Label "tjor.task"}}' \
-        | { if [[ -n "${want}" ]]; then awk -F'|' -v s="${want}" '$2 == s'; else cat; fi; })
+        --format $'{{.ID}}\x1f{{.Label "tjor.session"}}\x1f{{.Label "tjor.workspace"}}\x1f{{.Label "tjor.task"}}' \
+        | { if [[ -n "${want}" ]]; then awk -F$'\x1f' -v s="${want}" '$2 == s'; else cat; fi; })
     ((${#rows[@]} > 0)) || die "no running agent${want:+ for session ${want}} — see: tjor ls"
     if ((${#rows[@]} == 1)); then
         chosen="${rows[0]}"
     elif command -v fzf >/dev/null 2>&1; then
-        chosen="$(printf '%s\n' "${rows[@]}" | fzf --delimiter='|' --with-nth=2.. --prompt='tjor attach> ')" \
+        chosen="$(printf '%s\n' "${rows[@]}" | fzf --delimiter=$'\x1f' --with-nth=2.. --prompt='tjor attach> ')" \
             || die "nothing selected"
     else
         echo "tjor: several running agents:" >&2
         local i=1 row
-        for row in "${rows[@]}"; do echo "  ${i}) $(cut -d'|' -f2,3 <<<"${row}")" >&2; ((i += 1)); done
+        for row in "${rows[@]}"; do echo "  ${i}) $(cut -d$'\x1f' -f2,3 <<<"${row}")" >&2; ((i += 1)); done
         read -rp "attach to [1-${#rows[@]}]: " i
         if ! [[ "${i}" =~ ^[0-9]+$ ]] || ((i < 1 || i > ${#rows[@]})); then die "invalid selection"; fi
         chosen="${rows[$((i - 1))]}"
     fi
-    ctr="$(cut -d'|' -f1 <<<"${chosen}")"
+    ctr="$(cut -d$'\x1f' -f1 <<<"${chosen}")"
     # Testability seam: attach's logic is candidate RESOLUTION (above); the
     # exec below is a thin, trusted docker shell-out that cannot be driven
     # deterministically without a real TTY. TJOR_ATTACH_DRY reports the
     # resolved target instead of exec'ing, so tests verify the logic.
     if [[ -n "${TJOR_ATTACH_DRY:-}" ]]; then
-        echo "$(cut -d'|' -f2 <<<"${chosen}") ${ctr}"
+        echo "$(cut -d$'\x1f' -f2 <<<"${chosen}") ${ctr}"
         return 0
     fi
-    echo "tjor: attaching to $(cut -d'|' -f2 <<<"${chosen}") — detach without killing it: ctrl-p ctrl-q" >&2
+    echo "tjor: attaching to $(cut -d$'\x1f' -f2 <<<"${chosen}") — detach without killing it: ctrl-p ctrl-q" >&2
     # --sig-proxy=false: interaction is through the PTY and detach is the
     # escape sequence, so the attach client's own signals (a stray SIGTERM,
     # timeout, a killed parent) must NOT be forwarded to tear down the agent.
@@ -589,9 +619,10 @@ cmd_gc() {
             echo "tjor gc: would tear down session ${sid} (idle $(humanize_age $((now - last_activity[${sid}])))): containers, networks, volumes — state dir untouched"
         else
             echo "tjor gc: tearing down idle session ${sid}" >&2
-            # D2 HOOK: when the credential broker lands, revoke this
-            # session's brokered credentials HERE, before its resources
-            # disappear (add-session-lifecycle design, GC hook point).
+            # Stop the proxy gracefully first so its done() hook revokes the
+            # session's brokered credential (D2) before force-removal (which
+            # would SIGKILL it and skip revocation).
+            graceful_proxy_stop "${sid}"
             docker ps -aq --filter "label=tjor.session=${sid}" | xargs -r docker rm -f >/dev/null 2>&1 || true
             "${COMPOSE[@]}" -p "tjor-${sid}" down --volumes --remove-orphans >/dev/null 2>&1 || true
             docker network rm "tjor-${sid}_internal" >/dev/null 2>&1 || true
@@ -616,17 +647,27 @@ cmd_gc() {
 }
 
 cmd_reset() {
-    local name="" dry="" tier=""
+    local name="" dry="" tier="" force_reset=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --session) name="$2"; shift 2 ;;
             --dry-run) dry=1; shift ;;
+            --force) force_reset=1; shift ;;
             cache|sessions|creds|all) tier="$1"; shift ;;
-            *) die "usage: tjor reset {cache|sessions|creds|all} [--session <name>] [--dry-run]" ;;
+            *) die "usage: tjor reset {cache|sessions|creds|all} [--session <name>] [--dry-run] [--force]" ;;
         esac
     done
     [[ -n "${tier}" ]] || die "tjor reset requires an explicit tier: cache | sessions | creds | all"
     session_setup "opencode" "" "${name}"
+    # TOCTOU guard: the ancestors check and the rm are two syscalls. With the
+    # persistent-container model a LIVE agent (write access to the same home
+    # tree) could swap a dir for a symlink between them. Refuse to reset a
+    # running session — `tjor down` first — unless --force is given (a live
+    # race is then the caller's accepted risk). This removes the racer.
+    if [[ -z "${dry}" && -z "${force_reset}" ]] \
+       && docker ps -q --filter "label=tjor.role=agent" --filter "label=tjor.session=${TJOR_SESSION}" --filter status=running | grep -q .; then
+        die "session ${TJOR_SESSION} has a running agent — 'tjor down' first, or pass --force (accepts a live-swap race)"
+    fi
     local -a paths=()
     case "${tier}" in
         cache) paths=("${TJOR_SESSION_DIR}/home/.cache") ;;
@@ -636,6 +677,7 @@ cmd_reset() {
             "${TJOR_SESSION_DIR}/home/.local/share/opencode/log"
         ) ;;
         creds) paths=(
+            "${TJOR_SESSION_DIR}/broker"
             "${TJOR_SESSION_DIR}/proxy-ca"
             "${TJOR_SESSION_DIR}/ca.pem"
             "${TJOR_SESSION_DIR}/home/.local/share/opencode/auth.json"
@@ -720,9 +762,7 @@ cmd_conformance() {
     export TJOR_TEST_BROKER_TOKEN
     local bdir="${TJOR_SESSION_DIR}/broker"
     mkdir -p "${bdir}"; chmod 700 "${bdir}"
-    python3 -c 'import json,sys; open(sys.argv[1],"w").write(json.dumps({"source":"pat","token":sys.argv[2]}))' \
-        "${bdir}/broker.json" "${TJOR_TEST_BROKER_TOKEN}"
-    chmod 600 "${bdir}/broker.json"
+    write_broker_json "${bdir}/broker.json" pat "${TJOR_TEST_BROKER_TOKEN}"
     export TJOR_BROKER_DIR="${bdir}" TJOR_BROKER_CONFIG_MOUNT="${bdir}/broker.json"
     export TJOR_BROKER_HOSTS="echo-broker.tjor-test" TJOR_BROKER_ENABLED=1
     # Clean up even when interrupted — an aborted run must not leak

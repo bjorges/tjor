@@ -81,6 +81,10 @@ check "distinct state roots" bash -c \
     "test -d '${HOME}/.tjor/sessions/${SID_A}/home' && test -d '${HOME}/.tjor/sessions/${SID_B}/home'"
 check "relaunching a running session id is refused (collision guard)" bash -c \
     "cd '${REPO}' && ! '${T}' run --detach --session a sleep 60 >/dev/null 2>&1"
+check "reset refuses a running session (TOCTOU guard)" bash -c \
+    "cd '${REPO}' && ! '${T}' reset cache --session a >/dev/null 2>&1"
+check "reset --force overrides the running-session guard (dry-run)" bash -c \
+    "cd '${REPO}' && '${T}' reset cache --session a --dry-run >/dev/null 2>&1"
 
 # ---- 1.2 ls + degradation ------------------------------------------------------
 "${T}" ls > "${SCRATCH}/ls.out" 2>/dev/null
@@ -176,9 +180,10 @@ echo x > "${SDIR}/home/.local/share/opencode/auth.json"
 "${T}" reset sessions --session a >/dev/null 2>&1
 check "reset sessions wiped history, kept auth" bash -c \
     "! test -e '${SDIR}/home/.local/share/opencode/storage/h1' && test -f '${SDIR}/home/.local/share/opencode/auth.json'"
+mkdir -p "${SDIR}/broker"; echo secret > "${SDIR}/broker/broker.json"
 "${T}" reset creds --session a >/dev/null 2>&1
-check "reset creds wiped auth and CA" bash -c \
-    "! test -e '${SDIR}/home/.local/share/opencode/auth.json' && ! test -e '${SDIR}/proxy-ca'"
+check "reset creds wiped auth, CA, and the broker dir (App key)" bash -c \
+    "! test -e '${SDIR}/home/.local/share/opencode/auth.json' && ! test -e '${SDIR}/proxy-ca' && ! test -e '${SDIR}/broker'"
 "${T}" reset all --session a >/dev/null 2>&1
 check "reset all removed the state dir" bash -c "! test -d '${SDIR}'"
 

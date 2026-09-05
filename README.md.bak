@@ -2,7 +2,7 @@
 
 > *tjor* (Norwegian, nynorsk): **tether** — the rope that lets an animal graze freely, but only within a safe radius.
 
-tjor runs AI coding agents (Claude Code, opencode, GitHub Copilot CLI) inside a portable, fail-closed container cage with per-session state, identity, lifecycle, and brokered credentials. The agent works at full speed inside the boundary — and the boundary, not the prompt, is the policy. Per-session identity metadata (D1), the session lifecycle UX (D3 — `ls`/`attach`/`gc`/`reset`, named and detached sessions), and the credential broker (D2) are shipped; an optional LLM gateway (D4) is the remaining delta on the roadmap (below).
+tjor runs AI coding agents (Claude Code, opencode, GitHub Copilot CLI) inside a portable, fail-closed container cage with per-session state, identity, lifecycle, and brokered credentials. The agent works at full speed inside the boundary — and the boundary, not the prompt, is the policy. Per-session identity metadata (D1), the session lifecycle UX (D3 — `ls`/`attach`/`gc`/`reset`, named and detached sessions), and the credential broker (D2) are shipped; an (D4, shipped) LLM gateway is delta on the roadmap (below).
 
 **Status: pre-alpha, working skeleton.** The cage core runs: fail-closed egress with an adversarial conformance suite (15/15 probes green), opencode doing real work inside. Specs live in [`openspec/`](openspec/), decisions in [`docs/decisions/`](docs/decisions/).
 
