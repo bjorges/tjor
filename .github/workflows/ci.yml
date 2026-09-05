@@ -167,6 +167,9 @@ jobs:
             --build-arg GH_VERSION="$(cfg versions.gh)" \
             --build-arg GH_SHA256_ARM64="$(cfg versions.sha256.gh_linux_arm64)" \
             --build-arg GH_SHA256_AMD64="$(cfg versions.sha256.gh_linux_amd64)" \
+            --build-arg KUBECTL_VERSION="$(cfg versions.kubectl)" \
+            --build-arg KUBECTL_SHA256_ARM64="$(cfg versions.sha256.kubectl_linux_arm64)" \
+            --build-arg KUBECTL_SHA256_AMD64="$(cfg versions.sha256.kubectl_linux_amd64)" \
             .
       - name: buildx proxy for both platforms (no push)
         run: |
