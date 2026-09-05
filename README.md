@@ -90,8 +90,15 @@ ignored with a warning.
 On first run, an installed copy pulls a prebuilt, uid-agnostic agent image
 for its version from GHCR (`ghcr.io/bjorges/tjor-agent-<harness>`) instead of
 building locally; if the image can't be pulled (offline, or a dev checkout),
-it builds locally as before. `tjor build` always builds locally. Set
-`[images] publish = false` to always build.
+it builds locally as before. `tjor build` always builds locally.
+
+**Trust note:** pulling a tag trusts the registry and the publish pipeline,
+where a local build trusts only the audited Dockerfile and its checksummed
+downloads. A git checkout therefore *always* builds locally, and a tag pull
+prints an integrity notice. For a verified pull, pin the image by digest
+(`[images.digests]`); to always build from source, set `[images] publish =
+false`. See [ADR 0008](docs/decisions/0008-prebuilt-image-trust.md) and
+[INSTALL.md](INSTALL.md).
 
 ## Why
 

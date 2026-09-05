@@ -158,3 +158,10 @@ jobs:
             --build-arg GH_SHA256_ARM64="$(cfg versions.sha256.gh_linux_arm64)" \
             --build-arg GH_SHA256_AMD64="$(cfg versions.sha256.gh_linux_amd64)" \
             .
+      - name: buildx proxy for both platforms (no push)
+        run: |
+          cfg() { python3 python/tjor_cfg.py get "$1"; }
+          docker buildx build --platform linux/amd64,linux/arm64 \
+            -f images/proxy/Dockerfile \
+            --build-arg BASE_IMAGE="$(cfg images.mitmproxy)" \
+            .

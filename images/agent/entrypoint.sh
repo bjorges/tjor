@@ -12,12 +12,27 @@ AGENT_HOME=/home/agent
 #    ownership work below. -o allows a non-unique uid (target may already
 #    exist in the image). The .config/.local/home chowns in step 4 then land
 #    on the aligned uid.
-if [[ -n "${TJOR_AGENT_UID:-}" && "${TJOR_AGENT_UID}" =~ ^[0-9]+$ ]]; then
+#
+#    uid 0 is REFUSED. Aligning the agent user to 0 (e.g. `sudo tjor run`, or a
+#    root-default container executor where $(id -u) is 0) would make gosu drop
+#    to nothing and run the harness as real root — silently defeating the
+#    non-root guarantee. We keep the image's default non-root uid instead; the
+#    session's bind-mounted home is chowned to that uid below, so a root host
+#    can still run, just never as root inside the cage.
+if [[ "${TJOR_AGENT_UID:-}" == "0" ]]; then
+    echo "tjor-entrypoint: refusing TJOR_AGENT_UID=0 — the agent must never run as root; keeping the image's non-root uid ($(id -u agent))" >&2
+elif [[ -n "${TJOR_AGENT_UID:-}" && "${TJOR_AGENT_UID}" =~ ^[1-9][0-9]*$ ]]; then
     cur_uid="$(id -u agent)"
     if [[ "${TJOR_AGENT_UID}" != "${cur_uid}" ]]; then
         usermod -o -u "${TJOR_AGENT_UID}" agent
         groupmod -o -g "${TJOR_AGENT_UID}" agent 2>/dev/null || true
     fi
+fi
+
+# Hard invariant: whatever happened above, the agent user must not be uid 0.
+if [[ "$(id -u agent)" == "0" ]]; then
+    echo "tjor-entrypoint: FATAL: agent user resolved to uid 0 — refusing to start (non-root guarantee)." >&2
+    exit 1
 fi
 
 # 1. Trust the session CA (the egress proxy re-signs all TLS). Append it
@@ -118,12 +133,24 @@ git config --system --add url."https://github.com/".insteadOf "git@github.com:"
 git config --system --add url."https://github.com/".insteadOf "ssh://git@github.com/"
 git config --system --add url."https://gitlab.com/".insteadOf "git@gitlab.com:"
 git config --system --add url."https://gitlab.com/".insteadOf "ssh://git@gitlab.com/"
-# Trust every bind-mounted repo regardless of the uid git runs as: git's
-# dubious-ownership check guards shared multi-user hosts, but the cage is a
-# single-user isolated environment working on the user's own mounted repos
-# (and with runtime-uid-aligned images the owner uid may differ from git's).
+# git's dubious-ownership check refuses to operate on a repo owned by a
+# different uid than the one running git — which a bind-mounted repo is,
+# whenever the owner uid differs from the (runtime-aligned) agent uid. Mark
+# the mounted repos safe so git works. SCOPED to exactly the repos the
+# operator mounted (TJOR_SAFE_DIRS: the workspace + any --dir), NOT '*', so
+# an arbitrary path is not blanket-trusted.
+#   Residual risk (documented, ADR 0008): marking a repo safe lets git read
+#   its local .git/config, so an adversarial --dir'd third-party repo could
+#   carry a hostile core.fsmonitor/pager/hook. This is bounded by the cage
+#   itself — non-root agent (enforced above) + no direct egress — and by the
+#   operator having explicitly chosen to mount that repo.
 git config --system --unset-all safe.directory 2>/dev/null || true
-git config --system --add safe.directory '*'
+if [[ -n "${TJOR_SAFE_DIRS:-}" ]]; then
+    IFS=':' read -r -a _safe <<<"${TJOR_SAFE_DIRS}"
+    for _d in "${_safe[@]}"; do
+        [[ -n "${_d}" ]] && git config --system --add safe.directory "${_d}"
+    done
+fi
 if [[ -n "${TJOR_BROKER_ENABLED:-}" ]]; then
     # Credential broker (D2): git must ATTEMPT auth so the proxy can inject
     # the real, short-TTL credential. Wire a helper that returns a fixed
@@ -156,8 +183,8 @@ if ! chown agent:agent "${AGENT_HOME}" 2>/dev/null; then
     echo "tjor-entrypoint: WARNING: chown of ${AGENT_HOME} failed (uid-mapped mount?)" >&2
 fi
 if ! gosu agent test -w "${AGENT_HOME}"; then
-    echo "tjor-entrypoint: ERROR: ${AGENT_HOME} is not writable by the agent user — refusing to start." >&2
-    echo "                 Rebuild with --harness matching your host uid (tjor passes AGENT_UID automatically)." >&2
+    echo "tjor-entrypoint: ERROR: ${AGENT_HOME} is not writable by the agent user (uid $(id -u agent)) — refusing to start." >&2
+    echo "                 The session home should be owned by, or chownable to, your host uid (TJOR_AGENT_UID=${TJOR_AGENT_UID:-unset})." >&2
     exit 1
 fi
 

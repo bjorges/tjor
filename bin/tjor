@@ -117,15 +117,31 @@ build_conformance() {
 resolve_agent_image() { # $1 = harness ; sets TJOR_AGENT_IMAGE
     local harness="$1"
     export TJOR_AGENT_IMAGE="tjor-agent-${harness}:local"
+    # Only an installed (non-git) copy pulls; a git checkout always builds
+    # locally from the audited Dockerfile (the security-conscious path is
+    # never silently replaced). See ADR 0008 for the trust trade-off.
     if [[ ! -d "${TJOR_ROOT}/.git" ]] && [[ "$(cfg images.publish --default true)" == "true" ]]; then
-        local ver reg ref
+        local ver reg digest ref
         ver="$(tr -d ' \n' < "${TJOR_ROOT}/VERSION" 2>/dev/null || true)"
         reg="$(cfg images.registry --default ghcr.io/bjorges)"
-        if [[ -n "${ver}" ]]; then
+        # A configured digest (images.digests.<harness>, e.g. "sha256:...")
+        # gives a VERIFIED pull — exactly what you run, independent of the
+        # mutable tag. Preferred; recorded per release.
+        digest="$(cfg "images.digests.${harness}" --default '' 2>/dev/null || true)"
+        if [[ -n "${digest}" ]]; then
+            ref="${reg}/tjor-agent-${harness}@${digest}"
+            if docker image inspect "${ref}" >/dev/null 2>&1 || docker pull "${ref}" >/dev/null 2>&1; then
+                export TJOR_AGENT_IMAGE="${ref}"
+                echo "tjor: using prebuilt image pinned by digest (${ref})" >&2
+                return 0
+            fi
+            echo "tjor: pinned digest for ${harness} not reachable — building locally" >&2
+        elif [[ -n "${ver}" ]]; then
             ref="${reg}/tjor-agent-${harness}:${ver}"
             if docker image inspect "${ref}" >/dev/null 2>&1 || docker pull "${ref}" >/dev/null 2>&1; then
                 export TJOR_AGENT_IMAGE="${ref}"
                 echo "tjor: using prebuilt image ${ref}" >&2
+                warn "this image was pulled by TAG, not verified by digest or signature — you are trusting the registry + publish pipeline (ADR 0008). To build from source instead: set [images] publish=false, or run from a git checkout."
                 return 0
             fi
             echo "tjor: no prebuilt image for ${ver} reachable — building locally" >&2
@@ -446,8 +462,28 @@ session_setup() { # $1 = harness, $2 = task id (optional), $3 = session name (op
     prepare_broker
 }
 
+# True (0) if an absolute path is too sensitive to mount read-write into the
+# agent without an explicit override: the filesystem root and system dirs, the
+# home directory itself or an ancestor of it (which would expose credentials),
+# and known credential directories.
+dir_is_sensitive() { # $1 = absolute path (already symlink-resolved by pwd -P)
+    local p="$1" s
+    case "${p}" in
+        / | /etc | /etc/* | /root | /root/* | /boot | /boot/* | /sys | /sys/* \
+        | /proc | /proc/* | /dev | /dev/* \
+        | /usr | /usr/* | /var | /var/* | /bin | /bin/* | /sbin | /sbin/* \
+        | /private/etc | /private/etc/* | /private/var | /private/var/* \
+        | /System | /System/*) return 0 ;;   # macOS resolves /etc,/var to /private/*
+    esac
+    [[ "${p}" == "${HOME}" || "${HOME}" == "${p}/"* ]] && return 0
+    for s in .ssh .aws .gnupg .kube .docker .config .gcloud .azure; do
+        [[ "${p}" == "${HOME}/${s}" || "${p}" == "${HOME}/${s}/"* ]] && return 0
+    done
+    return 1
+}
+
 cmd_run() {
-    local harness="opencode" task="" name="" detach=""
+    local harness="opencode" task="" name="" detach="" unsafe_dir=""
     local -a extra_dirs=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -455,6 +491,7 @@ cmd_run() {
             --task) task="$2"; shift 2 ;;
             --session) name="$2"; shift 2 ;;
             --dir) extra_dirs+=("$2"); shift 2 ;;
+            --unsafe-dir) unsafe_dir=1; shift ;;
             --detach|-d) detach=1; shift ;;
             --) shift; break ;;
             *) break ;;
@@ -463,13 +500,20 @@ cmd_run() {
     session_setup "${harness}" "${task}" "${name}"
     # Multi-repo (--dir): resolve each to an absolute path now (existence
     # check); VM-share verification + mounting happen in run_agent, after the
-    # proxy image (used by the share check) is built.
+    # proxy image (used by the share check) is built. Refuse sensitive host
+    # paths (root, home, credential dirs) — mounting them read-write would
+    # dissolve exactly the boundary tjor exists to enforce — unless
+    # --unsafe-dir is given. Dedupe (against the primary and each other).
     TJOR_EXTRA_DIRS=()
-    local d abs
+    local d abs seen
     for d in "${extra_dirs[@]}"; do
         [[ -d "${d}" ]] || die "--dir path does not exist or is not a directory: ${d}"
         abs="$(cd "${d}" && pwd -P)" || die "--dir path unreadable: ${d}"
         [[ "${abs}" == "${TJOR_WORKSPACE}" ]] && continue   # primary already mounted
+        for seen in "${TJOR_EXTRA_DIRS[@]:-}"; do [[ "${abs}" == "${seen}" ]] && continue 2; done
+        if [[ -z "${unsafe_dir}" ]] && dir_is_sensitive "${abs}"; then
+            die "refusing to mount sensitive host path into the agent: ${abs} (pass --unsafe-dir to override — this exposes it read-write to the agent)"
+        fi
         TJOR_EXTRA_DIRS+=("${abs}")
     done
     resolve_agent_image "${harness}"
@@ -500,13 +544,18 @@ run_agent() { # $1 = detach flag, $2.. = command
     # Multi-repo: verify (proxy image now exists) and mount each extra dir at
     # its host path, writable.
     local -a mounts=() dir
+    # git safe.directory is scoped to exactly the mounted repos (not '*'), so
+    # only paths the operator mounted are trusted by git (see the entrypoint).
+    local safe_dirs="${TJOR_WORKSPACE:-}"
     for dir in "${TJOR_EXTRA_DIRS[@]:-}"; do
         [[ -n "${dir}" ]] || continue
         verify_bind_source "${dir}"
         mounts+=(--volume "${dir}:${dir}")
+        safe_dirs="${safe_dirs}:${dir}"
         echo "tjor: + repo mount ${dir}" >&2
     done
-    ctr="$(compose run -d "${mounts[@]}" agent "$@")" || die "failed to start the agent container"
+    export TJOR_SAFE_DIRS="${safe_dirs}"
+    ctr="$(compose run -d "${mounts[@]}" -e TJOR_SAFE_DIRS="${safe_dirs}" agent "$@")" || die "failed to start the agent container"
     if [[ -n "${detach}" ]]; then
         echo "tjor: session ${TJOR_SESSION} started detached — attach with: tjor attach ${TJOR_SESSION}" >&2
         return 0
@@ -955,8 +1004,8 @@ tjor — run AI coding agents inside a portable, fail-closed container cage
 
 usage: tjor <command> [args]
 
-  run [--harness opencode|claude|copilot] [--task <id>] [--session <name>] [--dir <path>]... [--detach] [cmd...]
-                                                     launch a caged session (--dir: mount another repo at its host path; --detach: start without attaching)
+  run [--harness opencode|claude|copilot] [--task <id>] [--session <name>] [--dir <path>]... [--unsafe-dir] [--detach] [cmd...]
+                                                     launch a caged session (--dir: mount another repo at its host path — sensitive paths refused unless --unsafe-dir; --detach: start without attaching)
   ls                                                 list all sessions (and re-verify their boundaries)
   attach [session]                                   reattach to a running agent's terminal
   gc [--age <hours>] [--dry-run]                     reap idle session containers/networks/volumes

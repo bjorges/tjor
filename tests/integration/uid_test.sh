@@ -43,6 +43,16 @@ done
 out="$(docker run --rm "${IMAGE}" bash -c 'id -u' 2>/dev/null || true)"
 if [[ "${out}" =~ ^[0-9]+$ ]] && [[ "${out}" != "0" ]]; then ok "default run is non-root (uid ${out})"; else bad "default run is not a clean non-root uid (got: ${out})"; fi
 
+# CRITICAL: TJOR_AGENT_UID=0 must NOT escalate the agent to root (sudo tjor /
+# root-default executors pass host uid 0). The entrypoint must refuse it and
+# keep the image's non-root uid.
+out="$(docker run --rm -e TJOR_AGENT_UID=0 "${IMAGE}" bash -c 'id -u' 2>/dev/null || true)"
+if [[ "${out}" =~ ^[0-9]+$ ]] && [[ "${out}" != "0" ]]; then ok "TJOR_AGENT_UID=0 is refused (agent stays non-root, uid ${out})"; else bad "TJOR_AGENT_UID=0 ESCALATED the agent to root (got uid: ${out})"; fi
+
+# A non-numeric / empty uid is ignored, not fatal, and stays non-root.
+out="$(docker run --rm -e TJOR_AGENT_UID=notanumber "${IMAGE}" bash -c 'id -u' 2>/dev/null || true)"
+if [[ "${out}" =~ ^[0-9]+$ ]] && [[ "${out}" != "0" ]]; then ok "non-numeric TJOR_AGENT_UID ignored (non-root, uid ${out})"; else bad "non-numeric TJOR_AGENT_UID mishandled (got: ${out})"; fi
+
 echo
 echo "uid: ${PASS} passed, ${FAIL} failed"
 exit "$((FAIL > 0 ? 1 : 0))"

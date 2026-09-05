@@ -20,6 +20,7 @@ The agent image bakes `AGENT_UID` at build (Dockerfile `useradd -u ${AGENT_UID}`
 
 ## Risks / Trade-offs
 
+- **INTEGRITY (added post-review; see ADR 0008).** A tag pull trusts GHCR + the publish pipeline rather than the audited local Dockerfile — a compromised token/pipeline/registry could serve a different image, and a bare-tag pull verifies only that the pull succeeded, not *what* was pulled. Mitigations: git checkouts always build locally; digest pinning (`images.digests.<harness>`) gives a verified pull; a bare-tag pull prints an explicit integrity notice. The `publish=true` default is flagged for maintainer sign-off in ADR 0008.
 - **First pull is a network dependency** — mitigated by the always-available local-build fallback; offline/private users are unaffected.
 - **uid re-alignment cost**: `usermod` is fast; chowning a large bind-mounted home could be slow, so only the image-owned skeleton and the XDG dirs are chowned (as today), not the whole mounted tree.
 - **A published image lagging a config pin bump**: the version tag ties an image to a release; a local checkout with newer pins and an older published tag builds locally (version mismatch → no pull), so pins and image never silently diverge.
