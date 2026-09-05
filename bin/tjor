@@ -125,7 +125,12 @@ ensure_topology() { # expects TJOR_PROJECT, TJOR_SESSION_DIR exported
     fi
     python3 "${TJOR_ROOT}/python/gen_corefile.py" --policy "${session_policy}" --out "${corefile}"
 
-    TJOR_CONFIG_HASH="$(cat "${session_policy}" "${corefile}" "${TJOR_ROOT}/compose.yaml" | sha256 | cut -c1-16)"
+    # Identity joins the hash so an identity change (e.g. a new --task)
+    # recreates the proxy with the new registration.
+    TJOR_CONFIG_HASH="$( { cat "${session_policy}" "${corefile}" "${TJOR_ROOT}/compose.yaml"; \
+        printf '%s|%s|%s|%s|%s|%s|%s' "${TJOR_SESSION_ID:-}" "${TJOR_TASK_ID:-}" "${TJOR_HARNESS:-}" \
+            "${TJOR_REPO:-}" "${TJOR_WORKTREE:-}" "${TJOR_PARENT_SESSION:-}" "${TJOR_INJECT_HOSTS:-}"; } \
+        | sha256 | cut -c1-16)"
     export TJOR_CONFIG_HASH
 
     build_proxy
@@ -278,15 +283,41 @@ verify_bind_source() {
     fi
 }
 
-session_setup() { # $1 = harness
-    local ws root sid
-    if ws="$(git rev-parse --show-toplevel 2>/dev/null)"; then :; else
+session_setup() { # $1 = harness, $2 = task id (optional)
+    local ws root sid in_repo=""
+    if ws="$(git rev-parse --show-toplevel 2>/dev/null)"; then in_repo=1; else
         ws="$(pwd)"
         warn "not inside a git repository — using ${ws} as the workspace"
     fi
     # shellcheck disable=SC2088  # literal ~ is expanded on the next line
     root="$(cfg session.root --default "~/.tjor/sessions")"; root="${root/#\~/$HOME}"
     sid="$(basename "${ws}" | tr -cd 'a-zA-Z0-9_.-' | tr '[:upper:]' '[:lower:]')-$(printf %s "${ws}" | sha256 | cut -c1-8)"
+
+    # Session identity (D1): frozen at launch, delivered to the agent (env)
+    # and to the proxy (x-agent-* verification / opt-in injection).
+    export TJOR_SESSION_ID="${sid}"
+    export TJOR_HARNESS="$1"
+    TJOR_REPO="$(basename "${ws}" | tr -cd 'a-zA-Z0-9_.-')"
+    export TJOR_REPO
+    TJOR_WORKTREE=""
+    if [[ -n "${in_repo}" ]]; then
+        local gitdir commondir
+        gitdir="$(git rev-parse --absolute-git-dir 2>/dev/null || true)"
+        commondir="$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+        [[ -n "${gitdir}" && -n "${commondir}" && "${gitdir}" != "${commondir}" ]] && TJOR_WORKTREE="${ws}"
+    fi
+    export TJOR_WORKTREE
+    if [[ -n "${2:-}" ]]; then
+        [[ "$2" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || die "--task must match [A-Za-z0-9._-]{1,64}"
+        export TJOR_TASK_ID="$2"
+    else
+        export TJOR_TASK_ID=""
+    fi
+    export TJOR_PARENT_SESSION="${TJOR_PARENT_SESSION:-}"
+    TJOR_INJECT_HOSTS="$(cfg identity.inject_hosts --default '[]' \
+        | python3 -c 'import json,sys; print(",".join(json.load(sys.stdin)))')"
+    export TJOR_INJECT_HOSTS
+
     export TJOR_SESSION="${sid}"
     export TJOR_PROJECT="tjor-${sid}"
     export TJOR_SESSION_DIR="${root}/${sid}"
@@ -299,15 +330,16 @@ session_setup() { # $1 = harness
 }
 
 cmd_run() {
-    local harness="opencode"
+    local harness="opencode" task=""
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --harness) harness="$2"; shift 2 ;;
+            --task) task="$2"; shift 2 ;;
             --) shift; break ;;
             *) break ;;
         esac
     done
-    session_setup "${harness}"
+    session_setup "${harness}" "${task}"
     docker image inspect "${TJOR_AGENT_IMAGE}" >/dev/null 2>&1 || build_agent "${harness}"
     ensure_topology
     echo "tjor: session ${TJOR_SESSION} — workspace ${TJOR_WORKSPACE}" >&2
@@ -339,8 +371,13 @@ cmd_policy() {
 }
 
 cmd_conformance() {
-    export TJOR_POLICY_OVERRIDE="${TJOR_ROOT}/python/tests/fixtures/parity-policy.toml"
+    export TJOR_POLICY_OVERRIDE="${TJOR_ROOT}/images/conformance/policy.toml"
     export TJOR_SESSION="conformance"
+    export TJOR_SESSION_ID="conformance"
+    export TJOR_HARNESS="conformance"
+    export TJOR_REPO="conformance"
+    export TJOR_TASK_ID="" TJOR_WORKTREE="" TJOR_PARENT_SESSION=""
+    export TJOR_INJECT_HOSTS="echo-inject.tjor-test"
     export TJOR_PROJECT="tjor-conformance"
     # Session dir must live under $HOME: VM-based runtimes (Colima, Docker
     # Desktop) only share user paths, and an unshared bind source silently
@@ -357,8 +394,13 @@ cmd_conformance() {
     trap 'compose down --volumes --remove-orphans >/dev/null 2>&1 || true;
           docker network rm "${TJOR_PROJECT}_internal" >/dev/null 2>&1 || true;
           rm -rf "${TJOR_SESSION_DIR}"' EXIT INT TERM
+    # The identity probes talk to an echo fixture on a container-network
+    # (non-global) address; the rebind guard would rightly deny that, so it
+    # is off HERE ONLY. The guard itself is covered by unit tests.
+    export TJOR_IP_GUARD="off"
     build_conformance
     ensure_topology
+    "${COMPOSE[@]}" -f "${TJOR_ROOT}/compose.yaml" up -d echo >/dev/null 2>&1
     local rc=0
     "${COMPOSE[@]}" -f "${TJOR_ROOT}/compose.yaml" run --rm conformance || rc=$?
     if ((rc == 0)); then echo "tjor: conformance PASSED — the boundary holds" >&2
@@ -388,7 +430,8 @@ tjor — run AI coding agents inside a portable, fail-closed container cage
 
 usage: tjor <command> [args]
 
-  run [--harness opencode|claude|copilot] [cmd...]   launch a caged session in this repo
+  run [--harness opencode|claude|copilot] [--task <id>] [cmd...]
+                                                     launch a caged session in this repo
   down                                               tear down this repo's session topology
   status                                             show this repo's session containers
   policy <url>                                       evaluate a URL against the active egress policy

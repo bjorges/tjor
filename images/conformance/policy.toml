@@ -1,0 +1,22 @@
+# Egress policy for the conformance topology: the parity fixture's canary
+# rules plus the egress-side echo fixture hosts the identity probes use.
+mode = "strict-allow"
+
+[hosts]
+allow = [
+  "allowed.test", "*.allowed.test", "api.vendor.test",
+  "echo-inject.tjor-test", "echo-noinject.tjor-test",
+]
+block = ["blocked.test", "*.telemetry.test"]
+
+[[paths.allow]]
+host = "blocked.test"
+path = "/docs/*"
+
+[[paths.block]]
+host = "api.vendor.test"
+path = "*/telemetry*"
+
+[[paths.block]]
+host = "*"
+path = "/phone-home/*"

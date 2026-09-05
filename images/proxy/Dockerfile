@@ -5,7 +5,7 @@
 ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
-COPY proxy/addon.py python/tjor_policy.py /addon/
+COPY proxy/addon.py python/tjor_policy.py python/tjor_identity.py /addon/
 COPY proxy/entrypoint.sh /usr/local/bin/tjor-proxy-entrypoint
 RUN chmod 0755 /usr/local/bin/tjor-proxy-entrypoint
 

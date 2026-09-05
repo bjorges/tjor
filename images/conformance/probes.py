@@ -12,13 +12,16 @@ without needing the CA; a raw CONNECT exercises the pre-TLS stage.
 from __future__ import annotations
 
 import http.client
+import json
 import os
 import socket
 import sys
+import time
 
 PROXY_IP = os.environ.get("TJOR_PROXY_IP", "")
 DNS_IP = os.environ.get("TJOR_DNS_IP", "")
 PROXY_PORT = int(os.environ.get("TJOR_PROXY_PORT", "8080"))
+SESSION_ID = os.environ.get("TJOR_SESSION_ID", "")
 
 RESULTS: list[tuple[bool, str, str]] = []
 
@@ -48,6 +51,26 @@ def via_proxy(url: str, timeout: float = 15.0) -> http.client.HTTPResponse | Non
 
 def is_policy_deny(resp) -> bool:
     return resp is not None and resp.status == 403 and resp.getheader("x-tjor-policy") == "deny"
+
+
+def echo_headers(host: str, extra: dict | None = None) -> dict:
+    """GET the egress-side echo fixture through the proxy; returns the header
+    set that actually arrived upstream. Retries briefly (fixture boot)."""
+    last = None
+    for _ in range(5):
+        try:
+            conn = http.client.HTTPConnection(PROXY_IP, PROXY_PORT, timeout=15)
+            headers = {"Host": f"{host}:8080"}
+            headers.update(extra or {})
+            conn.request("GET", f"http://{host}:8080/", headers=headers)
+            resp = conn.getresponse()
+            if resp.status == 200:
+                return json.loads(resp.read())["headers"]
+            last = f"status {resp.status}"
+        except OSError as exc:
+            last = repr(exc)
+        time.sleep(1)
+    raise AssertionError(f"echo fixture unreachable through the proxy: {last}")
 
 
 @probe("direct egress bypassing the proxy is impossible")
@@ -129,9 +152,42 @@ def p_admin_surfaces():
     assert not open_ports, f"admin/management ports reachable from agent network: {open_ports}"
 
 
+@probe("identity: forged x-agent-* headers are stripped before egress")
+def p_zid_forged_stripped():
+    arrived = echo_headers(
+        "echo-noinject.tjor-test",
+        {"x-agent-session-id": "intruder-session", "x-agent-custom": "smuggled"},
+    )
+    leaked = [k for k in arrived if k.startswith("x-agent-")]
+    assert not leaked, f"forged/unknown identity headers reached upstream: {leaked}"
+
+
+@probe("identity: matching self-identification passes through")
+def p_zid_matching_passes():
+    arrived = echo_headers("echo-noinject.tjor-test", {"x-agent-session-id": SESSION_ID})
+    assert arrived.get("x-agent-session-id") == SESSION_ID, "legitimate identity header did not survive"
+
+
+@probe("identity: injected exactly on configured hosts")
+def p_zid_injected_on_configured():
+    arrived = echo_headers("echo-inject.tjor-test")
+    assert arrived.get("x-agent-session-id") == SESSION_ID, "identity not injected on inject_hosts target"
+    assert arrived.get("x-agent-harness"), "identity set incomplete on inject_hosts target"
+
+
+@probe("identity: no leakage toward unconfigured hosts")
+def p_zid_no_leak():
+    arrived = echo_headers("echo-noinject.tjor-test")
+    leaked = [k for k in arrived if k.startswith("x-agent-")]
+    assert not leaked, f"identity leaked to a non-inject host: {leaked}"
+
+
 def main() -> int:
     if not PROXY_IP or not DNS_IP:
         print("conformance: TJOR_PROXY_IP / TJOR_DNS_IP not set", file=sys.stderr)
+        return 2
+    if not SESSION_ID:
+        print("conformance: TJOR_SESSION_ID not set", file=sys.stderr)
         return 2
     for fn in [v for k, v in sorted(globals().items()) if k.startswith("p_")]:
         fn()

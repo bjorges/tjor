@@ -41,12 +41,12 @@ A compose-based container cage reproducing production-validated decisions:
 - **Dual-homed egress proxy** (explicit mode) with a fail-closed host/path allowlist and a DNS sidecar with zone-scoped forwarding.
 - **Non-root agent user; writable repo mounts; per-session state roots** — a profile proven to sustain real daily work, hardened in tested increments.
 - **Tiered guarantees**: a core that works on any Docker runtime, plus loud-when-absent hardening add-ons (e.g. AppArmor on runtimes that support it).
+- **Session identity (D1)**: every session carries a frozen identity (`TJOR_SESSION_ID`, `--task` id, harness, repo, worktree) as environment inside the cage and as the vendor-neutral `x-agent-*` schema on the wire — the proxy strips forged or unknown identity headers toward every host (a session structurally cannot impersonate another) and injects the identity set only toward hosts you list in `identity.inject_hosts` (e.g. your LLM endpoints).
 
-Plus four roadmap deltas on top of the cage — **specced and tracked in issues #1–#4, not yet built**:
+Plus the remaining roadmap deltas — **specced and tracked in issues #2–#4, not yet built**:
 
 | Delta | Design target |
 |---|---|
-| **D1 — Session identity** | Vendor-neutral `x-agent-*` metadata, injected client-side; the proxy will verify and strip forgeries. Attribution-only for LLM traffic (shared credential, tagged sessions). |
 | **D2 — Credential broker** | Short-TTL, per-session credentials; target: opaque call-bound handles exchanged at the proxy boundary — the sandbox can *use* credentials, never *possess* them. |
 | **D3 — Session lifecycle** | Deterministic naming, labels, attach picker, GC of containers and expired credentials (today: per-repo sessions with persistent state, no GC/attach UX). |
 | **D4 — LLM gateway (optional)** | LiteLLM sidecar on the egress network; backend-agnostic. |

@@ -8,6 +8,13 @@ port = 8080
 # hosts on private ranges.
 ip_guard = true
 
+[identity]
+# Hosts (globs) that receive this session's x-agent-* identity headers on
+# intercepted requests — an explicit data-sharing decision (e.g. your LLM
+# endpoints, per ADR 0005). Empty = never inject. Verification is always on:
+# forged or unknown x-agent-* headers are stripped toward every host.
+inject_hosts = []
+
 [limits]
 # Memory caps per service (docker mem_limit syntax).
 agent_mem = "4g"

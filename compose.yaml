@@ -36,6 +36,16 @@ services:
     cap_add: [SETUID, SETGID, CHOWN, DAC_OVERRIDE, DAC_READ_SEARCH, FOWNER]
     environment:
       TJOR_IP_GUARD: ${TJOR_IP_GUARD:-on}
+      # Session identity registration (D1): the proxy verifies outbound
+      # x-agent-* headers against these and strips forgeries; injection only
+      # for TJOR_INJECT_HOSTS matches.
+      TJOR_SESSION_ID: ${TJOR_SESSION_ID:-}
+      TJOR_TASK_ID: ${TJOR_TASK_ID:-}
+      TJOR_HARNESS: ${TJOR_HARNESS:-}
+      TJOR_REPO: ${TJOR_REPO:-}
+      TJOR_WORKTREE: ${TJOR_WORKTREE:-}
+      TJOR_PARENT_SESSION: ${TJOR_PARENT_SESSION:-}
+      TJOR_INJECT_HOSTS: ${TJOR_INJECT_HOSTS:-}
     labels:
       tjor.role: proxy
       tjor.confighash: ${TJOR_CONFIG_HASH:-unset}
@@ -92,6 +102,12 @@ services:
       NODE_EXTRA_CA_CERTS: /etc/tjor/ca/ca.pem
       REQUESTS_CA_BUNDLE: /etc/ssl/certs/ca-certificates.crt
       TJOR_SESSION: ${TJOR_SESSION:-}
+      TJOR_SESSION_ID: ${TJOR_SESSION_ID:-}
+      TJOR_TASK_ID: ${TJOR_TASK_ID:-}
+      TJOR_HARNESS: ${TJOR_HARNESS:-}
+      TJOR_REPO: ${TJOR_REPO:-}
+      TJOR_WORKTREE: ${TJOR_WORKTREE:-}
+      TJOR_PARENT_SESSION: ${TJOR_PARENT_SESSION:-}
     volumes:
       - ${TJOR_SESSION_DIR:?}/home:/home/agent
       - ${TJOR_WORKSPACE:-/dev/null}:${TJOR_WORKSPACE:-/tmp/.tjor-nows}
@@ -114,3 +130,20 @@ services:
       TJOR_PROXY_IP: ${TJOR_PROXY_IP:-}
       TJOR_DNS_IP: ${TJOR_DNS_IP:-}
       TJOR_PROXY_PORT: ${TJOR_PROXY_PORT:-8080}
+      TJOR_SESSION_ID: ${TJOR_SESSION_ID:-}
+
+  # Egress-side header-echo fixture (conformance only): the identity probes
+  # need an "upstream" that reflects what actually arrived after the proxy's
+  # verify/strip/inject stage.
+  echo:
+    profiles: [conformance]
+    image: ${TJOR_CONFORMANCE_IMAGE:-tjor-conformance:local}
+    entrypoint: ["python3", "/echo.py"]
+    networks:
+      egress:
+        aliases:
+          - echo-inject.tjor-test
+          - echo-noinject.tjor-test
+    mem_limit: 128m
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]

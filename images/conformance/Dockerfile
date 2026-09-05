@@ -6,5 +6,6 @@ ARG BASE_IMAGE
 FROM ${BASE_IMAGE}
 
 COPY images/conformance/probes.py /probes.py
+COPY images/conformance/echo.py /echo.py
 
 ENTRYPOINT ["python3", "/probes.py"]

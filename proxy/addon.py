@@ -30,9 +30,20 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
+import tjor_identity
 import tjor_policy
 
 POLICY_PATH = os.environ.get("TJOR_POLICY_FILE", "/policy/policy.toml")
+
+IDENTITY = tjor_identity.load_identity(os.environ)
+INJECT_HOSTS = tjor_identity.parse_inject_hosts(os.environ.get("TJOR_INJECT_HOSTS", ""))
+if not IDENTITY.valid:
+    print(
+        "tjor: session identity missing/invalid — stripping ALL x-agent-* headers: "
+        + "; ".join(IDENTITY.errors),
+        file=sys.stderr,
+        flush=True,
+    )
 
 _cache: dict = {"mtime": None, "policy": None}
 
@@ -148,6 +159,49 @@ def request_verdict(url: str, host: str) -> tjor_policy.Verdict:
     return _fail_closed(compute)
 
 
+# ---------------------------------------------------------- session identity
+
+_strip_log_count = 0
+
+
+def _log_stripped(host: str, stripped: dict) -> None:
+    global _strip_log_count
+    _strip_log_count += 1
+    if _strip_log_count <= 20 or _strip_log_count % 100 == 0:
+        print(
+            f"tjor: stripped forged/unknown identity headers toward {host} "
+            f"(#{_strip_log_count}): {sorted(stripped)}",
+            file=sys.stderr,
+            flush=True,
+        )
+
+
+def identity_outcome(existing: dict[str, str], host: str) -> tuple[dict, dict]:
+    """Testable seam: final and stripped x-agent-* sets for one request.
+    Fail-closed: any error means nothing is trusted."""
+    try:
+        inject = tjor_identity.should_inject(INJECT_HOSTS, host)
+        return tjor_identity.transform(IDENTITY, existing, inject)
+    except Exception as exc:  # noqa: BLE001
+        print(f"tjor: identity error — stripping all x-agent-*: {exc!r}", file=sys.stderr, flush=True)
+        return {}, dict(existing)
+
+
+def _apply_identity(flow) -> None:
+    existing = {
+        name.lower(): value
+        for name, value in flow.request.headers.items()
+        if name.lower().startswith("x-agent-")
+    }
+    final, stripped = identity_outcome(existing, flow.request.host)
+    for name in [n for n in flow.request.headers if n.lower().startswith("x-agent-")]:
+        del flow.request.headers[name]
+    for name, value in final.items():
+        flow.request.headers[name] = value
+    if stripped:
+        _log_stripped(flow.request.host, stripped)
+
+
 # ------------------------------------------------------------ mitmproxy glue
 
 class TjorPolicy:
@@ -166,6 +220,8 @@ class TjorPolicy:
         from mitmproxy import http
 
         verdict = request_verdict(flow.request.pretty_url, flow.request.host)
+        if verdict.allowed:
+            _apply_identity(flow)
         if not verdict.allowed:
             flow.response = http.Response.make(
                 403,

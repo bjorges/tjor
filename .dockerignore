@@ -3,6 +3,8 @@
 # a build context this way.
 *
 !python/tjor_policy.py
+!python/tjor_identity.py
+!images/conformance/echo.py
 !proxy/addon.py
 !proxy/entrypoint.sh
 !images/agent/entrypoint.sh
