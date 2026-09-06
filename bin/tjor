@@ -475,6 +475,11 @@ prepare_gateway() {
     [[ "$(cfg gateway.enabled --default false)" == "true" ]] || return 0
     local host port; host="$(cfg gateway.host --default tjor-gateway)"
     port="$(cfg gateway.port --default 4000)"
+    # The gateway host is an internal docker alias that we add to hosts.block —
+    # a dotted / real-domain value (e.g. github.com) would then silently block
+    # normal egress to it. Require a simple DNS label; refuse otherwise.
+    [[ "${host}" =~ ^[a-z0-9]([a-z0-9-]*[a-z0-9])?$ ]] \
+        || { warn "gateway: [gateway].host '${host}' must be a simple hostname label (e.g. tjor-gateway), not a dotted domain — gateway disabled"; return 0; }
     local key
     key="$(python3 "${TJOR_ROOT}/python/tjor_gateway.py" master-key 2>/dev/null)" \
         || { warn "gateway: could not obtain the master key — gateway disabled"; return 0; }
@@ -1193,6 +1198,21 @@ cmd_denials() {
     fi
 }
 
+cmd_gateway() {
+    case "${1:-}" in
+        rotate-key)
+            # Regenerate the per-install gateway master key. Running gateway
+            # sessions keep the key they started with (the proxy + gateway hold
+            # it) until relaunched; new sessions pick up the new key.
+            python3 "${TJOR_ROOT}/python/tjor_gateway.py" rotate-key >/dev/null \
+                || die "gateway: key rotation failed"
+            echo "tjor: gateway master key rotated — new sessions use the new key; running gateway sessions keep the old key until relaunched." >&2
+            ;;
+        ""|-h|--help) echo "usage: tjor gateway rotate-key" >&2 ;;
+        *) die "unknown 'gateway' subcommand: $1 (try: rotate-key)" ;;
+    esac
+}
+
 cmd_conformance() {
     export TJOR_POLICY_OVERRIDE="${TJOR_ROOT}/images/conformance/policy.toml"
     export TJOR_SESSION="conformance"
@@ -1280,6 +1300,7 @@ usage: tjor <command> [args]
   denials [--session <name>]                         show egress denied in a session (then: tjor policy add <host>)
   init                                               scaffold a per-repo .tjor/ (policy + config)
   trust [--show] [--yes]                             review this repo's .tjor config, then approve it (--show: review only; --yes: approve non-interactively)
+  gateway rotate-key                                 regenerate the LLM gateway master key (D4; new sessions use it)
   conformance                                        run the adversarial conformance suite
   doctor [--full]                                    check host deps, policy, guarantees (--full: + conformance)
   build [--harness ...]                              (re)build the images
@@ -1304,6 +1325,7 @@ main() {
         denials) cmd_denials "$@" ;;
         init) cmd_init "$@" ;;
         trust) cmd_trust "$@" ;;
+        gateway) cmd_gateway "$@" ;;
         conformance) cmd_conformance "$@" ;;
         doctor) cmd_doctor "$@" ;;
         build) cmd_build "$@" ;;

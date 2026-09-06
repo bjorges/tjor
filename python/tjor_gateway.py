@@ -72,6 +72,16 @@ def ensure_master_key(path=None):
     return key
 
 
+def rotate_master_key(path=None):
+    """Delete the persisted master key and generate a fresh one. The next
+    gateway-enabled session picks it up; sessions already running keep the old
+    key until relaunched (the proxy + gateway hold the value they started with)."""
+    p = pathlib.Path(path) if path is not None else master_key_path()
+    if p.is_symlink() or p.exists():
+        p.unlink()
+    return ensure_master_key(p)
+
+
 def render_config(models):
     """Render a LiteLLM config (JSON) from `[gateway].models`.
 
@@ -86,6 +96,16 @@ def render_config(models):
         if "name" not in m:
             raise ValueError(f"gateway model missing 'name': {m!r}")
         params = {k: v for k, v in m.items() if k != "name"}
+        # Defense in depth for the "this file carries no secret" guarantee: a
+        # provider key MUST be an env reference (os.environ/<VAR>), never a
+        # literal — otherwise an operator's paste would write a live secret to
+        # config.yaml on disk. Refuse a literal rather than silently persist it.
+        ak = params.get("api_key")
+        if isinstance(ak, str) and ak and not ak.startswith("os.environ/"):
+            raise ValueError(
+                f"gateway model {m['name']!r}: api_key must be an env reference "
+                f"like 'os.environ/OPENAI_API_KEY', not a literal secret"
+            )
         model_list.append({"model_name": m["name"], "litellm_params": params})
     return json.dumps({"model_list": model_list}, indent=2) + "\n"
 
@@ -139,6 +159,10 @@ def _main(argv):
     if len(argv) >= 2 and argv[1] == "master-key":
         # master-key [path]  -> ensure + print the key (used by the launcher)
         print(ensure_master_key(argv[2] if len(argv) > 2 else None))
+        return
+    if len(argv) >= 2 and argv[1] == "rotate-key":
+        # rotate-key [path]  -> regenerate + print the new key
+        print(rotate_master_key(argv[2] if len(argv) > 2 else None))
         return
     if len(argv) == 3 and argv[1] == "render-config":
         # render-config <models-json>  -> print the LiteLLM config

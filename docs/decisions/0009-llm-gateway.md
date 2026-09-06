@@ -52,12 +52,31 @@ the agent, a label, or a config hash.
 
 ## Trade-offs / follow-ups
 
+- **Secrets reach the sidecars as container environment, not files — a named,
+  accepted trade-off.** The master key (`LITELLM_MASTER_KEY`, and the proxy's
+  injection key) and the provider keys (via `env_file`) are container env, so
+  they appear in `docker inspect` — unlike the D2 broker, whose secret lives in
+  a 0600 `broker.json` that never shows in `docker inspect`. This is a
+  **different exposure surface** (a `docker inspect` snapshot pasted into a
+  ticket or captured by fleet tooling would reveal the live key) but stays
+  within the project's already-accepted "docker-socket users are
+  root-equivalent / trusted" threat model. It is env-based rather than
+  file-based because LiteLLM reads its master key and `os.environ/<VAR>` provider
+  refs from the process environment — there is no file-based path for them short
+  of a secret-manager integration (a possible follow-up). The rendered
+  `config.yaml` itself still carries no secret (enforced: a literal `api_key` is
+  refused), and the master key is still never in a session dir, label, or config
+  hash.
+- **Key rotation:** the master key is generated once and persisted per install,
+  shared by every gateway-enabled session. Rotate it with `tjor gateway
+  rotate-key` (regenerates the 0600 key file); running gateway sessions keep the
+  key they started with until relaunched, new sessions pick up the new one.
 - The master key is shared between the proxy and gateway sidecars; both are
   egress-side and neither is the agent, so this is acceptable.
 - MVP: no per-session virtual keys (needs a DB); base_url wiring targets
   LiteLLM's OpenAI/Anthropic-compatible endpoints (per-harness specifics
-  documented); the LiteLLM image is tag-pinned (digest-pinning per charter L11 is
-  a tracked follow-up); the live provider round-trip is a documented manual check.
+  documented); the LiteLLM image is **digest-pinned** (charter L11); the live
+  provider round-trip is a documented manual check.
 - Verification without a provider: host-side wiring test (key 0600 + outside the
   session dir, config secret-free, provider keys egress-only, admin-deny /
   inference-allow policy) + addon unit tests (injection toward the gateway only,

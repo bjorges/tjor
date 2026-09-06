@@ -203,11 +203,16 @@ When enabled, a LiteLLM sidecar runs on the **egress** network and the harness's
   hash) and injected by the proxy toward the gateway host; the agent holds only a
   placeholder. Your provider keys stay on the egress side (gateway sidecar only).
 
+Rotate the generated master key any time with `tjor gateway rotate-key` (new
+sessions pick it up; running gateway sessions keep theirs until relaunched).
+
 MVP notes: the gateway targets LiteLLM's OpenAI/Anthropic-compatible endpoints
 (so `--harness claude` and OpenAI-style usage work directly; per-harness base_url
-specifics are evolving); the LiteLLM image is tag-pinned (digest-pinning is a
-follow-up); a live provider round-trip is a manual check (CI has no keys). See
-ADR 0009 and the design under `openspec/`.
+specifics are evolving); the LiteLLM image is digest-pinned; secrets reach the
+gateway/proxy sidecars as container env (visible via `docker inspect`, within
+the docker-socket-trusted threat model — see ADR 0009); a live provider
+round-trip is a manual check (CI has no keys). See ADR 0009 and the design under
+`openspec/`.
 
 ## Why
 

@@ -3,6 +3,42 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [0.10.1] — 2026-09-06 — Gateway review follow-ups
+
+Secret-lifecycle hygiene from an external review of v0.10.0. The core guarantee
+(gateway admin surface unreachable by construction) was verified sound —
+including a live check of the gateway-host-in-both-allow-and-block case; these
+are the follow-ups it flagged.
+
+### Added
+- **`tjor gateway rotate-key`** — regenerate the per-install gateway master key
+  (new sessions use it; running gateway sessions keep theirs until relaunched).
+  The lack of rotation was previously an undocumented gap.
+
+### Changed
+- **LiteLLM image digest-pinned** (was a floating `main-stable` tag) — the
+  gateway now runs exactly one image (charter L11), like every other pinned
+  image.
+- **ADR 0009 names the secret-delivery trade-off explicitly:** the master key
+  and provider keys reach the sidecars as container env (visible via `docker
+  inspect`), unlike the D2 broker's 0600 file — a different exposure surface,
+  accepted within the docker-socket-trusted threat model, and forced by
+  LiteLLM's env-based key mechanism.
+- **`render_config` refuses a literal `api_key`** (must be `os.environ/<VAR>`),
+  so an operator paste can't silently write a live secret into the on-disk
+  config — enforcing the module's "this file carries no secret" guarantee.
+- **`[gateway].host` must be a simple hostname label** — a dotted/real domain
+  (e.g. `github.com`) would join `hosts.block` and silently break normal egress;
+  now refused.
+- Fixed a stale `_apply_gateway` docstring that described the enforcement as
+  "path-block" (it is host-block + `paths.allow` carve-out — the exhaustive
+  model, not the fragile admin-prefix list the design deliberately avoided).
+
+### Tests
+- The gateway-host-in-both-allow-and-block adversarial case is now a permanent
+  regression test (block precedence wins); plus literal-key rejection, key
+  rotation, and dotted-host refusal.
+
 ## [0.10.0] — 2026-09-06 — LLM gateway (D4) — the roadmap is complete
 
 ### Added

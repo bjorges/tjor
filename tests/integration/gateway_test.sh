@@ -75,6 +75,15 @@ chk "http://tjor-gateway:4000/key/generate" DENY && ok "admin /key/generate DENI
 chk "http://tjor-gateway:4000/ui" DENY && ok "admin /ui DENIED" || bad "/ui was not denied"
 chk "https://api.anthropic.com/v1/messages" ALLOW && ok "base policy allow still honored" || bad "base allow broken"
 
+# --- gateway.host must be a simple label (a dotted domain would collide) ------
+cat >"${USERCFG}/tjor/config.toml" <<'TOML'
+[gateway]
+enabled = true
+host = "github.com"
+TOML
+prepare_gateway 2>/dev/null || true
+[[ -z "${TJOR_GATEWAY_ENABLED:-}" ]] && ok "dotted gateway.host (github.com) refused" || bad "dotted gateway.host accepted — would block real egress"
+
 echo "----"
 echo "gateway wiring: ${PASS} passed, ${FAIL} failed"
 [[ "${FAIL}" -eq 0 ]]

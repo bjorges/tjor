@@ -139,9 +139,9 @@ mitmproxy = "mitmproxy/mitmproxy:12.1.2@sha256:0d7b2a14b4a71a908cd6f31b8f50e29bb
 coredns = "coredns/coredns:1.12.4@sha256:986f04c2e15e147d00bdd51e8c51bcef3644b13ff806be7d2ff1b261d6dfbae1"
 debian = "debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132"
 python = "python:3.13-slim@sha256:9d2e5553305c7c7b0097999bb17187c69b921ccd6bc9d40e4bb5ebe652c00285"
-# LiteLLM gateway (D4), only pulled when [gateway] enabled. Tag-pinned for the
-# MVP; digest-pinning it (charter L11) is a tracked follow-up.
-litellm = "ghcr.io/berriai/litellm:main-stable"
+# LiteLLM gateway (D4), only pulled when [gateway] enabled. Digest-pinned
+# (charter L11) so the gateway runs exactly this image, not a moving tag.
+litellm = "ghcr.io/berriai/litellm:main-stable@sha256:c8756e7b9a61fe45df2ccb5b781d388c3b2f3a21ef9e4956630caef20f9f03aa"
 
 # VERIFIED pull path: a per-harness image digest (sha256:...) makes the pull
 # exactly what was published — independent of the mutable tag, as trustworthy

@@ -380,8 +380,10 @@ def _apply_gateway(flow) -> None:
     real key lives only here (and in the gateway sidecar) and never enters the
     sandbox. Fail-closed: the placeholder is always stripped toward the gateway,
     so a missing key yields an upstream 401 rather than leaking the placeholder.
-    Admin paths are refused by the egress policy (path-block), so this key only
-    ever authenticates inference — the management API is unreachable regardless."""
+    Admin paths are refused by the egress policy — the gateway host is on the
+    block list with only inference paths carved back in (host-block + paths.allow,
+    NOT an admin-prefix denylist) — so this key only ever authenticates inference;
+    the management API is unreachable by construction regardless."""
     if not GATEWAY_HOST or tjor_policy._canon_host(flow.request.host) != GATEWAY_HOST:
         return
     if "authorization" in flow.request.headers:

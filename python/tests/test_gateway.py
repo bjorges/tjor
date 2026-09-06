@@ -50,6 +50,14 @@ class TestMasterKey:
         k = tjor_gateway.ensure_master_key(f)
         assert k.startswith(tjor_gateway.MASTER_KEY_PREFIX)
 
+    def test_rotate_generates_new_key(self, tmp_path):
+        f = tmp_path / "gw.key"
+        k1 = tjor_gateway.ensure_master_key(f)
+        k2 = tjor_gateway.rotate_master_key(f)
+        assert k2 != k1 and k2.startswith(tjor_gateway.MASTER_KEY_PREFIX)
+        assert tjor_gateway.ensure_master_key(f) == k2      # persisted
+        assert stat.S_IMODE(f.stat().st_mode) == 0o600      # still 0600
+
 
 class TestRenderConfig:
     def test_model_list_shape(self):
@@ -75,6 +83,14 @@ class TestRenderConfig:
     def test_missing_name_raises(self):
         with pytest.raises(ValueError):
             tjor_gateway.render_config([{"model": "openai/gpt-4o"}])
+
+    def test_literal_api_key_rejected(self):
+        # A literal secret must be refused (it would be written to disk); an
+        # os.environ ref, or no key at all, is fine.
+        with pytest.raises(ValueError):
+            tjor_gateway.render_config([{"name": "x", "model": "openai/gpt-4o", "api_key": "sk-abc123"}])
+        tjor_gateway.render_config([{"name": "x", "model": "openai/gpt-4o", "api_key": "os.environ/OPENAI_API_KEY"}])
+        tjor_gateway.render_config([{"name": "x", "model": "ollama/llama3"}])  # keyless local model
 
 
 import tjor_policy
@@ -129,6 +145,21 @@ class TestAugmentPolicy:
         # augmenting an already-augmented policy doesn't duplicate the host/carve-outs
         assert twice.count('host = "tjor-gateway"') == once.count('host = "tjor-gateway"')
         assert twice.count('"tjor-gateway"') == once.count('"tjor-gateway"')
+
+    def test_dual_membership_block_wins(self):
+        # The exact adversarial state the security claim rests on: the gateway
+        # host present in BOTH hosts.allow AND hosts.block (a real misconfig,
+        # since augment only adds to block, never checks allow). host-block
+        # precedence must still win — admin denied, inference carve-out intact.
+        base = BASE_POLICY.replace(
+            'allow = ["github.com", "api.anthropic.com"]',
+            'allow = ["github.com", "api.anthropic.com", "tjor-gateway"]',
+        )
+        pol = tjor_policy.parse_policy(tjor_gateway.augment_policy(base, "tjor-gateway"))
+        assert pol.valid, pol.errors
+        v = tjor_policy.evaluate(pol, "http://tjor-gateway:4000/key/generate")
+        assert not v.allowed and v.rule == "host-block"     # block wins over allow
+        assert tjor_policy.evaluate(pol, "http://tjor-gateway:4000/v1/chat/completions").allowed
 
 
 class TestCli:
