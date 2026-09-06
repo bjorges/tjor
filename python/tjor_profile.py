@@ -52,8 +52,15 @@ _CRED_NAMES = frozenset({
     ".netrc", ".git-credentials", ".npmrc", ".pypirc", ".env", ".dockercfg",
     ".dockerconfigjson", "token.json", ".htpasswd", ".pgpass", ".boto",
     "id_rsa", "id_dsa", "id_ecdsa", "id_ed25519",
+    # cloud-provider credential files
+    "service-account.json", "application_default_credentials.json",
+    "client_secret.json", "clientsecret.json", "gcloud-credentials.json",
+    "azureauth.json", "kubeconfig",
 })
-_CRED_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".ppk")
+# Suffixes: private keys, certs, keystores; `-key.json` catches `<name>-key.json`
+# service-account exports without matching every `.json` definition file.
+_CRED_SUFFIXES = (".pem", ".key", ".p12", ".pfx", ".jks", ".keystore", ".ppk",
+                  ".crt", ".cer", ".pkcs12", "-key.json")
 
 
 def _is_credential_file(name):

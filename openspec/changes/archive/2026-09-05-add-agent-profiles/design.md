@@ -33,8 +33,15 @@ registry/marketplace; writing definitions back out; the broader "task profile"
   *Alternative — mount the source read-only and filter in the entrypoint:*
   rejected, because the whole source (creds included) would then be readable at
   the mount path even if we only *deploy* a subset. *Alternative — blocklist
-  auth files:* rejected; an allow-list fails safe when a harness introduces a
-  new secret filename we haven't heard of.
+  auth files:* rejected **as the primary gate** — an allow-list fails safe when
+  a harness introduces a new secret filename we haven't heard of.
+  > **Updated in v0.9.3:** the structural allow-list remains the primary gate,
+  > but a review found it filtered top-level *directory* names only, so a
+  > credential file nested *inside* a definition dir (`agent/auth.json`) was
+  > staged. v0.9.3 adds a credential-filename/extension **denylist** applied at
+  > any depth as *defense in depth* — so the shipped design is allow-list
+  > (structural) **plus** a nested denylist, not the pure allow-list this bullet
+  > originally described. See `python/tjor_profile.py:_is_credential_file`.
 - **Overlay on instruction cargo, profile wins.** The entrypoint deploys image
   instruction cargo first (versioned baseline), then copies the staged profile
   over it into the active harness config dir. Conflicts resolve to the user's

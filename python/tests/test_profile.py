@@ -106,6 +106,12 @@ class TestStageAllowList:
         _write(src / "skills" / "k8s" / "client.pem", "SECRET")
         _write(src / "command" / ".env", "TOKEN=SECRET")
         _write(src / "agents" / "svc.p12", "SECRET")
+        # cloud-provider credential files (broadened denylist)
+        _write(src / "agent" / "service-account.json", "SECRET")
+        _write(src / "skills" / "gcp" / "application_default_credentials.json", "SECRET")
+        _write(src / "command" / "prod-key.json", "SECRET")
+        _write(src / "skills" / "tls" / "server.crt", "SECRET")
+        _write(src / "agent" / "kubeconfig", "SECRET")
         dest = tmp_path / "staged"
         staged = tjor_profile.stage(src, dest)
         assert staged == ["agent/reviewer.md"]

@@ -3,6 +3,20 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [0.9.4] — 2026-09-06 — Review follow-ups (profile denylist + doc honesty)
+
+### Changed
+- **Agent-profile credential denylist broadened** to common cloud-provider
+  credential files — `service-account.json`, `application_default_credentials.json`,
+  `*-key.json`, `kubeconfig`, `client_secret.json`, and `.crt`/`.cer`/`.pkcs12`
+  extensions. Still a denylist *behind* the structural allow-list (definition
+  subdirs only), i.e. defense in depth, not the primary boundary. Tested.
+- **Doc honesty:** the archived `add-agent-profiles` design.md's "blocklist
+  rejected" alternative now records that v0.9.3 shipped exactly such a denylist
+  as defense in depth (the structural allow-list stays the primary gate) — so
+  the design doc no longer contradicts the shipped code, matching the disclosure
+  pattern used for the `add-repo-config` design.md.
+
 ## [0.9.3] — 2026-09-05 — Security review (broad re-review of v0.7.0–v0.9.1)
 
 A five-lens external review that broadened scope to the releases that hadn't
