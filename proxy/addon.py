@@ -62,6 +62,14 @@ if _broker_config and BROKER_HOSTS:
 
 _cache: dict = {"mtime": None, "policy": None}
 
+# LLM gateway (D4): the configured gateway host + its generated master key. Both
+# the host and the key live ONLY in this sidecar (egress side); the agent points
+# its base_url at the gateway and holds only a PLACEHOLDER key, which the proxy
+# overwrites with GATEWAY_KEY toward GATEWAY_HOST only. Empty = gateway disabled.
+_gw_host_raw = os.environ.get("TJOR_GATEWAY_HOST", "").strip()
+GATEWAY_HOST = tjor_policy._canon_host(_gw_host_raw) if _gw_host_raw else ""
+GATEWAY_KEY = os.environ.get("TJOR_GATEWAY_KEY", "")
+
 DENIAL_LOG = os.environ.get("TJOR_DENIAL_LOG", "")
 _denial_log_count = 0
 # Per-session cap so a misbehaving agent hammering a denied host cannot grow the
@@ -218,6 +226,12 @@ _resolver = _system_resolver  # injectable for tests
 def resolved_addresses_ok(host: str) -> tuple[bool, str]:
     """True unless the host resolves to any non-public address."""
     host = tjor_policy._canon_host(host)
+    # Gateway (D4): the configured LiteLLM gateway is an INTENTIONAL internal
+    # endpoint that resolves to a private docker IP. Exempt exactly it (and only
+    # when a gateway is configured) from the SSRF/DNS-rebind guard — a single,
+    # config-scoped host, not a blanket TJOR_IP_GUARD=off.
+    if GATEWAY_HOST and host == GATEWAY_HOST:
+        return True, "gateway-exempt"
     now = time.monotonic()
     hit = _ip_cache.get(host)
     if hit and now - hit[0] < _IP_TTL_SECONDS:
@@ -360,6 +374,22 @@ def _apply_broker(flow) -> None:
         flow.request.headers["authorization"] = auth
 
 
+def _apply_gateway(flow) -> None:
+    """LLM gateway (D4): toward the gateway host, replace Authorization with the
+    generated master key. The agent's harness holds only a placeholder key; the
+    real key lives only here (and in the gateway sidecar) and never enters the
+    sandbox. Fail-closed: the placeholder is always stripped toward the gateway,
+    so a missing key yields an upstream 401 rather than leaking the placeholder.
+    Admin paths are refused by the egress policy (path-block), so this key only
+    ever authenticates inference — the management API is unreachable regardless."""
+    if not GATEWAY_HOST or tjor_policy._canon_host(flow.request.host) != GATEWAY_HOST:
+        return
+    if "authorization" in flow.request.headers:
+        del flow.request.headers["authorization"]
+    if GATEWAY_KEY:
+        flow.request.headers["authorization"] = f"Bearer {GATEWAY_KEY}"
+
+
 # ------------------------------------------------------------ mitmproxy glue
 
 class TjorPolicy:
@@ -382,6 +412,7 @@ class TjorPolicy:
         if verdict.allowed:
             _apply_identity(flow)
             _apply_broker(flow)
+            _apply_gateway(flow)
         if not verdict.allowed:
             _log_denial(flow.request.host, verdict.rule)
             flow.response = http.Response.make(

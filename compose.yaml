@@ -54,6 +54,11 @@ services:
       # Session denial log (#23): the addon appends each denied egress here so
       # `tjor denials` can surface what got blocked.
       TJOR_DENIAL_LOG: /denials.log
+      # LLM gateway (D4): the proxy injects this generated master key toward the
+      # gateway host ONLY, and exempts that host from the SSRF guard. Both live
+      # only here (egress side); the agent holds a placeholder. Empty = disabled.
+      TJOR_GATEWAY_HOST: ${TJOR_GATEWAY_HOST:-}
+      TJOR_GATEWAY_KEY: ${TJOR_GATEWAY_KEY:-}
     labels:
       tjor.role: proxy
       tjor.session: ${TJOR_SESSION:-}
@@ -201,3 +206,33 @@ services:
     mem_limit: 128m
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
+
+  # LLM gateway (D4): LiteLLM on the EGRESS network only — reachable by the agent
+  # solely through the proxy (never connected to internal). The alias is the
+  # single gateway host the proxy resolves + allows (inference paths only). The
+  # generated master key arrives via LITELLM_MASTER_KEY; provider keys via the
+  # env_file, mounted here alone. Started only when the launcher names it (the
+  # gateway profile keeps it out of any bare `compose up`). :- fallbacks so
+  # compose operations on the other services don't require these vars when off.
+  litellm:
+    profiles: [gateway]
+    image: ${TJOR_LITELLM_IMAGE:-ghcr.io/berriai/litellm:main-stable}
+    networks:
+      egress:
+        aliases:
+          - ${TJOR_GATEWAY_HOST:-tjor-gateway}
+    mem_limit: ${TJOR_GATEWAY_MEM:-2g}
+    security_opt: ["no-new-privileges:true"]
+    cap_drop: [ALL]
+    environment:
+      LITELLM_MASTER_KEY: ${TJOR_GATEWAY_KEY:-}
+    env_file:
+      - ${TJOR_GATEWAY_ENV_MOUNT:-/dev/null}
+    volumes:
+      - ${TJOR_GATEWAY_CONFIG_MOUNT:-/dev/null}:/etc/litellm/config.yaml:ro
+    command: ["--config", "/etc/litellm/config.yaml", "--port", "${TJOR_GATEWAY_PORT:-4000}"]
+    labels:
+      tjor.role: gateway
+      tjor.session: ${TJOR_SESSION:-}
+      tjor.launched-at: ${TJOR_LAUNCHED_AT:-}
+      tjor.confighash: ${TJOR_CONFIG_HASH:-unset}

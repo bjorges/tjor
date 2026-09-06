@@ -371,3 +371,55 @@ class TestSafeAscii:
         err = capsys.readouterr().err
         assert "\x1b" not in err            # no raw escape reaches stderr
         assert "example.com" in err          # the printable part still shown
+
+
+class _GwReq:
+    def __init__(self, host, headers=None):
+        self.host = host
+        self.headers = headers if headers is not None else {}
+
+
+class _GwFlow:
+    def __init__(self, host, headers=None):
+        self.request = _GwReq(host, headers)
+
+
+class TestGateway:
+    """LLM gateway (D4): the SSRF-guard exemption for the gateway host, and the
+    master-key injection toward it (agent holds only a placeholder)."""
+
+    def test_ip_guard_exempts_only_the_gateway_host(self):
+        addon = load_addon()
+        addon.GATEWAY_HOST = "tjor-gateway"
+        addon._resolver = lambda h: {"172.20.0.5"}   # private docker IP for any host
+        ok, why = addon.resolved_addresses_ok("tjor-gateway")
+        assert ok and why == "gateway-exempt"
+        # a DIFFERENT host resolving to a private IP is still denied
+        ok2, _ = addon.resolved_addresses_ok("sneaky.internal.test")
+        assert not ok2
+
+    def test_no_exemption_when_gateway_disabled(self):
+        addon = load_addon()
+        addon.GATEWAY_HOST = ""
+        addon._resolver = lambda h: {"172.20.0.5"}
+        ok, _ = addon.resolved_addresses_ok("tjor-gateway")
+        assert not ok   # no gateway configured -> guard applies normally
+
+    def test_injects_master_key_toward_gateway_only(self):
+        addon = load_addon()
+        addon.GATEWAY_HOST = "tjor-gateway"
+        addon.GATEWAY_KEY = "sk-tjor-REALKEY"
+        f = _GwFlow("tjor-gateway", {"authorization": "Bearer placeholder"})
+        addon._apply_gateway(f)
+        assert f.request.headers["authorization"] == "Bearer sk-tjor-REALKEY"
+        g = _GwFlow("api.example.com", {"authorization": "Bearer placeholder"})
+        addon._apply_gateway(g)
+        assert g.request.headers["authorization"] == "Bearer placeholder"   # untouched elsewhere
+
+    def test_strips_placeholder_when_key_missing(self):
+        addon = load_addon()
+        addon.GATEWAY_HOST = "tjor-gateway"
+        addon.GATEWAY_KEY = ""
+        f = _GwFlow("tjor-gateway", {"authorization": "Bearer placeholder"})
+        addon._apply_gateway(f)
+        assert "authorization" not in f.request.headers   # fail-closed strip

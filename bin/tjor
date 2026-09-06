@@ -183,6 +183,19 @@ ensure_topology() { # expects TJOR_PROJECT, TJOR_SESSION_DIR exported
     corefile="${TJOR_SESSION_DIR}/Corefile"
     cp "${pfile}" "${session_policy}"
 
+    # LLM gateway (D4): make the gateway host inference-ONLY in the session
+    # policy — it joins hosts.block and only the inference paths are carved back
+    # in (paths.allow), so the whole management API is denied by construction.
+    # This is the ONE host the policy gains; the gateway's key is NOT here.
+    if [[ -n "${TJOR_GATEWAY_ENABLED:-}" && -n "${TJOR_GATEWAY_HOST:-}" ]]; then
+        local augmented
+        if augmented="$(python3 "${TJOR_ROOT}/python/tjor_gateway.py" augment-policy "${session_policy}" "${TJOR_GATEWAY_HOST}")"; then
+            printf '%s' "${augmented}" > "${session_policy}"
+        else
+            die "gateway: failed to augment the egress policy with the gateway carve-outs"
+        fi
+    fi
+
     if ! python3 "${TJOR_ROOT}/python/tjor_policy.py" validate --policy "${session_policy}" >/dev/null 2>&1; then
         loud "EGRESS POLICY INVALID (${pfile}) — failing closed: ALL egress will be denied."
         python3 "${TJOR_ROOT}/python/tjor_policy.py" validate --policy "${session_policy}" || true
@@ -191,8 +204,10 @@ ensure_topology() { # expects TJOR_PROJECT, TJOR_SESSION_DIR exported
 
     # Identity joins the hash so an identity change (e.g. a new --task)
     # recreates the proxy with the new registration.
+    # The gateway config (models — no secrets) joins the hash so a model change
+    # recreates the sidecar; the master KEY is passed by env and is never here.
     TJOR_CONFIG_HASH="$( { cat "${session_policy}" "${corefile}" "${TJOR_ROOT}/compose.yaml" \
-            "${TJOR_BROKER_CONFIG_MOUNT:-/dev/null}"; \
+            "${TJOR_BROKER_CONFIG_MOUNT:-/dev/null}" "${TJOR_GATEWAY_CONFIG_MOUNT:-/dev/null}"; \
         printf '%s|%s|%s|%s|%s|%s|%s|%s' "${TJOR_SESSION_ID:-}" "${TJOR_TASK_ID:-}" "${TJOR_HARNESS:-}" \
             "${TJOR_REPO:-}" "${TJOR_WORKTREE:-}" "${TJOR_PARENT_SESSION:-}" "${TJOR_INJECT_HOSTS:-}" \
             "${TJOR_BROKER_HOSTS:-}"; } \
@@ -213,15 +228,20 @@ ensure_topology() { # expects TJOR_PROJECT, TJOR_SESSION_DIR exported
 
     # Recreate sidecars on config drift (charter L12): compare the stamp on
     # the running containers with the hash of the config we just generated.
-    local force=() ctr stamp
-    for svc in proxy dns; do
+    # The gateway sidecar (D4) is brought up with proxy/dns but, like them, is
+    # created on the egress network — and, UNLIKE them, never connected to the
+    # internal network below, so the agent can reach it only through the proxy.
+    local -a svcs=(proxy dns)
+    [[ -n "${TJOR_GATEWAY_ENABLED:-}" ]] && svcs+=(litellm)
+    local force=() ctr stamp svc
+    for svc in "${svcs[@]}"; do
         ctr="$(compose ps -q "${svc}" 2>/dev/null || true)"
         if [[ -n "${ctr}" ]]; then
             stamp="$(docker inspect -f '{{index .Config.Labels "tjor.confighash"}}' "${ctr}" 2>/dev/null || true)"
             [[ "${stamp}" != "${TJOR_CONFIG_HASH}" ]] && force=(--force-recreate)
         fi
     done
-    compose up -d "${force[@]}" proxy dns
+    compose up -d "${force[@]}" "${svcs[@]}"
 
     # Dual-homed sidecars: created on the egress network by compose, then
     # connected to the internal network SECOND (charter L28). Retry: the
@@ -440,6 +460,59 @@ prepare_broker() {
     echo "tjor: credential broker active (source=${source}) — the agent holds only a placeholder" >&2
 }
 
+# LLM gateway (D4): when [gateway] enabled, obtain the per-install master key
+# (0600, under the user config dir — never the session dir/hash/labels), render
+# the LiteLLM config from [gateway].models into an egress-side mount, stage the
+# provider keys into an env_file mounted ONLY into the gateway, and export the
+# TJOR_GATEWAY_* env that ensure_topology + compose read. The master key is
+# passed by env to the proxy (which injects it toward the gateway host) and the
+# litellm sidecar; the agent gets only a placeholder key + the gateway base_url.
+prepare_gateway() {
+    export TJOR_GATEWAY_ENABLED="" TJOR_GATEWAY_HOST="" TJOR_GATEWAY_KEY="" \
+           TJOR_GATEWAY_PORT="" TJOR_GATEWAY_DIR="" TJOR_GATEWAY_CONFIG_MOUNT="" \
+           TJOR_GATEWAY_ENV_MOUNT="" TJOR_GATEWAY_OPENAI_BASE="" \
+           TJOR_GATEWAY_ANTHROPIC_BASE="" TJOR_GATEWAY_AGENT_KEY=""
+    [[ "$(cfg gateway.enabled --default false)" == "true" ]] || return 0
+    local host port; host="$(cfg gateway.host --default tjor-gateway)"
+    port="$(cfg gateway.port --default 4000)"
+    local key
+    key="$(python3 "${TJOR_ROOT}/python/tjor_gateway.py" master-key 2>/dev/null)" \
+        || { warn "gateway: could not obtain the master key — gateway disabled"; return 0; }
+    [[ -n "${key}" ]] || { warn "gateway: empty master key — gateway disabled"; return 0; }
+
+    local gwdir="${TJOR_SESSION_DIR}/gateway"
+    mkdir -p "${gwdir}"; chmod 700 "${gwdir}"
+    # LiteLLM config (models only, NO secrets — provider keys are os.environ refs).
+    local models; models="$(cfg gateway.models --default '[]')"
+    if ! python3 "${TJOR_ROOT}/python/tjor_gateway.py" render-config "${models}" > "${gwdir}/config.yaml"; then
+        warn "gateway: LiteLLM config render failed — gateway disabled"; rm -f "${gwdir}/config.yaml"; return 0
+    fi
+    # Provider keys -> an env_file mounted ONLY into the gateway sidecar (egress
+    # side): values read from the launcher env; 0600; never mounted to the agent.
+    local envfile="${gwdir}/provider.env"
+    ( umask 077; : > "${envfile}" )
+    local var val
+    while read -r var; do
+        [[ -n "${var}" ]] || continue
+        val="${!var:-}"
+        [[ -n "${val}" ]] || { warn "gateway: provider_key_env \$${var} is empty on the host — skipped"; continue; }
+        printf '%s=%s\n' "${var}" "${val}" >> "${envfile}"
+    done < <(cfg gateway.provider_key_envs --default '[]' \
+                | python3 -c 'import json,sys; [print(x) for x in json.load(sys.stdin) if isinstance(x, str)]')
+
+    local litellm_img gw_mem
+    litellm_img="$(cfg images.litellm --default 'ghcr.io/berriai/litellm:main-stable')"
+    gw_mem="$(cfg limits.gateway_mem --default 2g)"
+    export TJOR_GATEWAY_ENABLED=1 TJOR_GATEWAY_HOST="${host}" TJOR_GATEWAY_KEY="${key}" \
+           TJOR_GATEWAY_PORT="${port}" TJOR_GATEWAY_DIR="${gwdir}" \
+           TJOR_GATEWAY_CONFIG_MOUNT="${gwdir}/config.yaml" TJOR_GATEWAY_ENV_MOUNT="${envfile}" \
+           TJOR_GATEWAY_OPENAI_BASE="http://${host}:${port}/v1" \
+           TJOR_GATEWAY_ANTHROPIC_BASE="http://${host}:${port}" \
+           TJOR_GATEWAY_AGENT_KEY="tjor-gateway-placeholder" \
+           TJOR_LITELLM_IMAGE="${litellm_img}" TJOR_GATEWAY_MEM="${gw_mem}"
+    echo "tjor: LLM gateway active (${host}:${port}) — inference-only; admin unreachable by construction; the master key never enters the agent" >&2
+}
+
 export_static_env() {
     export TJOR_PROXY_IMAGE="tjor-proxy:local"
     TJOR_COREDNS_IMAGE="$(cfg images.coredns)"
@@ -560,6 +633,7 @@ resolve_session() { # $1 = harness, $2 = task id (optional), $3 = session name (
 session_setup() { # $1 = harness, $2 = task id (optional), $3 = session name (optional)
     resolve_session "$@"
     prepare_broker
+    prepare_gateway
 }
 
 # True (0) if an absolute path is too sensitive to mount read-write into the
@@ -680,7 +754,18 @@ run_agent() { # $1 = detach flag, $2.. = command
         profile_env="/opt/tjor/profile"
         echo "tjor: + agent profile overlay" >&2
     fi
-    ctr="$(compose run -d "${mounts[@]}" -e TJOR_SAFE_DIRS="${safe_dirs}" -e TJOR_PROFILE_DIR="${profile_env}" agent "$@")" || die "failed to start the agent container"
+    # LLM gateway (D4): point the harness at the gateway with a PLACEHOLDER key
+    # (the proxy injects the real key toward the gateway). Passed via -e ONLY
+    # when enabled, so a normal session's harness auth is untouched.
+    local -a gw_env=()
+    if [[ -n "${TJOR_GATEWAY_ENABLED:-}" ]]; then
+        gw_env=(-e "OPENAI_BASE_URL=${TJOR_GATEWAY_OPENAI_BASE}"
+                -e "ANTHROPIC_BASE_URL=${TJOR_GATEWAY_ANTHROPIC_BASE}"
+                -e "OPENAI_API_KEY=${TJOR_GATEWAY_AGENT_KEY}"
+                -e "ANTHROPIC_API_KEY=${TJOR_GATEWAY_AGENT_KEY}")
+        echo "tjor: + harness base_url -> gateway (placeholder key; real key injected at the proxy)" >&2
+    fi
+    ctr="$(compose run -d "${mounts[@]}" -e TJOR_SAFE_DIRS="${safe_dirs}" -e TJOR_PROFILE_DIR="${profile_env}" "${gw_env[@]}" agent "$@")" || die "failed to start the agent container"
     if [[ -n "${detach}" ]]; then
         echo "tjor: session ${TJOR_SESSION} started detached — attach with: tjor attach ${TJOR_SESSION}" >&2
         return 0

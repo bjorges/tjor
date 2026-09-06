@@ -2,7 +2,7 @@
 
 > *tjor* (Norwegian, nynorsk): **tether** — the rope that lets an animal graze freely, but only within a safe radius.
 
-tjor runs AI coding agents (Claude Code, opencode, GitHub Copilot CLI) inside a portable, fail-closed container cage with per-session state, identity, lifecycle, and brokered credentials. The agent works at full speed inside the boundary — and the boundary, not the prompt, is the policy. Per-session identity metadata (D1), the session lifecycle UX (D3 — `ls`/`attach`/`gc`/`reset`, named and detached sessions), and the credential broker (D2) are shipped; an optional LLM gateway (D4) is the remaining delta on the roadmap (below).
+tjor runs AI coding agents (Claude Code, opencode, GitHub Copilot CLI) inside a portable, fail-closed container cage with per-session state, identity, lifecycle, and brokered credentials. The agent works at full speed inside the boundary — and the boundary, not the prompt, is the policy. Per-session identity metadata (D1), the session lifecycle UX (D3 — `ls`/`attach`/`gc`/`reset`, named and detached sessions), the credential broker (D2), and an optional LLM gateway (D4) are all shipped — the roadmap deltas are complete.
 
 **Status: pre-alpha, working skeleton.** The cage core runs: fail-closed egress with an adversarial conformance suite (15/15 probes green), opencode doing real work inside. Specs live in [`openspec/`](openspec/), decisions in [`docs/decisions/`](docs/decisions/).
 
@@ -171,6 +171,44 @@ separate trust step (unlike a repo's `.tjor/`, which travels with code and needs
 `tjor trust`). Content must already be in the active harness's format; tjor
 deploys it, it doesn't translate between harnesses.
 
+## LLM gateway (LiteLLM, D4)
+
+Optionally route the harness through a **LiteLLM gateway** instead of allow-listing
+each provider. Off by default; enable it in config:
+
+```toml
+[gateway]
+enabled = true
+provider_key_envs = ["ANTHROPIC_API_KEY"]   # your keys, passed only to the gateway
+
+[[gateway.models]]
+name = "claude"
+model = "anthropic/claude-sonnet-4-20250514"
+api_key = "os.environ/ANTHROPIC_API_KEY"
+```
+
+When enabled, a LiteLLM sidecar runs on the **egress** network and the harness's
+`base_url` points at it. What the design guarantees:
+
+- **One host, not one-per-provider.** The agent reaches the gateway only through
+  the proxy, so the egress policy gains exactly one host (the gateway); LiteLLM
+  fans out to your providers from the egress side.
+- **Admin surface unreachable by construction.** The proxy — the agent's only
+  route to the gateway — allows **only inference paths** toward it (`/v1/chat/completions`,
+  `/v1/messages`, …); the entire LiteLLM management API is denied by construction
+  (the gateway host is default-denied with the inference paths carved back in),
+  not by a password. A new admin route in a future LiteLLM does not open it.
+- **The gateway key never enters the agent.** A per-install master key is
+  generated (0600, under your config dir — never a session dir, label, or config
+  hash) and injected by the proxy toward the gateway host; the agent holds only a
+  placeholder. Your provider keys stay on the egress side (gateway sidecar only).
+
+MVP notes: the gateway targets LiteLLM's OpenAI/Anthropic-compatible endpoints
+(so `--harness claude` and OpenAI-style usage work directly; per-harness base_url
+specifics are evolving); the LiteLLM image is tag-pinned (digest-pinning is a
+follow-up); a live provider round-trip is a manual check (CI has no keys). See
+ADR 0009 and the design under `openspec/`.
+
 ## Why
 
 Prompt-level rules are advisory. Harness-level permissions are harness-specific. The only guarantees that hold for *any* harness — including one running with permissions disabled — are structural: what the process can physically reach. tjor's design is corroborated by multiple independent production systems that converged on the same conclusion: restrict the environment, not the agent.
@@ -186,12 +224,9 @@ A compose-based container cage reproducing production-validated decisions:
 - **Session identity (D1, shipped)**: every session carries a frozen identity (`TJOR_SESSION_ID`, `--task` id, harness, repo, worktree) as environment inside the cage and as the vendor-neutral `x-agent-*` schema on the wire (host filesystem paths are trimmed to their basename on the wire) — the proxy strips forged or unknown identity headers toward every host (a session structurally cannot impersonate another) and injects the identity set only toward hosts you list in `identity.inject_hosts` (e.g. your LLM endpoints).
 - **Session lifecycle (D3, shipped)**: `ls` (with live boundary re-check), `attach`, `gc`, tiered `reset`, and concurrent named/detached sessions per repo — see the Quickstart above.
 - **Credential broker (D2, shipped)**: short-TTL, per-session credentials injected at the proxy toward configured hosts only — the agent holds a placeholder and never possesses the real secret (proven by a container scan in CI). Configure `[broker]` in your tjor config: `source = "github-app"` (App installation token, ~1h, repo-scoped), `source = "pat"` (static token, still kept out of the sandbox), or `source = "kube"` (a short-TTL Kubernetes ServiceAccount token — see [Kubernetes access](#kubernetes-access-kube-broker) below). See ADR 0007.
+- **LLM gateway (D4, shipped)** (optional): an off-by-default LiteLLM sidecar on the egress network — the harness points at it, the egress policy gains exactly one host, and it fans out to whatever provider you configure. Its admin surface is unreachable from the agent by construction (the proxy allows only inference paths toward it), and a generated master key is injected by the proxy so it never enters the agent. See [LLM gateway](#llm-gateway-litellm-d4) below and ADR 0009.
 
-Remaining roadmap delta — **specced and tracked in issue #4, not yet built**:
-
-| Delta | Design target |
-|---|---|
-| **D4 — LLM gateway (optional)** | LiteLLM sidecar on the egress network; backend-agnostic. |
+All four roadmap deltas (D1–D4) are now shipped.
 
 See [`docs/clean-room-charter.md`](docs/clean-room-charter.md) for the operational lessons this build is grounded in, and the provenance rules it is built under.
 

@@ -30,6 +30,8 @@ jobs:
         run: python -m pytest python/tests -q
       - name: kube broker wiring (mocked kubectl, no cluster) (#26)
         run: bash tests/integration/kube_test.sh
+      - name: LLM gateway wiring (key handling + inference-only policy, no docker) (#4)
+        run: bash tests/integration/gateway_test.sh
       - name: shellcheck
         # --severity=warning: fail on real bugs (warning/error), not info-level
         # findings like SC2317 (trap-invoked functions look "unreachable"),

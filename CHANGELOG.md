@@ -3,6 +3,33 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [0.10.0] — 2026-09-06 — LLM gateway (D4) — the roadmap is complete
+
+### Added
+- **Optional LiteLLM gateway** (#4, D4 — the last roadmap delta). With
+  `[gateway] enabled = true`, a LiteLLM sidecar runs on the **egress** network
+  and the harness's `base_url` points at it, so the egress policy gains exactly
+  **one** host instead of one per provider; LiteLLM fans out to whatever
+  providers you configure. Off by default — a session is unchanged unless you
+  turn it on.
+- **Admin surface unreachable by construction.** The agent's only route to the
+  gateway is the proxy, and the policy makes the gateway host **inference-only**
+  via host-block + `paths.allow` carve-outs — so the entire LiteLLM management
+  API (`/key/*`, `/user/*`, `/model/*`, `/ui`, and any route a future LiteLLM
+  adds) is denied with no fragile prefix list, not by a password (charter L30).
+- **Generated master key, never in the agent.** A per-install key is generated
+  (CSPRNG, 0600, under your config dir — never a session dir, label, or config
+  hash) and injected by the proxy toward the gateway host (reusing the D2
+  broker path); the agent holds only a placeholder. Provider keys stay
+  egress-side (gateway sidecar only). The gateway host is exempted from the SSRF
+  IP-guard (it resolves to a private docker IP) — narrowly, only when enabled.
+- New `python/tjor_gateway.py` (master key + LiteLLM config render + policy
+  augmentation), `[gateway]` config, `litellm` compose service (egress-only),
+  ADR 0009, README "LLM gateway" section. Tests: `test_gateway.py`, addon
+  gateway tests, and `gateway_test.sh` (host-side wiring: key handling +
+  inference-only policy). A live provider round-trip is a documented manual
+  check. **All four roadmap deltas (D1–D4) are now shipped.**
+
 ## [0.9.4] — 2026-09-06 — Review follow-ups (profile denylist + doc honesty)
 
 ### Changed
