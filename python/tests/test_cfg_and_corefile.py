@@ -50,6 +50,45 @@ class TestConfigMerge:
         assert tjor_cfg.get(config, "landlock.mode") == "require"
         assert tjor_cfg.get(config, "landlock.deny_paths") == ["/x/.npmrc"]
 
+    def test_validate_flags_unknown_scalar_and_section(self):
+        shape = tjor_cfg._load(tjor_cfg.DEFAULTS)
+        layer = {"landlok": {"mode": "off"}, "proxy": {"prot": 9090}}
+        unknown = set(tjor_cfg.validate_layer(layer, shape))
+        assert unknown == {"landlok", "proxy.prot"}
+
+    def test_validate_accepts_known_keys(self):
+        shape = tjor_cfg._load(tjor_cfg.DEFAULTS)
+        layer = {
+            "proxy": {"port": 9000, "ip_guard": False},
+            "landlock": {"mode": "require", "mask_dotenv": False, "deny_paths": ["/x"]},
+        }
+        assert tjor_cfg.validate_layer(layer, shape) == []
+
+    def test_validate_allows_open_ended_maps(self):
+        shape = tjor_cfg._load(tjor_cfg.DEFAULTS)
+        layer = {
+            "profiles": {"mine": "~/.opencode", "review": "~/x"},
+            "versions": {
+                "opencode": "9.9.9",
+                "some_new_tool": "1.0",
+                "sha256": {"whatever_linux_arm64": "abc"},
+            },
+            "images": {"digests": {"opencode": "sha256:x"}},
+            "gateway": {"models": [{"name": "gpt", "model": "openai/gpt", "api_key": "os.environ/K"}]},
+        }
+        assert tjor_cfg.validate_layer(layer, shape) == []
+
+    def test_check_warns_and_counts(self, tmp_path, monkeypatch, capsys):
+        user = tmp_path / "config.toml"
+        user.write_text('[landlok]\nmode = "off"\n[proxy]\nport = 9000\n')
+        monkeypatch.setenv("TJOR_USER_CONFIG", str(user))
+        monkeypatch.delenv("TJOR_REPO_ROOT", raising=False)
+        count = tjor_cfg.check()
+        err = capsys.readouterr().err
+        assert count == 1
+        assert "unknown config key 'landlok'" in err
+        assert "port" not in err  # a known key must not warn
+
     def test_broken_user_config_is_a_clean_hard_error(self, tmp_path, monkeypatch):
         import pytest
 
