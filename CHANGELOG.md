@@ -3,6 +3,29 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [0.12.0] — 2026-09-13 — Config validation + boundary exit code
+
+Two hardening refinements surfaced while reviewing the fail-closed paths.
+
+### Added
+- **Strict config validation (#39).** `tjor_cfg.py check` validates the user and
+  trusted-repo config layers against the defaults shape and **warns loudly** on
+  unknown keys (naming the file), instead of silently dropping a typo like
+  `[landlok]` or `landlock.mask_dotnev` — which for a security tool fails in the
+  dangerous direction (a mistyped stricter setting reads as the laxer default).
+  The launcher runs it once per launch; open-ended tables (`profiles`,
+  `versions`, `images.digests`, `gateway.models`) are exempt. Non-blocking.
+
+### Changed
+- **Distinct exit code for a boundary that could not be established (#40).**
+  Fail-closed aborts now exit `90` (was a generic `1`), reserved for "a required
+  security boundary could not be established, so tjor refused to run the agent" —
+  host-side (internal-only network, egress proxy, DNS, session CA) and in-cage
+  (non-root guarantee, `[landlock] mode = "require"` unavailable, propagated as
+  the container exit code). A degraded-but-safe `auto` session still exits `0`.
+  Documented in the README (Exit codes). **Note:** scripts that treated a
+  boundary failure as exit `1` should now check for `90`.
+
 ## [0.11.0] — 2026-09-13 — Kernel-sandbox tier (Landlock, #9)
 
 A new **hardening add-on** (loud-when-absent, not a core guarantee): inside the
