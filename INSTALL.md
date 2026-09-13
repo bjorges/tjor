@@ -9,6 +9,15 @@
 
 `tjor doctor` checks all of these and names anything missing.
 
+**Optional kernel-sandbox tier (#9).** The in-cage Landlock hardening add-on
+needs a host/VM kernel ≥ 5.13 with Landlock enabled at boot — satisfied out of
+the box by current Docker Desktop and Ubuntu-VM engines (verified on kernel
+6.8), with no privilege or seccomp changes. Where it isn't available (older
+kernels, Landlock off at boot, gVisor), the default `mode = "auto"` degrades
+loudly and the core boundary is unchanged; the launch-time dotenv masks still
+apply on every runtime. See the README's [Kernel sandbox](README.md#kernel-sandbox-landlock-9)
+section to tune or require it.
+
 ## Install
 
 ```console

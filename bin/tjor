@@ -104,6 +104,9 @@ build_agent() { # $1 = harness list (comma separated)
         --build-arg KUBECTL_VERSION="$(cfg versions.kubectl)" \
         --build-arg KUBECTL_SHA256_ARM64="$(cfg versions.sha256.kubectl_linux_arm64)" \
         --build-arg KUBECTL_SHA256_AMD64="$(cfg versions.sha256.kubectl_linux_amd64)" \
+        --build-arg CPLT_VERSION="$(cfg versions.cplt)" \
+        --build-arg CPLT_SHA256_ARM64="$(cfg versions.sha256.cplt_linux_arm64)" \
+        --build-arg CPLT_SHA256_AMD64="$(cfg versions.sha256.cplt_linux_amd64)" \
         -t "tjor-agent-${harness//,/-}:local" "${TJOR_ROOT}"
 }
 
@@ -315,6 +318,10 @@ report_tiers() {
     else
         warn "hardening add-on INACTIVE: AppArmor not supported by this container runtime (guarantee tier: core only)"
     fi
+    # Kernel-sandbox tier (#9): availability is only knowable in-cage (the
+    # entrypoint probes Landlock in the enforcement context and states the
+    # result); here we can only surface the configured mode.
+    echo "tjor: hardening add-on: kernel sandbox (Landlock, mode $(cfg landlock.mode --default auto)) — probed in-cage at start, status on the 'kernel-sandbox:' log line" >&2
 }
 
 # ----------------------------------------------------------------- sessions
@@ -527,8 +534,19 @@ export_static_env() {
     TJOR_PROXY_MEM="$(cfg limits.proxy_mem --default 1g)"
     TJOR_DNS_MEM="$(cfg limits.dns_mem --default 256m)"
     TJOR_CONFORMANCE_MEM="$(cfg limits.conformance_mem --default 512m)"
+    # Kernel-sandbox tier (#9): the Landlock mode for the entrypoint's
+    # probe/wrap. Pre-validated here for a friendly host-side error; the
+    # entrypoint re-validates (it is the enforcement point). Dotenv masking
+    # (the deny_paths/mask_dotenv config) is consumed launcher-side in
+    # run_agent — Landlock cannot deny in-tree paths, mounts can.
+    TJOR_LANDLOCK="$(cfg landlock.mode --default auto)"
+    case "${TJOR_LANDLOCK}" in
+        auto|require|off) ;;
+        *) die "invalid landlock.mode '${TJOR_LANDLOCK}' — must be auto, require, or off" ;;
+    esac
     export TJOR_COREDNS_IMAGE TJOR_PROXY_PORT TJOR_IP_GUARD
     export TJOR_AGENT_MEM TJOR_PROXY_MEM TJOR_DNS_MEM TJOR_CONFORMANCE_MEM
+    export TJOR_LANDLOCK
 }
 
 ensure_session_ca() {
@@ -751,6 +769,49 @@ run_agent() { # $1 = detach flag, $2.. = command
         safe_dirs+="${dir}"$'\n'
     done
     export TJOR_SAFE_DIRS="${safe_dirs}"
+    # Kernel-sandbox tier (#9), dotenv masking (design 2b): Landlock cannot
+    # deny a path INSIDE the granted workspace, so in-repo secrets are masked
+    # here at the mount level — a read-only /dev/null bind over each dotenv
+    # file present at launch (host path == container path for repo mounts).
+    # Works on every runtime, even where Landlock is unavailable; a mount
+    # target cannot be unlinked or replaced from inside the container.
+    # Residual (documented): a dotenv file created mid-session is not masked.
+    if [[ "$(cfg landlock.mask_dotenv --default true)" != "false" ]]; then
+        local mp deny_list
+        declare -A masked=()
+        for dir in "${safe[@]:-}"; do
+            [[ -n "${dir}" ]] || continue
+            # NUL-delimited: a filename may contain anything but NUL. Skip
+            # non-secret templates and .git internals.
+            while IFS= read -r -d '' mp; do
+                [[ -n "${masked[${mp}]:-}" ]] && continue
+                masked["${mp}"]=1
+                mounts+=(--volume "/dev/null:${mp}:ro")
+                echo "tjor: + dotenv mask ${mp}" >&2
+            done < <(find "${dir}" -name .git -prune -o -type f \
+                        \( -name '.env' -o -name '.env.*' \) \
+                        ! -name '*.example' ! -name '*.sample' ! -name '*.template' \
+                        -print0 2>/dev/null)
+        done
+        # Operator-configured extra mask paths ([landlock].deny_paths).
+        deny_list="$(cfg landlock.deny_paths --default '[]' | python3 -c '
+import json, sys
+for p in json.load(sys.stdin):
+    if "\n" in p:
+        raise SystemExit("landlock.deny_paths entry contains a newline: %r" % p)
+    print(p)')" || die "invalid landlock.deny_paths"
+        while IFS= read -r mp; do
+            [[ -n "${mp}" ]] || continue
+            [[ -n "${masked[${mp}]:-}" ]] && continue
+            if [[ -f "${mp}" ]]; then
+                masked["${mp}"]=1
+                mounts+=(--volume "/dev/null:${mp}:ro")
+                echo "tjor: + dotenv mask ${mp} (deny_paths)" >&2
+            else
+                warn "landlock.deny_paths entry not maskable (no such file at launch): ${mp}"
+            fi
+        done <<<"${deny_list}"
+    fi
     # Agent profile (#29): mount the credential-filtered staging dir read-only
     # and tell the entrypoint where to overlay it. Empty env when no profile.
     local profile_env=""

@@ -3,6 +3,51 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [0.11.0] — 2026-09-13 — Kernel-sandbox tier (Landlock, #9)
+
+A new **hardening add-on** (loud-when-absent, not a core guarantee): inside the
+cage, the harness process tree runs under a kernel-enforced Landlock allowlist
+via [cplt](https://github.com/navikt/cplt) (MIT), and in-repo secret files are
+masked at launch. It narrows what a compromised agent can reach *within* the
+container; the container boundary is unchanged. Settles the open question in
+issue #9 — Landlock works in an unprivileged container on the default Docker
+engine (verified on kernel 6.8, default seccomp, no privilege changes).
+
+### Added
+- **`cplt` in the agent image**, version-pinned in `config/tjor.toml`
+  (`[versions] cplt`) and sha256-gated at build like `gh`/`kubectl`.
+- **`[landlock]` config**: `mode` (`auto` default / `require` / `off`),
+  `mask_dotenv` (default true), and `deny_paths` (extra files to mask; only ever
+  adds). Flows through the single config merge path.
+- **Availability probe + four-way handoff in the agent entrypoint.** Landlock is
+  probed in the enforcement context (as the agent user); *any* failure
+  (`ENOSYS`/`EOPNOTSUPP`/`EPERM`/…) classifies the tier unavailable. `auto`
+  degrades LOUDLY and continues; `require` aborts before the harness starts;
+  `off` runs unwrapped. Fail-closed: a passing probe whose wrap then fails aborts
+  the start rather than running a session that only *looks* sandboxed. One
+  greppable status line (`kernel-sandbox: …`).
+- **Launch-time dotenv masking** (`bin/tjor`): each `.env`/`.env.*` in the
+  mounted repos (templates excluded) plus each `deny_paths` entry is masked with
+  a read-only `/dev/null` bind mount — unreadable and un-unlinkable in-cage, on
+  *every* runtime, even where Landlock is unavailable.
+
+### Design note (honesty)
+- Landlock is **allowlist-only** — it cannot deny a path inside a granted tree,
+  so cplt's own in-workspace `.env` deny is unenforceable in a container (it says
+  so at runtime; its bubblewrap fallback needs user namespaces, which the cage's
+  seccomp/`cap_drop: ALL` blocks). The `.env` guarantee is therefore delivered by
+  the mount masks, not by Landlock. cplt's network and command-guard layers stay
+  **off**: the egress proxy remains the sole network/action boundary. Residual,
+  documented: a dotenv file created mid-session is not masked.
+
+### Tests
+- New `tests/integration/landlock_test.sh` (24 checks): live-session masking +
+  outside-tree kernel denial (probed inside the wrapped tree) + proxied-egress
+  survival, and the full handoff matrix with Landlock forced unavailable via a
+  seccomp profile (`auto` degrades and runs, `require` aborts, `off` unwrapped,
+  invalid mode fatal). Checksum-gate-fails-closed verified for the cplt download.
+  Full existing suite green (207 unit, 18/18 conformance, doc-consistency).
+
 ## [0.10.1] — 2026-09-06 — Gateway review follow-ups
 
 Secret-lifecycle hygiene from an external review of v0.10.0. The core guarantee

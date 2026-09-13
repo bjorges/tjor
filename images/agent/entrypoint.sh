@@ -245,5 +245,92 @@ if ! gosu agent test -w "${AGENT_HOME}"; then
     exit 1
 fi
 
-# 5. Drop privileges and hand over.
+# 5. Kernel-sandbox tier (#9): probe Landlock IN THE ENFORCEMENT CONTEXT (as
+#    the aligned agent user), then branch on TJOR_LANDLOCK. Any probe error —
+#    ENOSYS (kernel too old / syscall filtered), EOPNOTSUPP (disabled at
+#    boot), EPERM (hardened seccomp) — classifies the tier unavailable; the
+#    session NEVER degrades silently. Availability is never inferred from
+#    kernel version or runtime name (spec: kernel-sandbox).
+TJOR_LANDLOCK="${TJOR_LANDLOCK:-auto}"
+case "${TJOR_LANDLOCK}" in
+    auto|require|off) ;;
+    *)
+        echo "tjor-entrypoint: FATAL: invalid TJOR_LANDLOCK mode '${TJOR_LANDLOCK}' — must be auto, require, or off." >&2
+        exit 1
+        ;;
+esac
+
+landlock_abi=""
+landlock_err=""
+if [[ "${TJOR_LANDLOCK}" != "off" ]]; then
+    # landlock_create_ruleset(NULL, 0, LANDLOCK_CREATE_RULESET_VERSION):
+    # syscall 444 on both amd64 and arm64. Success prints the ABI version;
+    # any failure prints the errno name and exits nonzero.
+    if probe_out="$(gosu agent python3 - 2>&1 <<'PY'
+import ctypes, errno, sys
+libc = ctypes.CDLL(None, use_errno=True)
+libc.syscall.restype = ctypes.c_long
+res = libc.syscall(444, None, 0, 1)
+if res < 0:
+    e = ctypes.get_errno()
+    print(errno.errorcode.get(e, "errno=%d" % e))
+    sys.exit(1)
+print(res)
+PY
+)"; then
+        landlock_abi="${probe_out}"
+    else
+        landlock_err="${probe_out:-probe failed}"
+    fi
+fi
+
+# Project dir for the wrap: the first TJOR_SAFE_DIRS entry is the workspace
+# the launcher mounted (host path == container path, newline-delimited, step
+# 3); fall back to the working directory (cplt resolves the git toplevel
+# itself). With no workspace at all (a direct `docker run` without the
+# launcher, PWD=/), cplt rightly refuses to sandbox "/" — classify the tier
+# unavailable so auto degrades LOUDLY and require refuses; never a silent
+# unwrapped run.
+project_dir="${TJOR_SAFE_DIRS:-}"
+project_dir="${project_dir%%$'\n'*}"
+[[ -n "${project_dir}" && -d "${project_dir}" ]] || project_dir="${PWD}"
+if [[ -n "${landlock_abi}" && "${project_dir}" == "/" ]]; then
+    landlock_abi=""
+    landlock_err="no workspace mounted (direct container run without the launcher?)"
+fi
+
+# 6. Drop privileges and hand over — under the cplt Landlock wrap when the
+#    tier is active. Flag rationale lives in the design doc (add-landlock-tier
+#    decision 2); the short version: tjor's egress proxy is the ONLY network
+#    and action policy (--no-proxy, no guards), the cage env is load-bearing
+#    and secret-free by construction (--inherit-env + the lowercase proxy vars
+#    cplt's sanitizer would strip), the harness must reach the proxy port, and
+#    the session home holds no host secrets (granted wholesale — per-dir
+#    grants proved brittle). In-tree dotenv secrets are masked by the LAUNCHER
+#    (read-only mounts), not here: Landlock cannot deny in-tree paths.
+#    Fail-closed: if the probe passed but cplt then fails to exec, set -e
+#    aborts the start — a session must never LOOK sandboxed without BEING it.
+if [[ "${TJOR_LANDLOCK}" == "off" ]]; then
+    echo "tjor-entrypoint: kernel-sandbox: disabled by config (mode=off)" >&2
+elif [[ -n "${landlock_abi}" ]]; then
+    echo "tjor-entrypoint: kernel-sandbox: active (landlock ABI ${landlock_abi})" >&2
+    wrap=(cplt --project-dir "${project_dir}"
+          --no-proxy --no-gh-guard --no-git-guard
+          --inherit-env --pass-env http_proxy --pass-env https_proxy --pass-env no_proxy
+          --allow-port "${TJOR_PROXY_PORT:-8080}" --allow-localhost-any
+          --allow-read "${AGENT_HOME}" --allow-write "${AGENT_HOME}")
+    # Grant each further operator-mounted repo (--dir extras) — the same
+    # newline-delimited list git trusts (step 3).
+    if [[ -n "${TJOR_SAFE_DIRS:-}" ]]; then
+        while IFS= read -r _d; do
+            [[ -n "${_d}" && "${_d}" != "${project_dir}" ]] && wrap+=(--allow-write "${_d}")
+        done <<<"${TJOR_SAFE_DIRS}"
+    fi
+    exec gosu agent env HOME="${AGENT_HOME}" USER=agent "${wrap[@]}" exec -- "$@"
+elif [[ "${TJOR_LANDLOCK}" == "require" ]]; then
+    echo "tjor-entrypoint: FATAL: kernel-sandbox required (mode=require) but Landlock is unavailable (${landlock_err}) — refusing to start the harness." >&2
+    exit 1
+else
+    echo "tjor-entrypoint: kernel-sandbox: INACTIVE — ${landlock_err}; sessions run without the kernel FS-deny tier (the container boundary remains in force)" >&2
+fi
 exec gosu agent env HOME="${AGENT_HOME}" USER=agent "$@"

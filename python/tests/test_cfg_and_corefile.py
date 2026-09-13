@@ -35,6 +35,21 @@ class TestConfigMerge:
     def test_get_missing_returns_default(self):
         assert tjor_cfg.get({}, "no.such.key", "fallback") == "fallback"
 
+    def test_landlock_defaults(self, monkeypatch):
+        monkeypatch.setenv("TJOR_USER_CONFIG", "/nonexistent/config.toml")
+        config = tjor_cfg.effective()
+        assert tjor_cfg.get(config, "landlock.mode") == "auto"
+        assert tjor_cfg.get(config, "landlock.mask_dotenv") is True
+        assert tjor_cfg.get(config, "landlock.deny_paths") == []
+
+    def test_landlock_user_override(self, tmp_path, monkeypatch):
+        user = tmp_path / "config.toml"
+        user.write_text('[landlock]\nmode = "require"\ndeny_paths = ["/x/.npmrc"]\n')
+        monkeypatch.setenv("TJOR_USER_CONFIG", str(user))
+        config = tjor_cfg.effective()
+        assert tjor_cfg.get(config, "landlock.mode") == "require"
+        assert tjor_cfg.get(config, "landlock.deny_paths") == ["/x/.npmrc"]
+
     def test_broken_user_config_is_a_clean_hard_error(self, tmp_path, monkeypatch):
         import pytest
 

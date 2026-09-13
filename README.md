@@ -214,6 +214,57 @@ the docker-socket-trusted threat model — see ADR 0009); a live provider
 round-trip is a manual check (CI has no keys). See ADR 0009 and the design under
 `openspec/`.
 
+## Kernel sandbox (Landlock, #9)
+
+A defense-in-depth **hardening add-on** (not a core guarantee): inside the cage,
+the harness process tree runs under a kernel-enforced [Landlock](https://docs.kernel.org/userspace-api/landlock.html)
+allowlist (via [cplt](https://github.com/navikt/cplt), MIT), plus launch-time
+masking of in-repo secret files. It narrows what a compromised agent can touch
+*within* the container — the container boundary itself is unchanged and remains
+the thing tjor relies on.
+
+What it does, in two independent mechanisms:
+
+- **Kernel FS allowlist (Landlock).** The harness and everything it spawns can
+  reach only the granted trees (your workspace, any `--dir` repos, its own state,
+  and the system paths needed to run). A read or write **outside** those trees is
+  denied by the kernel and the restriction is irrevocable for the process tree.
+  (Landlock is allowlist-only — it *cannot* subtract a path inside a granted tree,
+  which is why in-repo secrets use the second mechanism.)
+- **Dotenv masking (mounts, every runtime).** At launch, each `.env` / `.env.*`
+  in the mounted repos (templates like `.env.example` excluded) is masked with a
+  read-only empty bind mount, so its contents are unreadable in-cage even where
+  Landlock is unavailable. A masked file can't be unlinked or replaced by the
+  agent. Residual, stated plainly: a dotenv file *created mid-session* is not
+  masked — masking is a launch-time snapshot.
+
+Configure under `[landlock]`:
+
+```toml
+[landlock]
+mode = "auto"          # auto: enforce when the kernel supports it, else degrade LOUDLY
+                       # require: unavailable ABORTS the launch (a core guarantee)
+                       # off: kernel tier disabled (stated at launch)
+mask_dotenv = true     # launch-time dotenv masking (independent of Landlock)
+deny_paths = []        # extra files to mask (absolute; only ever ADDS)
+```
+
+The tier states its status in the agent's startup log, one greppable line:
+
+```
+tjor-entrypoint: kernel-sandbox: active (landlock ABI 4)
+tjor-entrypoint: kernel-sandbox: INACTIVE — EOPNOTSUPP; sessions run without the kernel FS-deny tier …
+tjor-entrypoint: kernel-sandbox: disabled by config (mode=off)
+```
+
+Runtime support: works out of the box on a Linux ≥ 5.13 host/VM kernel with
+Landlock enabled — including the default Docker Desktop and Ubuntu-VM engines,
+verified on kernel 6.8 with Docker's default seccomp profile (no privilege or
+seccomp changes needed). Where the kernel can't enforce it (older kernels,
+Landlock disabled at boot, gVisor), `auto` degrades loudly and the masks still
+apply. The tier never becomes a second network policy — the egress proxy remains
+the sole network boundary. See the design under `openspec/`.
+
 ## Why
 
 Prompt-level rules are advisory. Harness-level permissions are harness-specific. The only guarantees that hold for *any* harness — including one running with permissions disabled — are structural: what the process can physically reach. tjor's design is corroborated by multiple independent production systems that converged on the same conclusion: restrict the environment, not the agent.
@@ -225,7 +276,7 @@ A compose-based container cage reproducing production-validated decisions:
 - **Internal-only agent network** — no direct egress, by construction.
 - **Dual-homed egress proxy** (explicit mode) with a fail-closed host/path allowlist and a DNS sidecar with zone-scoped forwarding.
 - **Non-root agent user; writable repo mounts; per-session state roots** — a profile proven to sustain real daily work, hardened in tested increments.
-- **Tiered guarantees**: a core that works on any Docker runtime, plus loud-when-absent hardening add-ons (e.g. AppArmor on runtimes that support it).
+- **Tiered guarantees**: a core that works on any Docker runtime, plus loud-when-absent hardening add-ons — an in-cage [kernel sandbox](#kernel-sandbox-landlock-9) (Landlock + dotenv masking, #9) and AppArmor on runtimes that support it.
 - **Session identity (D1, shipped)**: every session carries a frozen identity (`TJOR_SESSION_ID`, `--task` id, harness, repo, worktree) as environment inside the cage and as the vendor-neutral `x-agent-*` schema on the wire (host filesystem paths are trimmed to their basename on the wire) — the proxy strips forged or unknown identity headers toward every host (a session structurally cannot impersonate another) and injects the identity set only toward hosts you list in `identity.inject_hosts` (e.g. your LLM endpoints).
 - **Session lifecycle (D3, shipped)**: `ls` (with live boundary re-check), `attach`, `gc`, tiered `reset`, and concurrent named/detached sessions per repo — see the Quickstart above.
 - **Credential broker (D2, shipped)**: short-TTL, per-session credentials injected at the proxy toward configured hosts only — the agent holds a placeholder and never possesses the real secret (proven by a container scan in CI). Configure `[broker]` in your tjor config: `source = "github-app"` (App installation token, ~1h, repo-scoped), `source = "pat"` (static token, still kept out of the sandbox), or `source = "kube"` (a short-TTL Kubernetes ServiceAccount token — see [Kubernetes access](#kubernetes-access-kube-broker) below). See ADR 0007.

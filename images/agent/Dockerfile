@@ -50,6 +50,26 @@ RUN set -eu; \
     install -m 0755 /tmp/kubectl /usr/local/bin/kubectl; \
     rm -f /tmp/kubectl
 
+# cplt for the kernel-sandbox tier (#9), sha256-gated: the entrypoint probes
+# Landlock and, when available, runs the harness under cplt's Landlock
+# backend. Official navikt/cplt release tarball (single static binary at the
+# archive root); per-arch digests come from the release's SHA256SUMS.
+ARG CPLT_VERSION
+ARG CPLT_SHA256_ARM64
+ARG CPLT_SHA256_AMD64
+RUN set -eu; \
+    case "${TARGETARCH:-}" in \
+        arm64) cplt_arch="aarch64"; cplt_sha="${CPLT_SHA256_ARM64}" ;; \
+        *) cplt_arch="x86_64"; cplt_sha="${CPLT_SHA256_AMD64}" ;; \
+    esac; \
+    [ -n "${CPLT_VERSION}" ] && [ -n "${cplt_sha}" ] || { echo "missing cplt version/sha build args" >&2; exit 1; }; \
+    curl -fsSLo /tmp/cplt.tgz \
+        "https://github.com/navikt/cplt/releases/download/${CPLT_VERSION}/cplt-${cplt_arch}-unknown-linux-gnu.tar.gz"; \
+    echo "${cplt_sha}  /tmp/cplt.tgz" | sha256sum -c -; \
+    mkdir -p /tmp/cplt-x; tar -C /tmp/cplt-x -xzf /tmp/cplt.tgz; \
+    install -m 0755 /tmp/cplt-x/cplt /usr/local/bin/cplt; \
+    rm -rf /tmp/cplt.tgz /tmp/cplt-x
+
 # No X in the cage: make gh (and friends) print auth URLs instead of failing
 # to exec a browser.
 ENV BROWSER=echo

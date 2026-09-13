@@ -151,6 +151,12 @@ services:
       TJOR_KUBE_SERVER: ${TJOR_KUBE_SERVER:-}
       # Host uid for runtime alignment (uid-agnostic image, #21).
       TJOR_AGENT_UID: ${TJOR_AGENT_UID:-}
+      # Kernel-sandbox tier (#9): Landlock mode (auto|require|off) for the
+      # entrypoint's probe/wrap, and the proxy port the wrap must keep
+      # reachable (cplt's net rules allow only 443 otherwise). Dotenv masking
+      # is launcher-side (mounts).
+      TJOR_LANDLOCK: ${TJOR_LANDLOCK:-auto}
+      TJOR_PROXY_PORT: ${TJOR_PROXY_PORT:-8080}
     volumes:
       - ${TJOR_SESSION_DIR:?}/home:/home/agent
       - ${TJOR_WORKSPACE:-/dev/null}:${TJOR_WORKSPACE:-/tmp/.tjor-nows}

@@ -101,6 +101,30 @@ root = "~/.tjor/sessions"
 # mine = "~/.opencode"
 # review = "~/.config/tjor/profiles/review"
 
+# Kernel-sandbox tier (#9): the entrypoint probes Landlock from inside the
+# cage and, when available, runs the harness under cplt's Landlock backend —
+# kernel FS denies (e.g. in-repo .env reads) covering what the container
+# boundary doesn't. Strictly additive: cplt's network layer stays off (the
+# egress proxy is the sole network boundary). Modes:
+#   auto    — enforce when the runtime supports it; otherwise degrade LOUDLY
+#             (a persistent statement names the inactive tier) and continue.
+#   require — unavailable aborts the launch before the harness starts
+#             (promotes the add-on to a core guarantee).
+#   off     — tier disabled; stated once at start.
+[landlock]
+mode = "auto"
+# Launch-time secret masking: dotenv-style files (.env, .env.* — except
+# example/sample/template) present in the mounted repos at launch are masked
+# with a read-only /dev/null bind mount, so their contents are unreadable
+# in-cage on EVERY runtime (Landlock is allowlist-only and cannot deny a path
+# inside the granted workspace — cplt states this at runtime; the mask is the
+# mechanism that actually delivers the in-repo secret protection). Residual,
+# documented honestly: a dotenv file created mid-session is not masked.
+mask_dotenv = true
+# Extra mask paths (absolute; host path == container path for repo mounts).
+# Config can only EXTEND the default deny set, never weaken it.
+deny_paths = []
+
 [versions]
 # Harness and tool versions are config, not Dockerfile constants (charter L8).
 # SHA256 values come from the publisher's release metadata (GitHub asset
@@ -116,6 +140,9 @@ gh = "2.100.0"
 # kubectl for the kube broker source (#26); official dl.k8s.io binary, per-arch
 # sha256-gated. Only used in-cage when a session talks to a cluster.
 kubectl = "1.37.0"
+# cplt for the kernel-sandbox tier (#9); official navikt/cplt release tarball
+# (date-based tag), per-arch sha256-gated from the release's SHA256SUMS.
+cplt = "2026.09.13-135112-daf7f1f"
 
 [versions.sha256]
 opencode_linux_arm64 = "ccb0d39467eeccc52cdfe1cccad0114304366cb42073b906d970a487ca5b4497"
@@ -124,6 +151,8 @@ gh_linux_arm64 = "ea4e7a581a32ccad6cc7923cb1576ac5859ba4b9a16ab22eb8f8a96e78e2e9
 gh_linux_amd64 = "e4d4bb4498e8d007abe545b6568926793ace1b6447da598294a610018cb164be"
 kubectl_linux_amd64 = "6129359f4e1f3848a5572ccb0b26cf28b8ca08cef38c95a765b2f64a2c961a2f"
 kubectl_linux_arm64 = "922df28df248cc00a9e025f947704f1d1482de64ece54cfe57e61f19eaf1eef3"
+cplt_linux_arm64 = "2ed30c0ad2506e52214c2aff3fefc0131abbb2ace449fabb40a2b95d1975d135"
+cplt_linux_amd64 = "acfc886997ef1d92ccaf5ee181f2cf3ae822d915dce2f26e2b5776473c4b445a"
 
 [images]
 # Prebuilt agent images (#21): with `publish` on, an installed (non-git) copy
