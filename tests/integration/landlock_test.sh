@@ -153,13 +153,12 @@ out="$(docker run --rm --security-opt seccomp="${DENY}" -e TJOR_LANDLOCK=auto \
 check "auto+unavailable degrades to INACTIVE" bash -c "grep -q 'kernel-sandbox: INACTIVE' <<<'${out}'"
 check "auto+unavailable still runs the harness" bash -c "grep -q 'HARNESS-RAN' <<<'${out}'"
 
-# require + unavailable: abort BEFORE the harness, nonzero exit.
-if docker run --rm --security-opt seccomp="${DENY}" -e TJOR_LANDLOCK=require \
-        "${IMAGE}" sh -c 'echo SHOULD-NOT-RUN' > "${SCRATCH}/req.out" 2>&1; then
-    bad "require+unavailable aborts (exit nonzero)"
-else
-    ok "require+unavailable aborts (exit nonzero)"
-fi
+# require + unavailable: abort BEFORE the harness, with the documented
+# boundary exit code (#40, TJOR_EXIT_BOUNDARY=90), not a generic failure.
+req_code=0
+docker run --rm --security-opt seccomp="${DENY}" -e TJOR_LANDLOCK=require \
+        "${IMAGE}" sh -c 'echo SHOULD-NOT-RUN' > "${SCRATCH}/req.out" 2>&1 || req_code=$?
+check "require+unavailable aborts with the boundary exit code 90" test "${req_code}" -eq 90
 check "require+unavailable did NOT run the harness" bash -c "! grep -q 'SHOULD-NOT-RUN' '${SCRATCH}/req.out'"
 check "require+unavailable states FATAL with the reason" grep -q "FATAL: kernel-sandbox required" "${SCRATCH}/req.out"
 

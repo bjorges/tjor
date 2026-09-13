@@ -6,6 +6,13 @@ set -euo pipefail
 
 AGENT_HOME=/home/agent
 
+# Exit code for "a required security boundary could not be established" (#40).
+# MUST match TJOR_EXIT_BOUNDARY in bin/tjor: run_agent propagates this
+# container exit code out through `tjor run`, so an in-cage boundary abort
+# (non-root guarantee, required kernel sandbox unavailable) surfaces with the
+# same code as a host-side one. Documented in README (Exit codes).
+TJOR_EXIT_BOUNDARY=90
+
 # 0. Runtime uid alignment — makes the image uid-AGNOSTIC so one (published)
 #    image serves any host user. If the launcher passed a host uid that
 #    differs from the built-in agent uid, re-point the agent user before any
@@ -32,7 +39,7 @@ fi
 # Hard invariant: whatever happened above, the agent user must not be uid 0.
 if [[ "$(id -u agent)" == "0" ]]; then
     echo "tjor-entrypoint: FATAL: agent user resolved to uid 0 — refusing to start (non-root guarantee)." >&2
-    exit 1
+    exit "${TJOR_EXIT_BOUNDARY}"
 fi
 
 # 1. Trust the session CA (the egress proxy re-signs all TLS). Append it
@@ -329,7 +336,7 @@ elif [[ -n "${landlock_abi}" ]]; then
     exec gosu agent env HOME="${AGENT_HOME}" USER=agent "${wrap[@]}" exec -- "$@"
 elif [[ "${TJOR_LANDLOCK}" == "require" ]]; then
     echo "tjor-entrypoint: FATAL: kernel-sandbox required (mode=require) but Landlock is unavailable (${landlock_err}) — refusing to start the harness." >&2
-    exit 1
+    exit "${TJOR_EXIT_BOUNDARY}"
 else
     echo "tjor-entrypoint: kernel-sandbox: INACTIVE — ${landlock_err}; sessions run without the kernel FS-deny tier (the container boundary remains in force)" >&2
 fi

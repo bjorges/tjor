@@ -265,6 +265,25 @@ Landlock disabled at boot, gVisor), `auto` degrades loudly and the masks still
 apply. The tier never becomes a second network policy — the egress proxy remains
 the sole network boundary. See the design under `openspec/`.
 
+## Exit codes
+
+`tjor` distinguishes an ordinary failure from a **security boundary that could
+not be established**, so a wrapping script, supervisor, or CI job can fail
+closed on the latter specifically instead of parsing stderr:
+
+| Code | Meaning |
+|------|---------|
+| `0`  | success |
+| `1`  | generic failure — usage error, missing runtime, bad flag, feature setup |
+| `90` | a required security boundary could not be established, so tjor refused to run the agent |
+
+Code `90` covers both host-side aborts (the internal-only network, egress
+proxy, DNS, or session CA could not be established) and in-cage aborts that the
+launcher propagates from the agent container (the non-root guarantee, or
+`[landlock] mode = "require"` on a runtime without Landlock). A degraded but
+still-safe session — e.g. `[landlock] mode = "auto"` where Landlock is
+unavailable — exits `0`: the boundary held, only an optional add-on was absent.
+
 ## Why
 
 Prompt-level rules are advisory. Harness-level permissions are harness-specific. The only guarantees that hold for *any* harness — including one running with permissions disabled — are structural: what the process can physically reach. tjor's design is corroborated by multiple independent production systems that converged on the same conclusion: restrict the environment, not the agent.

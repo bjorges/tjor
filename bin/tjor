@@ -19,7 +19,18 @@ print(os.path.dirname(os.path.dirname(os.path.realpath(sys.argv[1]))))
 PY
 )"
 
+# Exit codes (#40). A generic failure is 1 (usage errors, missing runtime,
+# bad flags). TJOR_EXIT_BOUNDARY is reserved for ONE meaning: a required
+# security boundary could not be established, so tjor refused to start (or kept
+# running) the agent. Wrapping scripts, supervisors, and CI can fail closed on
+# this specific code instead of pattern-matching stderr. Documented in README
+# (Exit codes). The agent entrypoint uses the SAME value for its in-cage
+# boundary aborts (non-root guarantee, required kernel sandbox unavailable),
+# which run_agent propagates as the container exit code — keep them in sync.
+readonly TJOR_EXIT_BOUNDARY=90
+
 die() { echo "tjor: ERROR: $*" >&2; exit 1; }
+die_boundary() { echo "tjor: ERROR: security boundary could not be established: $*" >&2; exit "${TJOR_EXIT_BOUNDARY}"; }
 warn() { echo "tjor: WARNING: $*" >&2; }
 loud() { echo -e "\033[1;31mtjor: $*\033[0m" >&2; }
 
@@ -227,7 +238,8 @@ ensure_topology() { # expects TJOR_PROJECT, TJOR_SESSION_DIR exported
     # external so that sidecar creation happens on the egress network first).
     local internal="${TJOR_PROJECT}_internal"
     docker network inspect "${internal}" >/dev/null 2>&1 \
-        || docker network create --internal --label "tjor.session=${TJOR_SESSION}" "${internal}" >/dev/null
+        || docker network create --internal --label "tjor.session=${TJOR_SESSION}" "${internal}" >/dev/null \
+        || die_boundary "could not create the internal-only agent network ${internal}"
 
     # Recreate sidecars on config drift (charter L12): compare the stamp on
     # the running containers with the hash of the config we just generated.
@@ -260,14 +272,14 @@ ensure_topology() { # expects TJOR_PROJECT, TJOR_SESSION_DIR exported
             sleep 1
             ctr="$(compose ps -q "${svc}")"
         done
-        [[ -n "${connected}" ]] || die "could not connect ${svc} to ${internal} after ${attempt} attempts"
+        [[ -n "${connected}" ]] || die_boundary "could not connect ${svc} to ${internal} after ${attempt} attempts"
     done
 
     # Core guarantee verification: the agent network MUST be internal-only.
     if [[ "$(docker network inspect -f '{{.Internal}}' "${internal}")" != "true" ]]; then
         loud "CORE GUARANTEE FAILED: network ${internal} is not internal-only. Tearing down and aborting."
         compose down --remove-orphans >/dev/null 2>&1 || true
-        exit 1
+        exit "${TJOR_EXIT_BOUNDARY}"
     fi
 
     # Hand the session CA *certificate* (never the key) to the agent. The
@@ -279,7 +291,7 @@ ensure_topology() { # expects TJOR_PROJECT, TJOR_SESSION_DIR exported
         if [[ -s "${TJOR_SESSION_DIR}/proxy-ca/mitmproxy-ca-cert.pem" ]]; then ok=1; break; fi
         sleep 0.5
     done
-    [[ -n "${ok}" ]] || die "no session CA appeared — check: docker logs ${proxy_ctr}"
+    [[ -n "${ok}" ]] || die_boundary "no session CA appeared — check: docker logs ${proxy_ctr}"
     cp "${TJOR_SESSION_DIR}/proxy-ca/mitmproxy-ca-cert.pem" "${TJOR_SESSION_DIR}/ca.pem"
 
     # Readiness: wait until mitmdump actually LISTENS. (The CA used to be
@@ -296,16 +308,16 @@ ensure_topology() { # expects TJOR_PROJECT, TJOR_SESSION_DIR exported
         echo "tjor: proxy diagnostics (state, restarts, last logs):" >&2
         docker inspect -f 'state={{.State.Status}} restarts={{.RestartCount}} exitcode={{.State.ExitCode}}' "${proxy_ctr}" >&2 || true
         docker logs --tail 40 "${proxy_ctr}" >&2 || true
-        die "proxy never started listening on :${TJOR_PROXY_PORT}"
+        die_boundary "proxy never started listening on :${TJOR_PROXY_PORT}"
     fi
 
     # Discover sidecar internal IPs. Guard against not-yet-running or
     # crash-looping containers: docker 29 renders an empty IP as the literal
     # string "invalid IP", so validate the shape and retry until stable.
     TJOR_PROXY_IP="$(wait_internal_ip proxy "${internal}")" \
-        || die "proxy has no internal IP (crash loop?) — check: docker logs ${proxy_ctr}"
+        || die_boundary "proxy has no internal IP (crash loop?) — check: docker logs ${proxy_ctr}"
     TJOR_DNS_IP="$(wait_internal_ip dns "${internal}")" \
-        || die "dns has no internal IP (crash loop?) — check: docker logs $(compose ps -q dns)"
+        || die_boundary "dns has no internal IP (crash loop?) — check: docker logs $(compose ps -q dns)"
     export TJOR_PROXY_IP TJOR_DNS_IP
 
     report_tiers
