@@ -1,7 +1,7 @@
 # llm-gateway Specification
 
 ## Purpose
-TBD - created by archiving change add-llm-gateway. Update Purpose after archive.
+An optional LiteLLM sidecar on the egress network that gives the caged harness a single allow-listed inference host instead of one per provider: the agent reaches it only through the proxy, its admin surface is unreachable by construction, and the generated master key is injected at the proxy so it never enters the cage.
 
 ## Requirements
 

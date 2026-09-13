@@ -1,7 +1,7 @@
 # agent-profiles Specification
 
 ## Purpose
-TBD - created by archiving change add-agent-profiles. Update Purpose after archive.
+Lets an operator opt a session into host-defined harness definitions (agents, commands, skills) from a named profile directory, staged credential-safely and overlaid on the image's instruction cargo — so personal tooling reaches the cage without importing any auth material.
 
 ## Requirements
 
