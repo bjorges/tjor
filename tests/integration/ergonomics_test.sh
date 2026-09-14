@@ -74,6 +74,17 @@ sleep 1
 check "denied egress is recorded and surfaced by tjor denials" bash -c \
     "cd '${REPO}' && '${T}' denials 2>/dev/null | grep -q blocked-example-xyz.test"
 
+echo "== denial recap at teardown (#42)"
+DOWN_LOG="${USERCFG}/down-recap.out"
+( cd "${REPO}" && "${T}" down >"${DOWN_LOG}" 2>&1 || true )
+check "down prints the denial recap (count + host)" bash -c \
+    "grep -q 'denied egress attempt' '${DOWN_LOG}' && grep -q 'blocked-example-xyz.test' '${DOWN_LOG}'"
+check "recap names the review/widen commands" grep -q 'tjor policy add' "${DOWN_LOG}"
+: > "${HOME}/.tjor/sessions/${SID}/denials.log"
+( cd "${REPO}" && "${T}" down >"${DOWN_LOG}.quiet" 2>&1 || true )
+check "clean session tears down without a recap" bash -c \
+    "! grep -q 'denied egress attempt' '${DOWN_LOG}.quiet'"
+
 echo
 echo "ergonomics: ${PASS} passed, ${FAIL} failed"
 exit "$((FAIL > 0 ? 1 : 0))"

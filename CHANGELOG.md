@@ -6,6 +6,11 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 ## [Unreleased]
 
 ### Added
+- **Automatic denial recap at `tjor down` (#42).** Teardown now surfaces the
+  session's denied egress unprompted — count, top denied hosts, and the
+  `tjor denials` / `tjor policy add` hints — so a quietly-blocked session is
+  noticed at the moment the operator is looking. Quiet when there were no
+  denials; hostnames render through the shared terminal-escape sanitizer.
 - **Kube credential injection is scoped to the exact API origin (#49).**
   Brokered-credential destinations matched on hostname alone, so any service
   on the API server's hostname but a different port would receive the same

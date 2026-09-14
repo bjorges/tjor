@@ -970,6 +970,33 @@ cmd_down() {
     compose down --volumes --remove-orphans
     docker network rm "${TJOR_PROJECT}_internal" >/dev/null 2>&1 || true
     echo "tjor: session topology ${TJOR_PROJECT} removed (state in ${TJOR_SESSION_DIR} preserved)" >&2
+    # Denial recap (#42): teardown is the moment a quietly-blocked session is
+    # most likely to be noticed — surface the session's denied egress
+    # unprompted (count + top hosts + the review/widen hints), quiet when
+    # there were none. Hostnames are attacker-influenced: aggregate in python
+    # and render each through the shared terminal-escape sanitizer.
+    if [[ -s "${TJOR_SESSION_DIR}/denials.log" ]]; then
+        python3 - "${TJOR_SESSION_DIR}/denials.log" "${TJOR_ROOT}/python" <<'PY' >&2 || true
+import collections
+import sys
+
+sys.path.insert(0, sys.argv[2])
+from tjor_safeprint import sanitize
+
+hosts = collections.Counter()
+with open(sys.argv[1], "rb") as fh:
+    for raw in fh.read().decode("utf-8", "surrogateescape").splitlines():
+        parts = raw.split("\t")
+        if len(parts) < 2:
+            continue  # the cap notice, or a malformed line
+        hosts[parts[0]] += 1
+total = sum(hosts.values())
+if total:
+    top = ", ".join(f"{sanitize(h)} ({n})" for h, n in hosts.most_common(5))
+    print(f"tjor: this session had {total} denied egress attempt(s) across {len(hosts)} host(s) — top: {top}")
+    print("tjor: review with 'tjor denials'; allow what you need with: tjor policy add <host>")
+PY
+    fi
 }
 
 cmd_status() {
