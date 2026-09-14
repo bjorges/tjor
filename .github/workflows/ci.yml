@@ -208,6 +208,9 @@ jobs:
             --build-arg KUBECTL_VERSION="$(cfg versions.kubectl)" \
             --build-arg KUBECTL_SHA256_ARM64="$(cfg versions.sha256.kubectl_linux_arm64)" \
             --build-arg KUBECTL_SHA256_AMD64="$(cfg versions.sha256.kubectl_linux_amd64)" \
+            --build-arg CPLT_VERSION="$(cfg versions.cplt)" \
+            --build-arg CPLT_SHA256_ARM64="$(cfg versions.sha256.cplt_linux_arm64)" \
+            --build-arg CPLT_SHA256_AMD64="$(cfg versions.sha256.cplt_linux_amd64)" \
             .
       - name: buildx proxy for both platforms (no push)
         run: |

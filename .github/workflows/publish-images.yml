@@ -50,6 +50,9 @@ jobs:
             echo "kubectl=$(cfg versions.kubectl)"
             echo "kubectl_arm=$(cfg versions.sha256.kubectl_linux_arm64)"
             echo "kubectl_amd=$(cfg versions.sha256.kubectl_linux_amd64)"
+            echo "cplt=$(cfg versions.cplt)"
+            echo "cplt_arm=$(cfg versions.sha256.cplt_linux_arm64)"
+            echo "cplt_amd=$(cfg versions.sha256.cplt_linux_amd64)"
           } >> "$GITHUB_OUTPUT"
       - name: build & push ${{ matrix.harness }} (amd64+arm64)
         uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a # v7
@@ -73,6 +76,9 @@ jobs:
             KUBECTL_VERSION=${{ steps.args.outputs.kubectl }}
             KUBECTL_SHA256_ARM64=${{ steps.args.outputs.kubectl_arm }}
             KUBECTL_SHA256_AMD64=${{ steps.args.outputs.kubectl_amd }}
+            CPLT_VERSION=${{ steps.args.outputs.cplt }}
+            CPLT_SHA256_ARM64=${{ steps.args.outputs.cplt_arm }}
+            CPLT_SHA256_AMD64=${{ steps.args.outputs.cplt_amd }}
           tags: |
             ghcr.io/${{ github.repository_owner }}/tjor-agent-${{ matrix.harness }}:${{ steps.v.outputs.version }}
             ghcr.io/${{ github.repository_owner }}/tjor-agent-${{ matrix.harness }}:latest
