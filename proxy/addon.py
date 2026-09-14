@@ -70,6 +70,14 @@ _gw_host_raw = os.environ.get("TJOR_GATEWAY_HOST", "").strip()
 GATEWAY_HOST = tjor_policy._canon_host(_gw_host_raw) if _gw_host_raw else ""
 GATEWAY_KEY = os.environ.get("TJOR_GATEWAY_KEY", "")
 
+# Kube broker (#45): the cluster API server host, set by the launcher only
+# while the kube broker is active (hostname only — never a credential). A
+# private-endpoint control plane (on-prem, private AKS/EKS) legitimately
+# resolves to a non-global address; it gets the SAME scoped SSRF-guard
+# exemption as the gateway host, so `ip_guard` never needs a global opt-out.
+_kube_host_raw = os.environ.get("TJOR_KUBE_API_HOST", "").strip()
+KUBE_API_HOST = tjor_policy._canon_host(_kube_host_raw) if _kube_host_raw else ""
+
 DENIAL_LOG = os.environ.get("TJOR_DENIAL_LOG", "")
 _denial_log_count = 0
 # Per-session cap so a misbehaving agent hammering a denied host cannot grow the
@@ -232,6 +240,11 @@ def resolved_addresses_ok(host: str) -> tuple[bool, str]:
     # config-scoped host, not a blanket TJOR_IP_GUARD=off.
     if GATEWAY_HOST and host == GATEWAY_HOST:
         return True, "gateway-exempt"
+    # Kube broker (#45): same single-host, config-scoped exemption for the
+    # cluster API server — a private-endpoint control plane must be reachable
+    # without disabling the guard for every other allowed host.
+    if KUBE_API_HOST and host == KUBE_API_HOST:
+        return True, "kube-exempt"
     now = time.monotonic()
     hit = _ip_cache.get(host)
     if hit and now - hit[0] < _IP_TTL_SECONDS:

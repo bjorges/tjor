@@ -5,6 +5,15 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **Scoped SSRF-guard exemption for the kube broker's API host (#45).** A
+  private-endpoint cluster (on-prem, private AKS/EKS) resolves to a non-global
+  address and was blocked by `ip_guard` even when the policy allowed it —
+  forcing a global `ip_guard = false`. The launcher now passes the derived API
+  host to the proxy (`TJOR_KUBE_API_HOST`), which exempts exactly that host
+  (only while the kube broker is active) — the same pattern as the LLM gateway
+  host. Every other host keeps full SSRF protection.
+
 ### Fixed
 - **Kube-only broker sessions no longer get a poisoned GitHub git-credential
   helper (#47).** The placeholder helper was wired whenever ANY broker was

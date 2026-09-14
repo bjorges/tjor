@@ -59,6 +59,7 @@ PATH="${MOCKBIN}:${PATH}" run_prepare
 [[ "${TJOR_BROKER_ENABLED:-}" == "1" ]] && ok "kube broker enabled on happy path" || bad "kube broker not enabled"
 [[ "${TJOR_BROKER_HOSTS:-}" == "api.test.example" ]] && ok "injection scoped to derived API host" || bad "TJOR_BROKER_HOSTS='${TJOR_BROKER_HOSTS:-}' != api.test.example"
 [[ "${TJOR_KUBE_SERVER:-}" == "${SERVER_URL}" ]] && ok "agent gets API server URL for placeholder kubeconfig" || bad "TJOR_KUBE_SERVER='${TJOR_KUBE_SERVER:-}'"
+[[ "${TJOR_KUBE_API_HOST:-}" == "api.test.example" ]] && ok "proxy gets the API host for the scoped ip_guard exemption (#45)" || bad "TJOR_KUBE_API_HOST='${TJOR_KUBE_API_HOST:-}' != api.test.example"
 
 # The minted token must be in the proxy-only broker.json, pat-shaped...
 BJSON="${TJOR_BROKER_CONFIG_MOUNT}"
@@ -101,6 +102,7 @@ source = "kube"
 TOML
 PATH="${MOCKBIN}:${PATH}" run_prepare 2>/dev/null
 [[ -z "${TJOR_BROKER_ENABLED:-}" ]] && ok "fail-closed: empty kube_sa disables the broker" || bad "empty kube_sa did NOT disable the broker"
+[[ -z "${TJOR_KUBE_API_HOST:-}" ]] && ok "no kube broker -> no ip_guard exemption host exported (#45)" || bad "TJOR_KUBE_API_HOST leaked without an active kube broker: '${TJOR_KUBE_API_HOST:-}'"
 
 # === 4. Fail-closed: kubectl absent =======================================
 write_user_cfg <<'TOML'

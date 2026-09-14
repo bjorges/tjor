@@ -404,7 +404,7 @@ prepare_broker() {
     # host-side so nothing sensitive is ever passed to the agent. Sets
     # TJOR_BROKER_* for compose. Fail-closed: any problem disables injection
     # loudly rather than silently downgrading to a long-lived token.
-    export TJOR_BROKER_CONFIG_MOUNT="" TJOR_BROKER_HOSTS="" TJOR_BROKER_ENABLED="" TJOR_BROKER_DIR="" TJOR_KUBE_SERVER=""
+    export TJOR_BROKER_CONFIG_MOUNT="" TJOR_BROKER_HOSTS="" TJOR_BROKER_ENABLED="" TJOR_BROKER_DIR="" TJOR_KUBE_SERVER="" TJOR_KUBE_API_HOST=""
     local source; source="$(cfg broker.source --default '')"
     [[ -n "${source}" ]] || return 0
     local dir="${TJOR_SESSION_DIR}/broker"
@@ -469,6 +469,7 @@ prepare_broker() {
             write_broker_json "${dir}/broker.json" pat "${token}"
             hosts="${api}"                       # inject ONLY toward the API server host
             export TJOR_KUBE_SERVER="${server}"  # the agent renders a placeholder kubeconfig for this server
+            export TJOR_KUBE_API_HOST="${api}"   # scoped SSRF-guard exemption at the proxy (#45)
             echo "tjor: kube broker — minted a short-TTL token for SA ${ns}/${sa}; allow the API host in your egress policy:  tjor policy add ${api}" >&2 ;;
         *) warn "unknown broker.source '${source}' — broker disabled"; return 0 ;;
     esac

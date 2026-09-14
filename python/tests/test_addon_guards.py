@@ -405,6 +405,24 @@ class TestGateway:
         ok, _ = addon.resolved_addresses_ok("tjor-gateway")
         assert not ok   # no gateway configured -> guard applies normally
 
+    def test_ip_guard_exempts_only_the_kube_api_host(self):
+        # Kube broker (#45): a private-endpoint cluster API server gets the
+        # same single-host, config-scoped exemption as the gateway.
+        addon = load_addon()
+        addon.KUBE_API_HOST = "api.private-cluster.internal"
+        addon._resolver = lambda h: {"10.12.0.4"}   # private for any host
+        ok, why = addon.resolved_addresses_ok("api.private-cluster.internal")
+        assert ok and why == "kube-exempt"
+        ok2, _ = addon.resolved_addresses_ok("sneaky.internal.test")
+        assert not ok2
+
+    def test_no_exemption_when_kube_broker_inactive(self):
+        addon = load_addon()
+        addon.KUBE_API_HOST = ""
+        addon._resolver = lambda h: {"10.12.0.4"}
+        ok, _ = addon.resolved_addresses_ok("api.private-cluster.internal")
+        assert not ok   # no kube broker -> guard applies normally
+
     def test_injects_master_key_toward_gateway_only(self):
         addon = load_addon()
         addon.GATEWAY_HOST = "tjor-gateway"

@@ -59,6 +59,10 @@ services:
       # only here (egress side); the agent holds a placeholder. Empty = disabled.
       TJOR_GATEWAY_HOST: ${TJOR_GATEWAY_HOST:-}
       TJOR_GATEWAY_KEY: ${TJOR_GATEWAY_KEY:-}
+      # Kube broker (#45): the cluster API host (hostname only, no secret) —
+      # gets the same scoped SSRF-guard exemption as the gateway host, so a
+      # private-endpoint control plane works without ip_guard=false globally.
+      TJOR_KUBE_API_HOST: ${TJOR_KUBE_API_HOST:-}
     labels:
       tjor.role: proxy
       tjor.session: ${TJOR_SESSION:-}
