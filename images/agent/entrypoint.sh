@@ -71,6 +71,8 @@ fi
 #    harness(es) (a comma list for a multi-harness image); the ONE neutral
 #    instruction file is rendered into each harness's own dialect path
 #    (opencode AGENTS.md / claude CLAUDE.md / copilot copilot-instructions.md).
+#    An opted-in profile's instructions/AGENTS.md (#C2), if staged, is
+#    APPENDED after the baseline — never a replacement — before that render.
 python3 - <<'PY'
 import json
 import os
@@ -119,18 +121,36 @@ desymlink(HOME / ".local" / "state")
 
 profile = pathlib.Path(os.environ.get("TJOR_PROFILE_DIR", "") or "/nonexistent")
 
+# An opted-in profile may APPEND to (never replace) the baseline instruction
+# cargo via one staged file, instructions/AGENTS.md (#C2). Read it once, up
+# front, so every harness dialect below gets the same combined content; a
+# missing file leaves EXTRA_INSTRUCTIONS empty and behavior identical to
+# today (baseline only). This file is excluded from the generic per-harness
+# overlay loop below — it has no harness-native home of its own.
+EXTRA_INSTRUCTIONS = ""
+_extra_path = profile / "instructions" / "AGENTS.md"
+if _extra_path.is_file():
+    EXTRA_INSTRUCTIONS = _extra_path.read_text()
+
 for h in harnesses:
     cfg, fname = TARGETS[h]
     desymlink(cfg)
     if NEUTRAL.is_file():
-        shutil.copyfile(NEUTRAL, safe_write_target(cfg / fname))
+        baseline = NEUTRAL.read_text()
+        combined = baseline + "\n" + EXTRA_INSTRUCTIONS if EXTRA_INSTRUCTIONS else baseline
+        safe_write_target(cfg / fname).write_text(combined)
     # Overlay an opted-in host profile (#29) on top of the baseline cargo. The
     # staged dir was credential-filtered host-side (allow-list in
     # tjor_profile.py), so we copy it wholesale into this harness's config dir;
     # an operator definition wins over the baseline. Symlink-safe per target.
+    # instructions/AGENTS.md is handled above (appended, not copied verbatim)
+    # and is skipped here so it doesn't also land as a stray file.
     if profile.is_dir():
         for src in sorted(p for p in profile.rglob("*") if p.is_file()):
-            dst = cfg / src.relative_to(profile)
+            rel = src.relative_to(profile)
+            if rel == pathlib.Path("instructions") / "AGENTS.md":
+                continue
+            dst = cfg / rel
             desymlink(dst.parent)
             shutil.copyfile(src, safe_write_target(dst))
     # Harness self-update is an image concern, never a session one (charter

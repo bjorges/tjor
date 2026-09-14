@@ -3,6 +3,20 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [0.13.0] — 2026-09-14 — Profile-appended instructions (#C2)
+
+### Added
+- **Optional profile instruction append.** A profile may now stage
+  `instructions/AGENTS.md`; if present, its content is APPENDED after the
+  image's baked-in baseline instruction cargo — never a replacement — before
+  that combined text is rendered into each harness's own dialect path
+  (opencode `AGENTS.md` / claude `CLAUDE.md` / copilot
+  `copilot-instructions.md`). `instructions` was added to the profile
+  host-side staging allow-list in `tjor_profile.py`, subject to the exact same
+  credential-filename/extension denylist and symlink-escape protection as
+  every other allow-listed subdirectory. No profile, or a profile without
+  `instructions/AGENTS.md`, behaves exactly as before (baseline only).
+
 ## [0.12.0] — 2026-09-13 — Config validation + boundary exit code
 
 Two hardening refinements surfaced while reviewing the fail-closed paths.

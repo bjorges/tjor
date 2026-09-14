@@ -131,6 +131,16 @@ class TestStageAllowList:
         staged = tjor_profile.stage(src, tmp_path / "staged")
         assert set(staged) == {"agent/secret-scanner.md", "command/rotate-credentials.md"}
 
+    def test_instructions_staged_like_other_allowed_dirs(self, tmp_path):
+        # #C2: instructions/AGENTS.md is staged (and credential-filtered /
+        # symlink-protected) exactly like any other allow-listed subdir; the
+        # entrypoint is what treats its content specially (append vs. overlay).
+        src = tmp_path / "profile"
+        _write(src / "instructions" / "AGENTS.md", "extra project rules")
+        _write(src / "instructions" / "auth.json", "SECRET")
+        staged = tjor_profile.stage(src, tmp_path / "staged")
+        assert staged == ["instructions/AGENTS.md"]
+
 
 class TestCli:
     def test_stage_prints_relative_paths(self, tmp_path, capsys):

@@ -34,9 +34,17 @@ import sys
 # opencode uses singular agent/command; others differ). Everything else at the
 # profile ROOT — auth.json, config files, dotfiles, unknown files — is never
 # staged (structural allow-list).
+#
+# `instructions` (#C2) is different in kind from the others: it does not carry
+# a harness-native definition file staged verbatim, but a single optional
+# `instructions/AGENTS.md` whose content the entrypoint APPENDS to the baked-in
+# baseline instruction cargo (never a replacement) before rendering it into
+# each harness's own dialect path. It goes through the exact same structural
+# allow-list and credential/symlink defense-in-depth as every other dir here;
+# the entrypoint alone knows to treat its one file specially.
 ALLOWED = (
     "agent", "agents", "command", "commands", "skill", "skills",
-    "prompt", "prompts", "mode", "modes",
+    "prompt", "prompts", "mode", "modes", "instructions",
 )
 
 # Defense in depth WITHIN an allowed subdir: the allow-list is structural (dir
