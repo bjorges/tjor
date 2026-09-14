@@ -6,6 +6,15 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 ## [Unreleased]
 
 ### Added
+- **Exfiltration-conscious investigation-profile guide (#50).**
+  `docs/investigation-profiles.md`: the checklist for profiles that grant
+  `pods/log` — sinkless strict-allow egress (API origin + inference only),
+  view-minus-secrets RBAC with `pods/log` named explicitly, short token TTL,
+  teardown denial-recap review — plus a worked policy example and an explicit
+  residual-risk statement (the inference endpoint is itself an allowed content
+  sink, by design). Referenced from the README's kube section and enforced by
+  the doc-consistency lint. Log-volume friction at the proxy is analyzed and
+  deliberately deferred (observability-first proposal recorded on #50).
 - **Automatic denial recap at `tjor down` (#42).** Teardown now surfaces the
   session's denied egress unprompted — count, top denied hosts, and the
   `tjor denials` / `tjor policy add` hints — so a quietly-blocked session is

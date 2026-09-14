@@ -31,3 +31,17 @@ if ((fail)); then
     exit 1
 fi
 echo "doc-consistency: shipped markers and roadmap table agree (shipped=[${shipped[*]:-}] roadmap=[${roadmap[*]:-}])"
+
+# Investigation-profile guide (#50): granting pods/log must stay a documented,
+# conscious trade-off — the guide must exist AND the README's kube section must
+# point at it (same drift class as above: a pointer and its target separating).
+DOCS_DIR="$(dirname "${README}")/docs"
+if [[ ! -f "${DOCS_DIR}/investigation-profiles.md" ]]; then
+    echo "doc-consistency: FAILED — docs/investigation-profiles.md is missing (spec: credential-broker, log access is a documented trade-off)" >&2
+    exit 1
+fi
+if ! grep -q 'investigation-profiles.md' "${README}"; then
+    echo "doc-consistency: FAILED — README does not reference docs/investigation-profiles.md from the kube section" >&2
+    exit 1
+fi
+echo "doc-consistency: investigation-profile guide present and referenced"

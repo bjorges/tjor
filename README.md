@@ -137,6 +137,12 @@ on the host (it does the cluster auth) and that your identity can `create` the
 SA's `serviceaccounts/token`. The token is short-lived with no refresh — a
 session outliving it re-launches. See the kube-broker design under `openspec/`.
 
+**Granting `pods/log`?** Workload logs are the read most likely to pull
+sensitive data into the session — make it a conscious trade-off: follow the
+exfiltration-conscious checklist in
+[docs/investigation-profiles.md](docs/investigation-profiles.md) (minimal
+sinkless egress, view-minus-secrets RBAC, the teardown denial recap).
+
 ## Agent profiles
 
 The cage isolates from host config by design, so the agents, commands, and
