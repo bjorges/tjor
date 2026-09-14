@@ -202,7 +202,31 @@ if [[ -n "${TJOR_SAFE_DIRS:-}" ]]; then
         [[ -n "${_d}" ]] && git config --system --add safe.directory "${_d}"
     done <<<"${TJOR_SAFE_DIRS}"
 fi
+# The placeholder helper is wired only when the broker actually COVERS GitHub
+# (#47): decided with the proxy's own host matcher (tjor_identity/tjor_policy,
+# shipped as image cargo — ONE matcher, never a bash re-implementation). A
+# broker scoped elsewhere (e.g. kube-only) keeps the gh fallback, so git never
+# sends an unsubstitutable placeholder to github.com — an intentional
+# no-GitHub-credential session behaves like a broker-less one there.
+broker_covers_github=""
 if [[ -n "${TJOR_BROKER_ENABLED:-}" ]]; then
+    if python3 - <<'PY'
+import os
+import sys
+
+sys.path.insert(0, "/opt/tjor/python")
+import tjor_identity
+
+hosts = tjor_identity.parse_inject_hosts(os.environ.get("TJOR_BROKER_HOSTS", ""))
+covered = tjor_identity.should_inject(hosts, "github.com") \
+    or tjor_identity.should_inject(hosts, "gist.github.com")
+sys.exit(0 if covered else 1)
+PY
+    then
+        broker_covers_github=1
+    fi
+fi
+if [[ -n "${broker_covers_github}" ]]; then
     # Credential broker (D2): git must ATTEMPT auth so the proxy can inject
     # the real, short-TTL credential. Wire a helper that returns a fixed
     # PLACEHOLDER (never a real secret) — the proxy overwrites the

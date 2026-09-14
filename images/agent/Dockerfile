@@ -140,6 +140,11 @@ COPY images/agent/instructions/ /opt/tjor/instructions/
 # the SAME tested code the launcher uses to derive the API host — one source of
 # truth, not a re-implementation inline in the entrypoint.
 COPY python/tjor_kube.py /opt/tjor/python/tjor_kube.py
+# tjor_policy.py + tjor_identity.py (#47): the entrypoint scopes the GitHub
+# placeholder credential helper with the SAME host matcher the proxy uses for
+# injection (charter: ONE matcher) — never a bash glob re-implementation.
+COPY python/tjor_policy.py /opt/tjor/python/tjor_policy.py
+COPY python/tjor_identity.py /opt/tjor/python/tjor_identity.py
 COPY images/agent/entrypoint.sh /usr/local/bin/tjor-entrypoint
 RUN chmod 0755 /usr/local/bin/tjor-entrypoint
 

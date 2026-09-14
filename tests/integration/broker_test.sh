@@ -73,6 +73,29 @@ HELPER="$(docker exec "${CTR}" git config --system --get 'credential.https://git
 check "git credential helper is wired to a placeholder" bash -c "grep -q placeholder <<<'${HELPER}'"
 check "git credential helper does not contain the real secret" bash -c "! grep -q '${SECRET}' <<<'${HELPER}'"
 
+# 4. Placeholder wiring is SCOPED to brokered destinations (#47): driven on
+#    the real entrypoint directly (like the landlock handoff tests). The
+#    coverage decision uses the proxy's own host matcher, so a broker scoped
+#    elsewhere (kube-only) keeps the gh fallback — git must never send an
+#    unsubstitutable placeholder to github.com.
+IMAGE="${TJOR_AGENT_IMAGE:-tjor-agent-opencode:local}"
+helper_for() { # $1 = TJOR_BROKER_HOSTS value, $2 = helper host
+    docker run --rm -e TJOR_BROKER_ENABLED=1 -e "TJOR_BROKER_HOSTS=$1" "${IMAGE}" \
+        sh -c "git config --system --get 'credential.https://$2.helper'" 2>/dev/null || true
+}
+H_COVERED="$(helper_for 'github.com,*.github.com' github.com)"
+H_KUBE="$(helper_for 'kubeapi.example.com' github.com)"
+H_KUBE_GIST="$(helper_for 'kubeapi.example.com' gist.github.com)"
+H_GLOB="$(helper_for '*.github.com' github.com)"
+check "github-covering hosts wire the placeholder pair" bash -c \
+    "grep -q placeholder <<<'${H_COVERED}'"
+check "kube-only hosts keep the gh fallback for github.com" bash -c \
+    "grep -q 'gh auth git-credential' <<<'${H_KUBE}'"
+check "kube-only hosts wire no placeholder anywhere" bash -c \
+    "! grep -q placeholder <<<'${H_KUBE_GIST}'"
+check "a glob covering gist.github.com wires the pair (shared matcher semantics)" bash -c \
+    "grep -q placeholder <<<'${H_GLOB}'"
+
 echo
 echo "broker: ${PASS} passed, ${FAIL} failed"
 exit "$((FAIL > 0 ? 1 : 0))"

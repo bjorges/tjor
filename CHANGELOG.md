@@ -6,6 +6,14 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 ## [Unreleased]
 
 ### Fixed
+- **Kube-only broker sessions no longer get a poisoned GitHub git-credential
+  helper (#47).** The placeholder helper was wired whenever ANY broker was
+  enabled, so a broker scoped to the cluster API host alone made git send the
+  literal placeholder to github.com (guaranteed 401) instead of falling back
+  to ambient `gh` auth. The entrypoint now wires the placeholder only when the
+  broker's hosts actually cover GitHub — decided with the proxy's own host
+  matcher (`tjor_policy`/`tjor_identity`, now shipped as agent-image cargo),
+  never a second matcher. Agent images must be rebuilt to pick this up.
 - **`landlock.deny_paths` no longer silently disabled by `mask_dotenv = false`
   (#48).** The deny-paths masking loop was nested inside the dotenv-discovery
   toggle, so opting out of automatic `.env` masking also dropped every

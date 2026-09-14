@@ -145,6 +145,11 @@ services:
       # so git attempts auth; the proxy overwrites it with the real token.
       # The real credential is never passed to the agent.
       TJOR_BROKER_ENABLED: ${TJOR_BROKER_ENABLED:-}
+      # Broker destination hosts (#47) — hostnames only, NEVER a secret. Lets
+      # the entrypoint wire the GitHub placeholder helper only when the broker
+      # actually covers GitHub (a kube-only broker keeps the gh fallback, so
+      # git doesn't send an unsubstitutable placeholder to github.com).
+      TJOR_BROKER_HOSTS: ${TJOR_BROKER_HOSTS:-}
       # Kube broker (#26): the API server URL the entrypoint renders a
       # PLACEHOLDER kubeconfig for (empty unless the kube broker is active).
       # Only the server address — never a token — is passed to the agent.
