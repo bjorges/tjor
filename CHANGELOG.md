@@ -3,6 +3,35 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [0.13.1] — 2026-09-14 — Interactive sessions actually interactive (#51, #52)
+
+### Fixed
+- **`--session` accepts what tjor itself displays (#52).** tjor's messages show
+  the fully-qualified session id (`<repo>-<hash8>[-<name>]`), but `--session`
+  blindly re-prepended the workspace prefix — pasting the displayed id into
+  `tjor down --session ...` tore down a doubled phantom id while the real
+  session kept running. Resolution is now idempotent (this workspace's
+  qualified ids resolve to the same session as their short names), another
+  workspace's existing qualified id is honored verbatim by lifecycle commands
+  (`down`/`status`/`denials`/`reset` now work from any directory) and refused
+  by `tjor run` (never a silent foreign-identity launch), `tjor attach` also
+  takes short names, and `tjor down` says so when nothing matched instead of
+  silently "succeeding" against a session that never existed.
+- **Interactive harnesses get a real PTY (#51).** `compose run -d` decides
+  pseudo-TTY allocation from the compose *client's* own fds, and the launcher
+  captures its output through command substitution — so the agent container was
+  created **without** a PTY even from a real terminal (`tty: true` in
+  compose.yaml notwithstanding). The harness then started on pipe-stdin:
+  Claude Code fell into `--print` batch mode and errored, opencode's TUI hung
+  silently after the startup banner, and the later `docker attach` could never
+  repair it (a container's Tty is fixed at creation). The launcher now forces
+  PTY allocation at creation whenever its stdin is a terminal, verifies the
+  PTY actually materialized (aborts loudly otherwise), and warns loudly when
+  no terminal is available (one-shot commands keep working and keep
+  propagating exit codes). A new real-PTY integration test
+  (`tests/integration/tty_test.sh`, via `script(1)`) drives the actual
+  create-detached-then-attach flow — the path `TJOR_ATTACH_DRY` used to skip.
+
 ## [0.13.0] — 2026-09-14 — Profile-appended instructions (#C2)
 
 ### Added

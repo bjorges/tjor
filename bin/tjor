@@ -605,12 +605,20 @@ verify_bind_source() {
     fi
 }
 
+# The workspace-derived base session id: <repo basename, sanitized and
+# lowercased>-<8 hex chars of the workspace-path hash>. The ONE derivation,
+# shared by resolve_session and cmd_attach — a second copy drifting would
+# reintroduce exactly the mismatch class #52 is about.
+session_base_id() { # $1 = workspace path
+    echo "$(basename "$1" | tr -cd 'a-zA-Z0-9_.-' | tr '[:upper:]' '[:lower:]')-$(printf %s "$1" | sha256 | cut -c1-8)"
+}
+
 # Resolve a session's identity + topology env (id, dirs, project, compose env)
 # with NO side effects — no credential minting. Read-only and teardown commands
 # (status/down/reset/denials) use this directly so they never assemble broker
 # material; under a kube broker source, session_setup would otherwise mint a
 # real short-TTL ServiceAccount token against the cluster just to resolve a path.
-resolve_session() { # $1 = harness, $2 = task id (optional), $3 = session name (optional)
+resolve_session() { # $1 = harness, $2 = task id (optional), $3 = session name (optional), $4 = "launch" on the run path
     local ws root sid in_repo=""
     if ws="$(git rev-parse --show-toplevel 2>/dev/null)"; then in_repo=1; else
         ws="$(pwd)"
@@ -618,13 +626,46 @@ resolve_session() { # $1 = harness, $2 = task id (optional), $3 = session name (
     fi
     # shellcheck disable=SC2088  # literal ~ is expanded on the next line
     root="$(cfg session.root --default "~/.tjor/sessions")"; root="${root/#\~/$HOME}"
-    sid="$(basename "${ws}" | tr -cd 'a-zA-Z0-9_.-' | tr '[:upper:]' '[:lower:]')-$(printf %s "${ws}" | sha256 | cut -c1-8)"
+    local base
+    base="$(session_base_id "${ws}")"
+    sid="${base}"
     # Named sessions (D3): the name folds into the id, so every downstream
     # per-session resource (topology, state root, identity, CA) separates
     # automatically (charter L29).
+    #
+    # --session canonicalization (#52): tjor's own messages display the
+    # FULLY-QUALIFIED id (<repo>-<hash8>[-<name>]). Blindly re-prefixing a
+    # pasted one would construct a doubled phantom id — and tear down (or
+    # collide with) the wrong session. So resolution is idempotent for this
+    # workspace's qualified ids, honors another workspace's EXISTING qualified
+    # id verbatim for lifecycle commands (refused at launch: launching this
+    # workspace under a foreign identity is never derived silently), and
+    # disambiguates a qualified-LOOKING value against reality (state dir or
+    # labeled containers) so unusual short names keep working.
     if [[ -n "${3:-}" ]]; then
-        [[ "$3" =~ ^[A-Za-z0-9._-]{1,32}$ ]] || die "--session must match [A-Za-z0-9._-]{1,32}"
-        sid="${sid}-$(tr '[:upper:]' '[:lower:]' <<<"$3")"
+        local name short=""
+        name="$(tr '[:upper:]' '[:lower:]' <<<"$3")"
+        if [[ "${name}" == "${base}" ]]; then
+            echo "tjor: --session ${name} is this workspace's fully-qualified default session id — resolving to the default session" >&2
+        elif [[ "${name}" == "${base}-"* ]]; then
+            short="${name#"${base}-"}"
+            echo "tjor: --session ${name} is already fully qualified — resolving to short name '${short}'" >&2
+        elif [[ "${name}" =~ ^[a-z0-9._-]+-[0-9a-f]{8}(-[a-z0-9._-]{1,32})?$ ]] \
+             && { [[ -d "${root}/${name}" ]] || docker ps -aq --filter "label=tjor.session=${name}" 2>/dev/null | grep -q .; }; then
+            if [[ "${4:-}" == "launch" ]]; then
+                die "--session ${name} is the fully-qualified id of another workspace's session — launch from that workspace, or pick a short name for a new session here"
+            fi
+            echo "tjor: --session ${name} matches an existing session's fully-qualified id — using it verbatim (workspace-independent)" >&2
+            sid="${name}"
+        else
+            [[ "${name}" =~ ^[a-z0-9._-]+-[0-9a-f]{8}(-[a-z0-9._-]{1,32})?$ ]] \
+                && echo "tjor: note: --session ${name} looks like a fully-qualified session id, but no such session exists — treating it as a short name" >&2
+            short="${name}"
+        fi
+        if [[ -n "${short}" ]]; then
+            [[ "${short}" =~ ^[A-Za-z0-9._-]{1,32}$ ]] || die "--session must match [A-Za-z0-9._-]{1,32}"
+            sid="${base}-${short}"
+        fi
     fi
     TJOR_LAUNCHED_AT="$(date +%s)"
     export TJOR_LAUNCHED_AT
@@ -668,9 +709,11 @@ resolve_session() { # $1 = harness, $2 = task id (optional), $3 = session name (
 }
 
 # Full launch setup: resolve the session AND assemble broker material (which may
-# mint a live credential). Only the launch path (cmd_run) uses this.
+# mint a live credential). Only the launch path (cmd_run) uses this — the
+# "launch" marker makes resolve_session REFUSE a foreign fully-qualified
+# session id here (lifecycle commands honor one; a launch never does).
 session_setup() { # $1 = harness, $2 = task id (optional), $3 = session name (optional)
-    resolve_session "$@"
+    resolve_session "${1}" "${2}" "${3}" launch
     prepare_broker
     prepare_gateway
 }
@@ -742,7 +785,9 @@ cmd_run() {
     # `tjor down`/`gc` would tear down both at once. Refuse with a clear path
     # forward (attach, or name the second session).
     if docker ps -q --filter "label=tjor.role=agent" --filter "label=tjor.session=${TJOR_SESSION}" --filter status=running | grep -q .; then
-        die "session ${TJOR_SESSION} is already running — reattach with 'tjor attach ${TJOR_SESSION}', or start a separate one with --session <name>"
+        # Every command shown here is paste-safe verbatim (#52): attach takes
+        # the full id, and --session resolves a full id idempotently.
+        die "session ${TJOR_SESSION} is already running — reattach with 'tjor attach ${TJOR_SESSION}', tear it down with 'tjor down --session ${TJOR_SESSION}', or start a separate one with a different --session <name>"
     fi
     ensure_topology
     echo "tjor: session ${TJOR_SESSION} — workspace ${TJOR_WORKSPACE}" >&2
@@ -847,7 +892,32 @@ for p in json.load(sys.stdin):
                 -e "ANTHROPIC_API_KEY=${TJOR_GATEWAY_AGENT_KEY}")
         echo "tjor: + harness base_url -> gateway (placeholder key; real key injected at the proxy)" >&2
     fi
-    ctr="$(compose run -d "${mounts[@]}" -e TJOR_SAFE_DIRS="${safe_dirs}" -e TJOR_PROFILE_DIR="${profile_env}" "${gw_env[@]}" agent "$@")" || die "failed to start the agent container"
+    # PTY allocation (#51): compose run decides pseudo-TTY allocation from the
+    # COMPOSE CLIENT's own fds, not from the service's tty: true — and the
+    # command substitution capturing ${ctr} below makes the client's stdout a
+    # pipe, so the agent container would be created WITHOUT a PTY even when
+    # launched from a real terminal. A container's Tty is fixed at creation
+    # (docker attach can never add one), and a harness starting on pipe-stdin
+    # breaks: claude falls into --print batch mode and errors, opencode's TUI
+    # hangs silently. Force allocation (-T=false — the shorthand of
+    # --no-tty/--no-TTY, stable across compose versions) whenever our own
+    # stdin is a terminal; compose refuses the force otherwise ("stdin is not
+    # a terminal"), so a terminal-less launch proceeds PTY-less with a loud
+    # warning instead.
+    local -a ttyforce=()
+    if [[ -t 0 ]]; then
+        ttyforce=(-T=false)
+    else
+        warn "no terminal on stdin — the agent container gets no PTY; interactive harnesses (claude, opencode TUIs) will NOT work in this session (one-shot commands are unaffected)"
+    fi
+    ctr="$(compose run -d "${ttyforce[@]}" "${mounts[@]}" -e TJOR_SAFE_DIRS="${safe_dirs}" -e TJOR_PROFILE_DIR="${profile_env}" "${gw_env[@]}" agent "$@")" || die "failed to start the agent container"
+    # Fail-closed on the PTY we asked for: if a future compose changes its
+    # allocation semantics, abort loudly — never hand the harness a silent
+    # pipe-stdin hang that LOOKS like a running session.
+    if ((${#ttyforce[@]})) && [[ "$(docker inspect -f '{{.Config.Tty}}' "${ctr}" 2>/dev/null)" != "true" ]]; then
+        docker rm -f "${ctr}" >/dev/null 2>&1 || true
+        die "agent container was created without the requested PTY — interactive harnesses cannot work; aborting (compose ignored the TTY force flag?)"
+    fi
     if [[ -n "${detach}" ]]; then
         echo "tjor: session ${TJOR_SESSION} started detached — attach with: tjor attach ${TJOR_SESSION}" >&2
         return 0
@@ -876,6 +946,16 @@ cmd_down() {
     local name=""
     [[ "${1:-}" == "--session" ]] && name="$2"
     resolve_session "opencode" "" "${name}"   # teardown: no broker mint
+    # Report a no-op teardown (#52): tearing down a session that never existed
+    # (e.g. a mistyped or mis-qualified name) used to look exactly like
+    # success, hiding that the REAL session was left running. Docker resources
+    # or real state count as traces; the empty home/ skeleton resolve_session
+    # just created does not.
+    if ! docker ps -aq --filter "label=tjor.session=${TJOR_SESSION}" | grep -q . \
+       && ! docker network inspect "${TJOR_PROJECT}_internal" >/dev/null 2>&1 \
+       && [[ -z "$(find "${TJOR_SESSION_DIR}" -mindepth 1 ! -name home -print -quit 2>/dev/null)" ]]; then
+        warn "nothing found for session ${TJOR_SESSION} (no containers, networks, or state) — list sessions with: tjor ls"
+    fi
     graceful_proxy_stop "${TJOR_SESSION}"
     # Persistent agent (compose run -d) containers aren't reliably caught by
     # `down --remove-orphans`; remove this session's by label explicitly.
@@ -955,13 +1035,20 @@ cmd_ls() {
 }
 
 cmd_attach() {
-    local want="${1:-}" chosen ctr
+    local want="${1:-}" chosen ctr qualified=""
     local -a rows=()
+    # Short names welcome (#52): a positional session argument matches either
+    # the full session id (workspace-independent, as before) or the short name
+    # qualified against the CURRENT workspace — so the name a user launched
+    # with (`tjor run --session foo`) reattaches with `tjor attach foo`.
+    if [[ -n "${want}" ]]; then
+        qualified="$(session_base_id "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")-$(tr '[:upper:]' '[:lower:]' <<<"${want}")"
+    fi
     # Field-separate on US (\x1f), not '|' — a workspace path can contain a
     # literal pipe (consistent with ls/gc).
     mapfile -t rows < <(docker ps --filter label=tjor.role=agent --filter status=running \
         --format $'{{.ID}}\x1f{{.Label "tjor.session"}}\x1f{{.Label "tjor.workspace"}}\x1f{{.Label "tjor.task"}}' \
-        | { if [[ -n "${want}" ]]; then awk -F$'\x1f' -v s="${want}" '$2 == s'; else cat; fi; })
+        | { if [[ -n "${want}" ]]; then awk -F$'\x1f' -v s="${want}" -v q="${qualified}" '$2 == s || $2 == q'; else cat; fi; })
     ((${#rows[@]} > 0)) || die "no running agent${want:+ for session ${want}} — see: tjor ls"
     if ((${#rows[@]} == 1)); then
         chosen="${rows[0]}"
@@ -1366,12 +1453,12 @@ usage: tjor <command> [args]
   run [--harness opencode|claude|copilot] [--task <id>] [--session <name>] [--dir <path>]... [--unsafe-dir] [--profile <name>|--profile-dir <path>] [--detach] [cmd...]
                                                      launch a caged session (--dir: mount another repo at its host path — sensitive paths refused unless --unsafe-dir; --profile/--profile-dir: overlay host-defined agents/commands, credential-safe; --detach: start without attaching)
   ls                                                 list all sessions (and re-verify their boundaries)
-  attach [session]                                   reattach to a running agent's terminal
+  attach [session]                                   reattach to a running agent's terminal (short name or full id)
   gc [--age <hours>] [--dry-run]                     reap idle session containers/networks/volumes
-  reset {cache|sessions|creds|all} [--session <name>] [--dry-run]
+  reset {cache|sessions|creds|all} [--session <name|id>] [--dry-run]
                                                      tiered wipe of this repo's session state
-  down [--session <name>]                            tear down this repo's session topology
-  status [--session <name>]                          show this repo's session containers
+  down [--session <name|id>]                         tear down a session's topology (short name, or any session's full id)
+  status [--session <name|id>]                       show a session's containers
   policy <url> [--explain]                           evaluate a URL against the active egress policy
   policy add <host>... [--yes]                       add host(s) to the active policy (re-approving a trusted repo policy is confirmed; --yes to skip)
   denials [--session <name>]                         show egress denied in a session (then: tjor policy add <host>)

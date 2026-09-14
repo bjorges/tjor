@@ -27,7 +27,7 @@ cleanup() {
     docker ps -aq --filter "label=tjor.workspace=${REPO}" | xargs -r docker rm -f >/dev/null 2>&1
     docker ps -aq --filter "label=tjor.session=${FAKE_SID}" | xargs -r docker rm -f >/dev/null 2>&1
     local sid
-    for sid in "${SID_A:-}" "${SID_B:-}"; do
+    for sid in "${SID_A:-}" "${SID_B:-}" "${SID_C:-}"; do
         [[ -n "${sid}" ]] || continue
         docker compose -p "tjor-${sid}" down --volumes --remove-orphans >/dev/null 2>&1 \
             || docker-compose -p "tjor-${sid}" down --volumes --remove-orphans >/dev/null 2>&1
@@ -112,6 +112,32 @@ check "attach resolves the named session to its agent container" bash -c \
     "grep -q '^${SID_A} ' <<<'${ATT}' && docker ps -q --no-trunc --filter label=tjor.session=${SID_A} | grep -q \"\$(awk '{print \$2}' <<<'${ATT}')\""
 check "attach did not disturb the agent" bash -c "docker ps -q --no-trunc | grep -q '${CTR_A}'"
 check "attach with no running agent for a session errors" bash -c "! TJOR_ATTACH_DRY=1 '${T}' attach no-such-session-xyz >/dev/null 2>&1"
+ATT_SHORT="$(TJOR_ATTACH_DRY=1 "${T}" attach a 2>/dev/null)"
+check "attach resolves a SHORT name against this workspace (#52)" bash -c \
+    "grep -q '^${SID_A} ' <<<'${ATT_SHORT}'"
+
+# ---- 2b. session-name resolution (#52) -----------------------------------------
+# The footgun: tjor's own messages show the FULLY-QUALIFIED id; passing it back
+# through --session used to get the workspace prefix blindly re-prepended,
+# tearing down a doubled phantom while the real session kept running.
+SID_C="${BASE_SID}-c"
+"${T}" run --detach --session c sleep 600 >/dev/null 2>&1
+wait_for_agent "${SID_C}" >/dev/null || { echo "FATAL: session c never started"; exit 1; }
+check "launching with a FOREIGN qualified session id is refused" bash -c \
+    "cd '${SCRATCH}' && '${T}' run --detach --session '${SID_C}' sleep 60 2>&1 | grep -q 'another workspace'"
+check "foreign-id launch refusal created no phantom container" bash -c \
+    "docker ps -aq --filter 'label=tjor.session=${SID_C}' --filter 'label=tjor.workspace=${SCRATCH}' | wc -l | grep -q '^ *0\$'"
+( cd "${REPO}" && "${T}" down --session "${SID_C}" >/dev/null 2>&1 )
+check "down with the fully-qualified id tears down the REAL session" bash -c \
+    "! docker ps -aq --filter 'label=tjor.session=${SID_C}' | grep -q ."
+check "no doubled phantom id was constructed" bash -c \
+    "! docker ps -aq --filter 'label=tjor.session=${BASE_SID}-${SID_C}' | grep -q . && ! test -d '${HOME}/.tjor/sessions/${BASE_SID}-${SID_C}'"
+"${T}" run --detach --session c sleep 600 >/dev/null 2>&1
+wait_for_agent "${SID_C}" >/dev/null || { echo "FATAL: session c never restarted"; exit 1; }
+check "down with the qualified id works from a DIFFERENT cwd" bash -c \
+    "cd '${SCRATCH}' && '${T}' down --session '${SID_C}' >/dev/null 2>&1 && ! docker ps -aq --filter 'label=tjor.session=${SID_C}' | grep -q ."
+check "down against a nonexistent session says so" bash -c \
+    "cd '${REPO}' && '${T}' down --session never-was 2>&1 | grep -q 'nothing found for session'"
 
 # ---- 4. gc ---------------------------------------------------------------------
 "${T}" gc --age 0 --dry-run > "${SCRATCH}/gc0.out" 2>&1

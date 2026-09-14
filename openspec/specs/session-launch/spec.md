@@ -91,13 +91,43 @@ The launcher SHALL start the agent container detached so it outlives the launchi
 - **WHEN** `tjor run --detach` is used
 - **THEN** the launcher starts the session and returns without attaching, naming the session to attach to later
 
+### Requirement: Interactive sessions receive a PTY at container creation
+
+When the launcher's stdin is a terminal, the agent container SHALL be created with a pseudo-TTY allocated, so the harness process observes an interactive stdin/stdout from its first instruction — independent of when (or whether) an attach client connects, and independent of any redirection or capture of the launcher's own stdout. After starting the agent container the launcher SHALL verify that a PTY was actually allocated when one was intended, and SHALL abort with a clear error if not — a session must never proceed into a state where the harness silently hangs or degrades because its stdin is a pipe.
+
+When the launcher's stdin is not a terminal, the launch SHALL proceed without a PTY (one-shot commands still run to completion and propagate exit codes), and the launcher SHALL warn loudly that interactive harnesses will not work in that session.
+
+#### Scenario: Interactive launch from a terminal
+- **WHEN** `tjor run` is invoked from a terminal (even with the launcher's stdout captured or redirected)
+- **THEN** the harness process sees a TTY on stdin and stdout at its own startup, before any attach client connects
+
+#### Scenario: Typed input reaches the harness through attach
+- **WHEN** a terminal client attaches to a running interactive session and sends input
+- **THEN** the harness receives that input on its interactive stdin
+
+#### Scenario: Non-terminal launch degrades loudly
+- **WHEN** `tjor run` is invoked without a terminal on stdin
+- **THEN** the session starts without a PTY, the launcher warns loudly that interactive harnesses will not work in this session, and a one-shot command still runs to completion and propagates its exit code
+
+#### Scenario: Intended PTY missing aborts
+- **WHEN** the launcher intended a PTY but the created agent container reports none allocated
+- **THEN** the launch aborts with a clear error naming the problem instead of leaving a silently broken session running
+
 ### Requirement: Named session derivation
 
-When `--session <name>` is given (name matching `[A-Za-z0-9._-]{1,32}`), the session id SHALL be derived from both the workspace and the name; without it, derivation is unchanged (repo-scoped default session).
+When `--session <name>` is given (name matching `[A-Za-z0-9._-]{1,32}`), the session id SHALL be derived from both the workspace and the name; without it, derivation is unchanged (repo-scoped default session). Derivation SHALL be idempotent: a value already equal to, or prefixed by, the current workspace's qualified id SHALL resolve to the same session as its short form — never to a doubled id. A value that is an existing *other* workspace's fully-qualified session id SHALL be refused at launch with a clear error (launching this workspace under another workspace's session identity is never derived silently).
 
 #### Scenario: Same repo, different names
 - **WHEN** sessions `a` and `b` are launched from the same repo
 - **THEN** their session ids differ and neither collides with the repo's default session
+
+#### Scenario: Relaunching with the displayed qualified id
+- **WHEN** `tjor run --session <qualified-id-of-this-workspace's-session>` is invoked (e.g. pasted from a tjor message)
+- **THEN** it resolves to the same session as the short name — subject to the same already-running collision guard — and no doubled session id is ever created
+
+#### Scenario: Foreign qualified id refused at launch
+- **WHEN** `tjor run --session <id>` is given a fully-qualified id of an existing session belonging to a different workspace
+- **THEN** the launch is refused with an error explaining the id belongs to another workspace
 
 ### Requirement: Additional repositories via repeatable --dir
 
