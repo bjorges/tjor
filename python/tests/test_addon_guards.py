@@ -140,19 +140,32 @@ class TestBrokerInjection:
     def make(self, source_hosts="github.com", cred="tok-123"):
         addon = load_addon()
         import tjor_broker as tb
-        addon.BROKER_HOSTS = addon.tjor_identity.parse_inject_hosts(source_hosts)
+        addon.BROKER_HOSTS = addon.tjor_identity.parse_broker_hosts(source_hosts)
         addon.BROKER = tb.BrokerState({"source": "pat", "token": cred}, clock=lambda: 0.0) if cred else None
         return addon
 
     def test_authorization_injected_for_destination(self):
         addon = self.make()
-        assert addon.broker_authorization("github.com") == "token tok-123"
-        assert addon.broker_authorization("api.github.com") is None  # not in hosts here
-        assert addon.broker_authorization("evil.test") is None
+        assert addon.broker_authorization("github.com", 443) == "token tok-123"
+        assert addon.broker_authorization("api.github.com", 443) is None  # not in hosts here
+        assert addon.broker_authorization("evil.test", 443) is None
+
+    def test_portless_entry_covers_any_port(self):
+        addon = self.make()
+        assert addon.broker_authorization("github.com", 8443) == "token tok-123"
+
+    def test_port_scoped_entry_does_not_leak_across_ports(self):
+        # Origin scoping (#49): the kube source emits host:port entries; the
+        # same hostname on ANY other port must never receive the credential.
+        addon = self.make(source_hosts="api.cluster.example:6443")
+        assert addon.broker_authorization("api.cluster.example", 6443) == "token tok-123"
+        assert addon.broker_authorization("api.cluster.example", 8443) is None
+        assert addon.broker_authorization("api.cluster.example", 443) is None
+        assert addon.broker_authorization("other.example", 6443) is None
 
     def test_disabled_when_no_broker(self):
         addon = self.make(cred=None)
-        assert addon.broker_authorization("github.com") is None
+        assert addon.broker_authorization("github.com", 443) is None
 
     def test_apply_broker_replaces_placeholder(self):
         pytest.importorskip("mitmproxy")
@@ -161,7 +174,7 @@ class TestBrokerInjection:
 
         addon = self.make()
         flow = types.SimpleNamespace(request=types.SimpleNamespace(
-            host="github.com",
+            host="github.com", port=443,
             headers=Headers([(b"authorization", b"Basic cGxhY2Vob2xkZXI=")]),
         ))
         addon._apply_broker(flow)
@@ -177,7 +190,7 @@ class TestBrokerInjection:
         # a broker configured but unable to mint -> strip the placeholder, inject nothing
         addon.BROKER = tb.BrokerState({"source": "pat"}, clock=lambda: 0.0)  # no token -> None
         flow = types.SimpleNamespace(request=types.SimpleNamespace(
-            host="github.com",
+            host="github.com", port=443,
             headers=Headers([(b"authorization", b"Basic cGxhY2Vob2xkZXI=")]),
         ))
         addon._apply_broker(flow)
@@ -190,7 +203,7 @@ class TestBrokerInjection:
 
         addon = self.make()
         flow = types.SimpleNamespace(request=types.SimpleNamespace(
-            host="other.test",
+            host="other.test", port=443,
             headers=Headers([(b"authorization", b"Bearer agent-own")]),
         ))
         addon._apply_broker(flow)

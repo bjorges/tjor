@@ -458,8 +458,10 @@ prepare_broker() {
                 server="$(kube_server_url)" \
                     || { warn "broker source=kube: could not read the API server from your kubeconfig ('kubectl config view --minify') — set broker.kube_api_host or fix your context. Broker disabled."; return 0; }
             fi
+            local origin
             server="$(python3 "${TJOR_ROOT}/python/tjor_kube.py" url "${server}" 2>/dev/null)" \
                 && api="$(python3 "${TJOR_ROOT}/python/tjor_kube.py" host "${server}" 2>/dev/null)" \
+                && origin="$(python3 "${TJOR_ROOT}/python/tjor_kube.py" origin "${server}" 2>/dev/null)" \
                 || { warn "broker source=kube: could not parse an API host from the server URL — broker disabled"; return 0; }
             local token
             token="$(kubectl create token "${sa}" --namespace "${ns}" --duration "${ttl}" 2>/dev/null)" \
@@ -467,9 +469,9 @@ prepare_broker() {
             [[ -n "${token}" ]] \
                 || { warn "broker source=kube: kubectl returned an empty token — broker disabled"; return 0; }
             write_broker_json "${dir}/broker.json" pat "${token}"
-            hosts="${api}"                       # inject ONLY toward the API server host
+            hosts="${origin}"                    # inject ONLY toward the API server's exact origin (host:port, #49)
             export TJOR_KUBE_SERVER="${server}"  # the agent renders a placeholder kubeconfig for this server
-            export TJOR_KUBE_API_HOST="${api}"   # scoped SSRF-guard exemption at the proxy (#45)
+            export TJOR_KUBE_API_HOST="${api}"   # scoped SSRF-guard exemption at the proxy (#45; hostname-level)
             echo "tjor: kube broker — minted a short-TTL token for SA ${ns}/${sa}; allow the API host in your egress policy:  tjor policy add ${api}" >&2 ;;
         *) warn "unknown broker.source '${source}' — broker disabled"; return 0 ;;
     esac

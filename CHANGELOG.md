@@ -6,6 +6,16 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 ## [Unreleased]
 
 ### Added
+- **Kube credential injection is scoped to the exact API origin (#49).**
+  Brokered-credential destinations matched on hostname alone, so any service
+  on the API server's hostname but a different port would receive the same
+  ServiceAccount token. Broker destination entries now take an optional port
+  (`host:6443`, `[2001:db8::1]:6443`, parsed/matched in `tjor_identity` beside
+  the shared host matcher), the proxy matches host AND port per request, and
+  the kube source always emits the API server's exact origin (explicit port or
+  https default 443). Port-less entries (pat/github-app configs) behave
+  exactly as before. Agent images must be rebuilt (port-aware helper-wiring
+  check in the entrypoint).
 - **Scoped SSRF-guard exemption for the kube broker's API host (#45).** A
   private-endpoint cluster (on-prem, private AKS/EKS) resolves to a non-global
   address and was blocked by `ip_guard` even when the policy allowed it —

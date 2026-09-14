@@ -57,7 +57,7 @@ TOML
 PATH="${MOCKBIN}:${PATH}" run_prepare
 
 [[ "${TJOR_BROKER_ENABLED:-}" == "1" ]] && ok "kube broker enabled on happy path" || bad "kube broker not enabled"
-[[ "${TJOR_BROKER_HOSTS:-}" == "api.test.example" ]] && ok "injection scoped to derived API host" || bad "TJOR_BROKER_HOSTS='${TJOR_BROKER_HOSTS:-}' != api.test.example"
+[[ "${TJOR_BROKER_HOSTS:-}" == "api.test.example:6443" ]] && ok "injection scoped to the exact API origin (host:port, #49)" || bad "TJOR_BROKER_HOSTS='${TJOR_BROKER_HOSTS:-}' != api.test.example:6443"
 [[ "${TJOR_KUBE_SERVER:-}" == "${SERVER_URL}" ]] && ok "agent gets API server URL for placeholder kubeconfig" || bad "TJOR_KUBE_SERVER='${TJOR_KUBE_SERVER:-}'"
 [[ "${TJOR_KUBE_API_HOST:-}" == "api.test.example" ]] && ok "proxy gets the API host for the scoped ip_guard exemption (#45)" || bad "TJOR_KUBE_API_HOST='${TJOR_KUBE_API_HOST:-}' != api.test.example"
 
@@ -92,7 +92,7 @@ kube_sa = "ci-runner"
 kube_api_host = "https://pinned.example.com:6443"
 TOML
 PATH="${MOCKBIN}:${PATH}" run_prepare
-[[ "${TJOR_BROKER_HOSTS:-}" == "pinned.example.com" && "${TJOR_KUBE_SERVER:-}" == "https://pinned.example.com:6443" ]] \
+[[ "${TJOR_BROKER_HOSTS:-}" == "pinned.example.com:6443" && "${TJOR_KUBE_SERVER:-}" == "https://pinned.example.com:6443" ]] \
     && ok "kube_api_host override wins over kubeconfig" || bad "override not honored (hosts='${TJOR_BROKER_HOSTS:-}', server='${TJOR_KUBE_SERVER:-}')"
 
 # === 3. Fail-closed: empty kube_sa ========================================

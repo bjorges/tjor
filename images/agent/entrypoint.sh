@@ -217,9 +217,12 @@ import sys
 sys.path.insert(0, "/opt/tjor/python")
 import tjor_identity
 
-hosts = tjor_identity.parse_inject_hosts(os.environ.get("TJOR_BROKER_HOSTS", ""))
-covered = tjor_identity.should_inject(hosts, "github.com") \
-    or tjor_identity.should_inject(hosts, "gist.github.com")
+pairs = tjor_identity.parse_broker_hosts(os.environ.get("TJOR_BROKER_HOSTS", ""))
+# Port-aware (#49): git talks to GitHub on 443 — a broker scoped to another
+# port would never have its credential injected there, so the placeholder
+# would only break git; coverage means github/gist on 443 specifically.
+covered = tjor_identity.broker_covers(pairs, "github.com", 443) \
+    or tjor_identity.broker_covers(pairs, "gist.github.com", 443)
 sys.exit(0 if covered else 1)
 PY
     then

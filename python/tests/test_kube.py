@@ -40,6 +40,29 @@ class TestApiHost:
             tjor_kube.api_host(bad)
 
 
+class TestApiOrigin:
+    """Exact host:port injection scope (#49)."""
+
+    @pytest.mark.parametrize(
+        "server,expected",
+        [
+            ("https://api.k8s.example.com:6443", "api.k8s.example.com:6443"),
+            ("https://api.k8s.example.com", "api.k8s.example.com:443"),  # https default
+            ("api.k8s.example.com:6443", "api.k8s.example.com:6443"),
+            ("https://10.0.0.1:6443", "10.0.0.1:6443"),
+            ("https://[2001:db8::1]:6443", "[2001:db8::1]:6443"),
+            ("https://[2001:db8::1]", "[2001:db8::1]:443"),
+        ],
+    )
+    def test_origin_composed(self, server, expected):
+        assert tjor_kube.api_origin(server) == expected
+
+    @pytest.mark.parametrize("bad", ["", "https://", "https://:6443"])
+    def test_missing_host_raises(self, bad):
+        with pytest.raises(ValueError):
+            tjor_kube.api_origin(bad)
+
+
 class TestNormalizeServer:
     def test_adds_https_when_missing(self):
         assert tjor_kube.normalize_server("api:6443") == "https://api:6443"

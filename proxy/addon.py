@@ -51,7 +51,10 @@ if not IDENTITY.valid:
 # from the agent network). The agent holds a placeholder; the proxy swaps in
 # the real, short-TTL credential toward the destination host(s) only.
 BROKER = None
-BROKER_HOSTS = tjor_identity.parse_inject_hosts(os.environ.get("TJOR_BROKER_HOSTS", ""))
+# Origin-scoped (#49): entries may carry a port (`host:6443`); a port-less
+# entry covers any port (pat/github-app back-compat). The kube source always
+# scopes to the API server's exact origin.
+BROKER_HOSTS = tjor_identity.parse_broker_hosts(os.environ.get("TJOR_BROKER_HOSTS", ""))
 _broker_config = os.environ.get("TJOR_BROKER_CONFIG", "")
 if _broker_config and BROKER_HOSTS:
     try:
@@ -358,11 +361,12 @@ def _apply_identity(flow) -> None:
 
 # ---------------------------------------------------------- credential broker
 
-def broker_authorization(host: str) -> str | None:
-    """Testable seam: the Authorization value to inject toward `host`, or
-    None if this host is not a broker destination or no credential is
-    available (fail-closed)."""
-    if BROKER is None or not tjor_identity.should_inject(BROKER_HOSTS, host):
+def broker_authorization(host: str, port: int) -> str | None:
+    """Testable seam: the Authorization value to inject toward `host:port`, or
+    None if this origin is not a broker destination or no credential is
+    available (fail-closed). Origin-scoped (#49): a port-scoped destination
+    entry never matches the same hostname on a different port."""
+    if BROKER is None or not tjor_identity.broker_covers(BROKER_HOSTS, host, port):
         return None
     try:
         return BROKER.authorization()
@@ -377,10 +381,10 @@ def _apply_broker(flow) -> None:
     it sent is overwritten. Fail-closed: if no credential is available, the
     placeholder is STRIPPED (never forwarded) so the upstream rejects rather
     than the agent's placeholder leaking or a stale token being used."""
-    host = flow.request.host
-    if BROKER is None or not tjor_identity.should_inject(BROKER_HOSTS, host):
+    host, port = flow.request.host, flow.request.port
+    if BROKER is None or not tjor_identity.broker_covers(BROKER_HOSTS, host, port):
         return
-    auth = broker_authorization(host)
+    auth = broker_authorization(host, port)
     if "authorization" in flow.request.headers:
         del flow.request.headers["authorization"]
     if auth is not None:

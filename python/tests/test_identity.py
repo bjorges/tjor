@@ -111,3 +111,44 @@ class TestInjectHosts:
     def test_parse_formats(self):
         assert ti.parse_inject_hosts("") == []
         assert ti.parse_inject_hosts("a.test,b.test c.test") == ["a.test", "b.test", "c.test"]
+
+
+class TestBrokerHostPairs:
+    """Origin-scoped broker destinations (#49): optional `:port` per entry."""
+
+    def test_parse_port_scoped_and_portless(self):
+        assert ti.parse_broker_hosts("github.com, api.cluster.example:6443") == [
+            ("github.com", None),
+            ("api.cluster.example", 6443),
+        ]
+
+    def test_parse_bracketed_ipv6(self):
+        assert ti.parse_broker_hosts("[2001:db8::1]:6443") == [("2001:db8::1", 6443)]
+
+    def test_bare_ipv6_never_mis_split(self):
+        # a trailing :1 group must not be read as a port
+        assert ti.parse_broker_hosts("2001:db8::1") == [("2001:db8::1", None)]
+
+    def test_oversized_port_suffix_stays_a_plain_glob(self):
+        # >5 digits is not a port; the entry is left whole (and, containing a
+        # colon, can never match a hostname — failing toward non-injection)
+        assert ti.parse_broker_hosts("host.test:123456") == [("host.test:123456", None)]
+
+    def test_portless_covers_any_port(self):
+        pairs = ti.parse_broker_hosts("github.com")
+        assert ti.broker_covers(pairs, "github.com", 443)
+        assert ti.broker_covers(pairs, "github.com", 8443)
+        assert not ti.broker_covers(pairs, "example.com", 443)
+
+    def test_port_scoped_covers_exactly_one_origin(self):
+        pairs = ti.parse_broker_hosts("api.cluster.example:6443")
+        assert ti.broker_covers(pairs, "api.cluster.example", 6443)
+        assert not ti.broker_covers(pairs, "api.cluster.example", 443)
+        assert not ti.broker_covers(pairs, "api.cluster.example", 8443)
+        assert not ti.broker_covers(pairs, "other.example", 6443)
+
+    def test_glob_host_with_port_scope(self):
+        pairs = ti.parse_broker_hosts("*.github.com:443")
+        assert ti.broker_covers(pairs, "gist.github.com", 443)
+        assert not ti.broker_covers(pairs, "gist.github.com", 8443)
+        assert not ti.broker_covers(pairs, "github.com", 443)  # apex: matcher semantics

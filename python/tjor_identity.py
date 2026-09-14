@@ -86,6 +86,39 @@ def should_inject(inject_hosts: list[str], host: str) -> bool:
     return any(tjor_policy.host_matches(pattern, host) for pattern in inject_hosts)
 
 
+def parse_broker_hosts(raw: str) -> list[tuple[str, int | None]]:
+    """Broker destination entries: comma/whitespace-separated host globs, each
+    optionally scoped to ONE port (``host:6443``, ``[2001:db8::1]:6443``). A
+    ``:port`` suffix (1-5 digits) counts as scope only when the prefix is
+    bracketed or colon-free, so a bare IPv6 literal is never mis-split.
+    Returns ``(host_glob, port | None)`` pairs; ``None`` means any port — the
+    pre-#49 behavior, kept for pat/github-app configs."""
+    pairs: list[tuple[str, int | None]] = []
+    for entry in parse_inject_hosts(raw):
+        m = re.fullmatch(r"\[(.+)\]:(\d{1,5})", entry)
+        if not m:
+            m = re.fullmatch(r"([^:]+):(\d{1,5})", entry)
+        if m:
+            pairs.append((m.group(1), int(m.group(2))))
+        else:
+            pairs.append((entry, None))
+    return pairs
+
+
+def broker_covers(pairs: list[tuple[str, int | None]], host: str, port: int) -> bool:
+    """True when any ``(host glob, scoped port)`` pair covers ``host:port`` —
+    the host through the shared policy matcher, the port by equality when the
+    entry scopes one (a port-less entry covers any port). Credential injection
+    is origin-scoped (#49): a same-hostname service on a different port never
+    receives the brokered credential."""
+    for pattern, scoped in pairs:
+        if not tjor_policy.host_matches(pattern, host):
+            continue
+        if scoped is None or scoped == int(port):
+            return True
+    return False
+
+
 def transform(
     identity: Identity, existing: Mapping[str, str], inject: bool
 ) -> tuple[dict[str, str], dict[str, str]]:

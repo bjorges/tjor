@@ -9,10 +9,12 @@ agent holds only a placeholder; the real token never enters the cage.
 These are the two PURE transforms that path needs, kept here (not inline in the
 launcher/entrypoint) so they are unit-tested against the real code that runs:
 
-  * `api_host(server)` — the host of a kubeconfig cluster server URL, used both
-    as the broker's inject host and as the egress-allowlist target the operator
-    must `tjor policy add`. Injection is host-scoped (port-agnostic, like the
-    policy), so the host alone is the match key.
+  * `api_host(server)` — the host of a kubeconfig cluster server URL: the
+    egress-allowlist target the operator must `tjor policy add`, and the
+    proxy's scoped SSRF-guard exemption (#45). Hostname-level questions only.
+  * `api_origin(server)` — the exact `host:port` origin (#49): the broker's
+    injection scope, so the SA token never reaches a same-hostname service on
+    a different port. Explicit port, else the https default 443.
   * `kubeconfig(server, ca_path, token)` — a minimal in-cage kubeconfig that
     points at the REAL API server but carries only a PLACEHOLDER bearer token;
     `kubectl` sends `Authorization: Bearer <placeholder>` and the proxy
@@ -55,6 +57,19 @@ def api_host(server):
     return host
 
 
+def api_origin(server):
+    """Exact ``host:port`` origin of a kubeconfig cluster server URL (#49) —
+    the kube broker's injection scope. Uses the URL's explicit port, else the
+    https default 443; an IPv6 host is bracketed so the port suffix parses
+    unambiguously."""
+    parsed = urllib.parse.urlparse(normalize_server(server))
+    host = parsed.hostname
+    if not host:
+        raise ValueError(f"no host in API server URL: {server!r}")
+    port = parsed.port or 443
+    return (f"[{host}]:{port}") if ":" in host else f"{host}:{port}"
+
+
 def kubeconfig(server, ca_path, token=PLACEHOLDER_TOKEN):
     """A minimal placeholder kubeconfig (JSON) for the caged kubectl.
 
@@ -79,11 +94,13 @@ def kubeconfig(server, ca_path, token=PLACEHOLDER_TOKEN):
 
 def _main(argv):
     if len(argv) < 2:
-        sys.exit("usage: tjor_kube.py {host|url|config} ...")
+        sys.exit("usage: tjor_kube.py {host|origin|url|config} ...")
     cmd = argv[1]
     try:
         if cmd == "host":  # host <server>
             print(api_host(argv[2]))
+        elif cmd == "origin":  # origin <server>  -> host:port injection scope (#49)
+            print(api_origin(argv[2]))
         elif cmd == "url":  # url <server>  -> canonical https URL
             print(normalize_server(argv[2]))
         elif cmd == "config":  # config <server> <ca_path> [token]
