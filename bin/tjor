@@ -837,9 +837,9 @@ run_agent() { # $1 = detach flag, $2.. = command
     # Works on every runtime, even where Landlock is unavailable; a mount
     # target cannot be unlinked or replaced from inside the container.
     # Residual (documented): a dotenv file created mid-session is not masked.
+    local mp deny_list
+    declare -A masked=()
     if [[ "$(cfg landlock.mask_dotenv --default true)" != "false" ]]; then
-        local mp deny_list
-        declare -A masked=()
         for dir in "${safe[@]:-}"; do
             [[ -n "${dir}" ]] || continue
             # NUL-delimited: a filename may contain anything but NUL. Skip
@@ -854,25 +854,29 @@ run_agent() { # $1 = detach flag, $2.. = command
                         ! -name '*.example' ! -name '*.sample' ! -name '*.template' \
                         -print0 2>/dev/null)
         done
-        # Operator-configured extra mask paths ([landlock].deny_paths).
-        deny_list="$(cfg landlock.deny_paths --default '[]' | python3 -c '
+    fi
+    # Operator-configured extra mask paths ([landlock].deny_paths) — applied
+    # INDEPENDENTLY of mask_dotenv (#48): the toggle above governs only the
+    # automatic .env discovery; an explicitly configured deny path must never
+    # be silently dropped by an unrelated setting (config may only extend the
+    # deny set, never weaken it — spec: kernel-sandbox).
+    deny_list="$(cfg landlock.deny_paths --default '[]' | python3 -c '
 import json, sys
 for p in json.load(sys.stdin):
     if "\n" in p:
         raise SystemExit("landlock.deny_paths entry contains a newline: %r" % p)
     print(p)')" || die "invalid landlock.deny_paths"
-        while IFS= read -r mp; do
-            [[ -n "${mp}" ]] || continue
-            [[ -n "${masked[${mp}]:-}" ]] && continue
-            if [[ -f "${mp}" ]]; then
-                masked["${mp}"]=1
-                mounts+=(--volume "/dev/null:${mp}:ro")
-                echo "tjor: + dotenv mask ${mp} (deny_paths)" >&2
-            else
-                warn "landlock.deny_paths entry not maskable (no such file at launch): ${mp}"
-            fi
-        done <<<"${deny_list}"
-    fi
+    while IFS= read -r mp; do
+        [[ -n "${mp}" ]] || continue
+        [[ -n "${masked[${mp}]:-}" ]] && continue
+        if [[ -f "${mp}" ]]; then
+            masked["${mp}"]=1
+            mounts+=(--volume "/dev/null:${mp}:ro")
+            echo "tjor: + dotenv mask ${mp} (deny_paths)" >&2
+        else
+            warn "landlock.deny_paths entry not maskable (no such file at launch): ${mp}"
+        fi
+    done <<<"${deny_list}"
     # Agent profile (#29): mount the credential-filtered staging dir read-only
     # and tell the entrypoint where to overlay it. Empty env when no profile.
     local profile_env=""

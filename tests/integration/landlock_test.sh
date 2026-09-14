@@ -32,6 +32,7 @@ cleanup() {
     set +e
     docker ps -aq --filter "label=tjor.workspace=${REPO}" | xargs -r docker rm -f >/dev/null 2>&1
     [[ -n "${SID:-}" ]] && ( cd "${REPO}" 2>/dev/null && "${T}" down --session ll >/dev/null 2>&1 )
+    ( cd "${REPO}" 2>/dev/null && "${T}" down --session dp >/dev/null 2>&1 )
     docker network rm "tjor-${SID:-nope}_internal" >/dev/null 2>&1
     rm -rf "${REPO}" "${SCRATCH}" "${HOME}"/.tjor/sessions/landlock-repo-*
     return 0
@@ -145,6 +146,28 @@ PROBE
 else
     echo "ok   (skipped live-session half: engine has no Landlock)"
 fi
+
+# ---- A2. deny_paths is independent of mask_dotenv (#48) ----------------------
+# The deny-paths loop used to be nested inside the mask_dotenv gate, so
+# mask_dotenv = false silently dropped every explicitly configured deny path.
+# Launcher-side masking decision — needs no Landlock support on the engine.
+mkdir -p "${REPO}"
+( cd "${REPO}" && git init -q 2>/dev/null || true )
+printf 'API_KEY=%s\n' "${SECRET}" > "${REPO}/.env"
+echo "deny-me-${SECRET}" > "${REPO}/denyme.txt"
+USERCFG="${SCRATCH}/usercfg"
+mkdir -p "${USERCFG}/tjor"
+cat > "${USERCFG}/tjor/config.toml" <<CFG
+[landlock]
+mask_dotenv = false
+deny_paths = ["${REPO}/denyme.txt"]
+CFG
+( cd "${REPO}" && XDG_CONFIG_HOME="${USERCFG}" "${T}" run --session dp -- true < /dev/null > "${SCRATCH}/dp.out" 2>&1 || true )
+check "deny_paths mask applied with mask_dotenv=false (#48)" \
+    grep -q "dotenv mask ${REPO}/denyme.txt (deny_paths)" "${SCRATCH}/dp.out"
+check "mask_dotenv=false skips automatic dotenv discovery" bash -c \
+    "! grep -q 'dotenv mask ${REPO}/.env\$' '${SCRATCH}/dp.out'"
+( cd "${REPO}" && "${T}" down --session dp >/dev/null 2>&1 )
 
 # ---- B. handoff branches on the image, Landlock forced unavailable -----------
 # auto + unavailable: LOUD degradation, still runs.

@@ -3,6 +3,16 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+### Fixed
+- **`landlock.deny_paths` no longer silently disabled by `mask_dotenv = false`
+  (#48).** The deny-paths masking loop was nested inside the dotenv-discovery
+  toggle, so opting out of automatic `.env` masking also dropped every
+  explicitly configured deny path — with no warning, in the dangerous
+  direction. The two are now independent: `deny_paths` masks apply
+  unconditionally; `mask_dotenv` governs only the automatic discovery.
+
 ## [0.13.1] — 2026-09-14 — Interactive sessions actually interactive (#51, #52)
 
 ### Fixed
