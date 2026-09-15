@@ -3,7 +3,12 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.16.0] — 2026-09-15 — Read-only mounts + project-config neutralization (#43, #44, #46)
+
+The hardened-profile building blocks: a mounted tree the agent structurally
+cannot write, project config that structurally cannot execute, and harness
+policy the agent structurally cannot override. Each enforced at the
+container/mount level on every runtime, with the kernel tier in agreement.
 
 ### Added
 - **`tjor run --dir-ro <path>`: true read-only repo mounts (#44).** Mounted
