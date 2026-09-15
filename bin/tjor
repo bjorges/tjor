@@ -548,8 +548,12 @@ prepare_gateway() {
 export_static_env() {
     # Strict config validation (#39): warn loudly on unknown config keys once
     # per launch (a typo silently falling back to a default is a security-
-    # relevant footgun). Non-blocking; the per-key cfg() reads stay quiet.
-    python3 "${TJOR_ROOT}/python/tjor_cfg.py" check || true
+    # relevant footgun). Non-blocking — EXCEPT under the security-enforcing
+    # tables ([landlock]/[broker]), where a typo'd key silently weakening the
+    # boundary is exactly the unattended/CI failure mode, so check exits
+    # nonzero and the launch aborts. The per-key cfg() reads stay quiet.
+    python3 "${TJOR_ROOT}/python/tjor_cfg.py" check \
+        || die "config validation failed (see above)"
     export TJOR_PROXY_IMAGE="tjor-proxy:local"
     TJOR_COREDNS_IMAGE="$(cfg images.coredns)"
     TJOR_PROXY_PORT="$(cfg proxy.port --default 8080)"

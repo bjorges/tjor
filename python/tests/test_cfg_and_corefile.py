@@ -89,6 +89,38 @@ class TestConfigMerge:
         assert "unknown config key 'landlok'" in err
         assert "port" not in err  # a known key must not warn
 
+    def test_check_aborts_on_unknown_landlock_key(self, tmp_path, monkeypatch):
+        import pytest
+
+        # A typo INSIDE a security-enforcing table must abort, not warn: the
+        # operator asked for a boundary setting that would silently not apply.
+        user = tmp_path / "config.toml"
+        user.write_text('[landlock]\nmodee = "require"\n')
+        monkeypatch.setenv("TJOR_USER_CONFIG", str(user))
+        monkeypatch.delenv("TJOR_REPO_ROOT", raising=False)
+        with pytest.raises(SystemExit) as exc:
+            tjor_cfg.check()
+        assert "landlock.modee" in str(exc.value)
+        assert "refusing to launch" in str(exc.value)
+
+    def test_check_aborts_on_unknown_broker_key(self, tmp_path, monkeypatch):
+        import pytest
+
+        user = tmp_path / "config.toml"
+        user.write_text('[broker]\nsuorce = "kube"\n')
+        monkeypatch.setenv("TJOR_USER_CONFIG", str(user))
+        monkeypatch.delenv("TJOR_REPO_ROOT", raising=False)
+        with pytest.raises(SystemExit) as exc:
+            tjor_cfg.check()
+        assert "broker.suorce" in str(exc.value)
+
+    def test_check_valid_security_table_keys_do_not_abort(self, tmp_path, monkeypatch):
+        user = tmp_path / "config.toml"
+        user.write_text('[landlock]\nmode = "require"\ndeny_paths = ["/x"]\n')
+        monkeypatch.setenv("TJOR_USER_CONFIG", str(user))
+        monkeypatch.delenv("TJOR_REPO_ROOT", raising=False)
+        assert tjor_cfg.check() == 0
+
     def test_broken_user_config_is_a_clean_hard_error(self, tmp_path, monkeypatch):
         import pytest
 

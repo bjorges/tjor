@@ -42,6 +42,13 @@ EXTRA_KNOWN = frozenset({
     "gateway.models",   # array of tables of free-form LiteLLM params
 })
 
+# The warn-only stance has one exception: an unknown key INSIDE a table whose
+# keys configure the security boundary itself. There a typo means the operator
+# believes a stricter setting is applied when it is not — in unattended/CI use
+# nobody reads the warning, so it aborts the launch instead. A misspelled
+# TABLE name still only warns: it cannot claim to configure these tables.
+SECURITY_TABLES = frozenset({"landlock", "broker"})
+
 
 def validate_layer(layer: dict, shape: dict, path: str = "") -> list[str]:
     """Return the dotted paths of keys in `layer` that are not part of `shape`
@@ -136,12 +143,16 @@ def check(stream=None) -> int:
     (never silently) on unknown keys, naming the source file. Returns the count
     of unknown keys found. Non-blocking by design — a stray key warns but does
     not abort (matching the untrusted-repo-config behavior); the point is that a
-    typo can no longer pass unnoticed. Kept out of effective() so the launcher's
-    many per-key reads stay quiet; call this once per launch."""
+    typo can no longer pass unnoticed. The exception is SECURITY_TABLES: an
+    unknown key under [landlock]/[broker] raises ConfigError — there a silent
+    fallback to the default weakens the boundary the operator asked for. Kept
+    out of effective() so the launcher's many per-key reads stay quiet; call
+    this once per launch."""
     if stream is None:
         stream = sys.stderr
     shape = _load(DEFAULTS)
     total = 0
+    fatal: list[str] = []
     layers = [("user config", user_config_path())]
     repo = repo_config_path()
     if repo is not None:
@@ -156,12 +167,23 @@ def check(stream=None) -> int:
             continue
         unknown = validate_layer(_load(path), shape)
         for key in unknown:
+            if key.split(".", 1)[0] in SECURITY_TABLES:
+                fatal.append(f"'{key}' in {label} ({path})")
+                continue
             print(
                 f"tjor_cfg: WARNING: unknown config key '{key}' in {label} ({path}) "
                 "— ignored (typo? it will fall back to the default)",
                 file=stream,
             )
         total += len(unknown)
+    if fatal:
+        raise ConfigError(
+            "unknown config key under a security-critical table: "
+            + "; ".join(fatal)
+            + " — refusing to launch: a typo here would silently fall back to "
+            "the default, weakening the boundary you asked for. Fix or remove "
+            "the key."
+        )
     return total
 
 
@@ -187,7 +209,8 @@ def _main(argv: list[str]) -> int:
     args = parser.parse_args(argv)
 
     if args.cmd == "check":
-        # Warnings go to stderr; exit 0 so a stray key never blocks a launch.
+        # Warnings go to stderr; exit 0 so a stray key never blocks a launch —
+        # except under SECURITY_TABLES, where check() raises ConfigError.
         check()
         return 0
 
