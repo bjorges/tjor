@@ -3,6 +3,21 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+### Testing
+- **End-to-end hostile-filename regression test for the dotenv-mask
+  escape-injection fix.** The v0.15.0 fix was covered only by the sanitizer's
+  own unit tests; the re-review flagged the missing wiring-level check. The
+  landlock integration test now plants a `.env.*` file whose NAME carries a
+  raw ANSI escape and asserts the real `tjor run` launch announces it
+  sanitized (`^[`) with no raw ESC byte on any mask line.
+- **Regression test for malformed bracketed-IPv6 broker entries with an
+  oversized port.** `[host]:PORT` with a >5-digit suffix (previously verified
+  correct only by manual regex tracing) is now locked in: the entry stays
+  verbatim — never unbracketed into an any-port glob — covers no request
+  host on any port, and leaves well-formed neighbor entries unaffected.
+
 ## [0.15.0] — 2026-09-15 — Security-review follow-ups + automated releases
 
 External security review of v0.11.0–v0.14.0 (three specialist passes: security,

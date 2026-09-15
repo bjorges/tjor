@@ -141,6 +141,21 @@ class TestBrokerHostPairs:
         # colon, can never match a hostname — failing toward non-injection)
         assert ti.parse_broker_hosts("host.test:123456") == [("host.test:123456", None)]
 
+    def test_bracketed_entry_with_oversized_port_stays_whole(self):
+        # [host]:PORT with a >5-digit suffix matches neither port regex, and
+        # the portless-bracket fallback requires the entry to END in "]" — so
+        # the malformed entry is kept verbatim, NOT unbracketed into a
+        # portless (any-port) glob for the bare literal. Brackets and colons
+        # are literal to the matcher, so it can never cover a request host:
+        # failing toward non-injection. A well-formed neighbor is unaffected.
+        assert ti.parse_broker_hosts("[2001:db8::1]:123456") == [
+            ("[2001:db8::1]:123456", None)
+        ]
+        pairs = ti.parse_broker_hosts("[2001:db8::1]:123456, github.com:443")
+        assert not ti.broker_covers(pairs, "2001:db8::1", 443)
+        assert not ti.broker_covers(pairs, "2001:db8::1", 123456)
+        assert ti.broker_covers(pairs, "github.com", 443)
+
     def test_portless_covers_any_port(self):
         pairs = ti.parse_broker_hosts("github.com")
         assert ti.broker_covers(pairs, "github.com", 443)

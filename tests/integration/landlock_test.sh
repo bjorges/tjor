@@ -202,6 +202,12 @@ check "invalid mode names the bad value" grep -q "invalid TJOR_LANDLOCK mode 'al
 # ---- C. masking is independent of the kernel tier ----------------------------
 # Launcher-side mount masks hold even with the tier forced off — needs no
 # Landlock support on the engine, so this always runs.
+# Escape-injection regression (v0.15.0 security fix): a dotenv FILENAME planted
+# in the (untrusted) repo carrying a raw ANSI escape must reach the operator's
+# terminal sanitized (ESC rendered visibly as ^[ by tjor_safeprint) through the
+# REAL launch path — the sanitizer's own unit tests don't cover the wiring.
+EVIL="${REPO}/.env.$(printf '\033')[31mEVIL"
+printf 'PWNED=%s\n' "${SECRET}" > "${EVIL}"
 cat > "${USERCFG}/tjor/config.toml" <<CFG
 [landlock]
 mode = "off"
@@ -209,6 +215,10 @@ CFG
 ( cd "${REPO}" && XDG_CONFIG_HOME="${USERCFG}" "${T}" run --session mo -- true < /dev/null > "${SCRATCH}/mo.out" 2>&1 || true )
 check "dotenv mask applied with landlock mode=off" \
     grep -q "dotenv mask ${REPO}/.env" "${SCRATCH}/mo.out"
+check "hostile dotenv filename is announced escape-sanitized" \
+    grep -q 'dotenv mask .*\.env\.\^\[\[31mEVIL' "${SCRATCH}/mo.out"
+check "no raw ESC byte on any dotenv-mask line" bash -c \
+    "! grep 'dotenv mask' '${SCRATCH}/mo.out' | grep -q \"\$(printf '\033')\""
 ( cd "${REPO}" && "${T}" down --session mo >/dev/null 2>&1 )
 
 echo
