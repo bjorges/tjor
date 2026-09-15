@@ -2,8 +2,9 @@ name: publish-images
 
 # Build and push prebuilt, uid-agnostic, multi-arch agent images (plus proxy
 # and conformance) to GHCR on each release tag, so `tjor run` pulls instead of
-# building on first use. Separate from the test CI: a publish failure never
-# blocks tests.
+# building on first use. Also creates the GitHub Release from the tag's
+# CHANGELOG section, so tagging is the only manual release step. Separate from
+# the test CI: a publish failure never blocks tests.
 on:
   push:
     tags: ["v*"]
@@ -111,3 +112,43 @@ jobs:
           tags: |
             ghcr.io/${{ github.repository_owner }}/tjor-proxy:${{ steps.v.outputs.version }}
             ghcr.io/${{ github.repository_owner }}/tjor-proxy:latest
+
+  release:
+    # Create the GitHub Release for the pushed tag, with the matching
+    # CHANGELOG section as the notes. Deliberately independent of the image
+    # jobs: a failed image build should not hide the release notes (re-run the
+    # failed job instead). Idempotent: an existing release is left untouched.
+    if: github.ref_type == 'tag'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: extract release notes from CHANGELOG
+        id: notes
+        run: |
+          ver="${GITHUB_REF_NAME#v}"
+          awk -v ver="$ver" '
+            /^## \[/ { if (grab) exit; if (index($0, "## [" ver "]") == 1) grab = 1; next }
+            grab { print }
+          ' CHANGELOG.md > notes.md
+          # Title from the heading: "## [X.Y.Z] — date — <title>" -> "<title>"
+          title="$(sed -n "s/^## \[${ver}\] — [0-9-]* — //p" CHANGELOG.md | head -1)"
+          echo "title=${title}" >> "$GITHUB_OUTPUT"
+      - name: create release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TITLE: ${{ steps.notes.outputs.title }}
+        run: |
+          if gh release view "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            echo "release $GITHUB_REF_NAME already exists; leaving it untouched"
+            exit 0
+          fi
+          if [ -s notes.md ]; then
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --verify-tag --title "$GITHUB_REF_NAME — ${TITLE:-release}" --notes-file notes.md
+          else
+            echo "::warning::no CHANGELOG section for $GITHUB_REF_NAME; using generated notes"
+            gh release create "$GITHUB_REF_NAME" --repo "$GITHUB_REPOSITORY" \
+              --verify-tag --title "$GITHUB_REF_NAME" --generate-notes
+          fi
