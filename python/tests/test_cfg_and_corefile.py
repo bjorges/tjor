@@ -41,6 +41,7 @@ class TestConfigMerge:
         assert tjor_cfg.get(config, "landlock.mode") == "auto"
         assert tjor_cfg.get(config, "landlock.mask_dotenv") is True
         assert tjor_cfg.get(config, "landlock.deny_paths") == []
+        assert tjor_cfg.get(config, "landlock.mask_dirs") == []
 
     def test_landlock_user_override(self, tmp_path, monkeypatch):
         user = tmp_path / "config.toml"
@@ -60,7 +61,8 @@ class TestConfigMerge:
         shape = tjor_cfg._load(tjor_cfg.DEFAULTS)
         layer = {
             "proxy": {"port": 9000, "ip_guard": False},
-            "landlock": {"mode": "require", "mask_dotenv": False, "deny_paths": ["/x"]},
+            "landlock": {"mode": "require", "mask_dotenv": False, "deny_paths": ["/x"],
+                         "mask_dirs": [".opencode"]},
         }
         assert tjor_cfg.validate_layer(layer, shape) == []
 
@@ -116,7 +118,7 @@ class TestConfigMerge:
 
     def test_check_valid_security_table_keys_do_not_abort(self, tmp_path, monkeypatch):
         user = tmp_path / "config.toml"
-        user.write_text('[landlock]\nmode = "require"\ndeny_paths = ["/x"]\n')
+        user.write_text('[landlock]\nmode = "require"\ndeny_paths = ["/x"]\nmask_dirs = [".opencode"]\n')
         monkeypatch.setenv("TJOR_USER_CONFIG", str(user))
         monkeypatch.delenv("TJOR_REPO_ROOT", raising=False)
         assert tjor_cfg.check() == 0

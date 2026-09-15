@@ -124,6 +124,20 @@ mask_dotenv = true
 # Extra mask paths (absolute; host path == container path for repo mounts).
 # Config can only EXTEND the default deny set, never weaken it.
 deny_paths = []
+# Directory masking (#43): each entry is either an ABSOLUTE directory path
+# (masked directly when present at launch) or a bare directory NAME with no
+# slash (e.g. ".opencode"), discovered recursively in every mounted repo. A
+# matching directory is bind-mounted over with a read-only EMPTY directory,
+# so it is structurally empty in-cage on every runtime — this is what closes
+# the project-config execution surface (.opencode/plugins and .opencode/tools
+# auto-load arbitrary code in opencode) for hardened setups, structurally
+# rather than by detection. Applied independently of mask_dotenv. Glob
+# patterns are not supported; anything that is neither an absolute path nor a
+# bare name aborts the launch. Residual, stated honestly: a directory created
+# mid-session is not masked (launch-time snapshot, like mask_dotenv).
+# Recommended for hardened/read-only investigation profiles:
+#   mask_dirs = [".opencode"]
+mask_dirs = []
 
 [versions]
 # Harness and tool versions are config, not Dockerfile constants (charter L8).

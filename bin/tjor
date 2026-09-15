@@ -389,6 +389,18 @@ prepare_profile() { # $1 = profile name (via [profiles]), $2 = ad-hoc dir
         warn "profile ${src} has no agent/command/skill definitions to deploy — nothing staged"
         return 0
     fi
+    # Managed opencode tier (#46): a staged managed/opencode.json must be
+    # valid JSON. Fail HERE — the operator gets the error where they typed
+    # the profile, before any container work. The entrypoint re-validates
+    # and refuses with the boundary code (defense in depth for launches
+    # that bypass this launcher): a profile must never LOOK hardened
+    # without BEING it.
+    if [[ -f "${stage}/managed/opencode.json" ]]; then
+        python3 -c 'import json, sys; json.load(open(sys.argv[1]))' \
+            "${stage}/managed/opencode.json" 2>/dev/null \
+            || die "profile managed/opencode.json is not valid JSON: ${src}/managed/opencode.json"
+        echo "tjor: agent profile — managed opencode config staged (deployed root-owned in-cage)" >&2
+    fi
     export TJOR_PROFILE_STAGE="${stage}"
     echo "tjor: agent profile — staged ${n} definition file(s) from ${src} (credentials excluded)" >&2
 }
@@ -773,13 +785,14 @@ dir_is_sensitive() { # $1 = absolute path (already symlink-resolved by pwd -P)
 
 cmd_run() {
     local harness="opencode" task="" name="" detach="" unsafe_dir="" profile="" profile_dir=""
-    local -a extra_dirs=()
+    local -a extra_dirs=() extra_dirs_ro=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
             --harness) harness="$2"; shift 2 ;;
             --task) task="$2"; shift 2 ;;
             --session) name="$2"; shift 2 ;;
             --dir) extra_dirs+=("$2"); shift 2 ;;
+            --dir-ro) extra_dirs_ro+=("$2"); shift 2 ;;
             --unsafe-dir) unsafe_dir=1; shift ;;
             --profile) profile="$2"; shift 2 ;;
             --profile-dir) profile_dir="$2"; shift 2 ;;
@@ -807,6 +820,28 @@ cmd_run() {
             die "refusing to mount sensitive host path into the agent: ${abs} (pass --unsafe-dir to override — this exposes it read-write to the agent)"
         fi
         TJOR_EXTRA_DIRS+=("${abs}")
+    done
+    # Read-only extras (--dir-ro, #44): same resolution and refusal rules as
+    # --dir — the sensitive-path gate applies unchanged, because read-only
+    # access still exposes content for exfiltration. A path given BOTH ways
+    # is an ambiguous writability intent and aborts rather than silently
+    # picking one: "ro wins" surprises scripts that append flags, "rw wins"
+    # weakens the stricter intent — the wrong failure direction here.
+    TJOR_EXTRA_DIRS_RO=()
+    for d in "${extra_dirs_ro[@]}"; do
+        [[ -d "${d}" ]] || die "--dir-ro path does not exist or is not a directory: ${d}"
+        abs="$(cd "${d}" && pwd -P)" || die "--dir-ro path unreadable: ${d}"
+        [[ "${abs}" == "${TJOR_WORKSPACE}" ]] \
+            && die "--dir-ro ${abs} is the primary workspace, which is always writable — launch from another directory to attach this one read-only"
+        for seen in "${TJOR_EXTRA_DIRS[@]:-}"; do
+            [[ "${abs}" == "${seen}" ]] \
+                && die "conflicting mounts: ${abs} is given via both --dir and --dir-ro — pick one writability"
+        done
+        for seen in "${TJOR_EXTRA_DIRS_RO[@]:-}"; do [[ "${abs}" == "${seen}" ]] && continue 2; done
+        if [[ -z "${unsafe_dir}" ]] && dir_is_sensitive "${abs}"; then
+            die "refusing to mount sensitive host path into the agent: ${abs} (pass --unsafe-dir to override — even read-only, this exposes its contents to the agent)"
+        fi
+        TJOR_EXTRA_DIRS_RO+=("${abs}")
     done
     resolve_agent_image "${harness}"
     # Collision guard: a session id already backing a running agent must not
@@ -845,6 +880,15 @@ run_agent() { # $1 = detach flag, $2.. = command
     # mis-split — trusting the wrong path and leaving the real repo untrusted.
     # A newline in a mount path is pathological (git can't represent it in a
     # config value either) and is refused below.
+    #
+    # CONTRACT (consumed by the entrypoint; relied on by future work, #53):
+    # TJOR_SAFE_DIRS is the durable in-container record of every
+    # operator-approved mount root, and TJOR_RO_DIRS the subset mounted
+    # read-only — together they carry each root's writability class. Any
+    # future mid-session trust growth (#53's mediated helper) must derive
+    # eligibility from these lists: only a descendant of a WRITABLE approved
+    # root can come into existence during a session, so read-only roots are
+    # structurally ineligible for dynamic registration.
     [[ -n "${TJOR_WORKSPACE:-}" ]] && safe+=("${TJOR_WORKSPACE}")
     for dir in "${TJOR_EXTRA_DIRS[@]:-}"; do
         [[ -n "${dir}" ]] || continue
@@ -852,6 +896,20 @@ run_agent() { # $1 = detach flag, $2.. = command
         mounts+=(--volume "${dir}:${dir}")
         safe+=("${dir}")
         echo "tjor: + repo mount ${dir}" >&2
+    done
+    # Read-only extras (#44): the container-level :ro IS the enforcement —
+    # it binds the whole container (docker exec included) on every runtime;
+    # the kernel tier merely AGREES (--allow-read, entrypoint step 6). Still
+    # a repo mount in every other sense: git-trusted (safe list) and covered
+    # by the launch-time mask discovery below.
+    local ro_dirs=""
+    for dir in "${TJOR_EXTRA_DIRS_RO[@]:-}"; do
+        [[ -n "${dir}" ]] || continue
+        verify_bind_source "${dir}"
+        mounts+=(--volume "${dir}:${dir}:ro")
+        safe+=("${dir}")
+        ro_dirs+="${dir}"$'\n'
+        echo "tjor: + repo mount ${dir} (read-only)" >&2
     done
     local safe_dirs=""
     for dir in "${safe[@]:-}"; do
@@ -867,8 +925,71 @@ run_agent() { # $1 = detach flag, $2.. = command
     # Works on every runtime, even where Landlock is unavailable; a mount
     # target cannot be unlinked or replaced from inside the container.
     # Residual (documented): a dotenv file created mid-session is not masked.
-    local mp deny_list
+    local mp deny_list entry prev mask_list empty_src
     declare -A masked=()
+    local -A dirmasked=()
+    # Directory masks ([landlock].mask_dirs, #43): extend the /dev/null-style
+    # file masking to DIRECTORIES — a read-only EMPTY host dir bound over
+    # each target makes it structurally empty in-cage on every runtime. This
+    # is the structural close for the project-config execution surface
+    # (.opencode/plugins auto-loads arbitrary code outside the harness
+    # permission matcher). An entry is an absolute path (masked directly,
+    # like deny_paths) or a bare directory name (discovered recursively in
+    # every mounted tree); globs, relative paths, empty strings and newlines
+    # abort. Applied FIRST, before the file masks below, so a file mask is
+    # never queued inside an already-masked directory (Docker cannot create
+    # a mountpoint inside a read-only empty mount — the launch would fail).
+    # Independent of mask_dotenv (#48 class). Directory names discovered in
+    # mounted repos are UNTRUSTED: announcements go through safeprint, the
+    # same escape-injection discipline as the dotenv lines below. Residual
+    # (documented): a directory created mid-session is not masked.
+    mask_list="$(cfg landlock.mask_dirs --default '[]' | python3 -c '
+import json, sys
+for e in json.load(sys.stdin):
+    if not isinstance(e, str) or not e or "\n" in e:
+        raise SystemExit("landlock.mask_dirs entry invalid (empty or newline): %r" % e)
+    if any(c in e for c in "*?["):
+        raise SystemExit("landlock.mask_dirs does not take glob patterns: %r" % e)
+    if not e.startswith("/") and "/" in e:
+        raise SystemExit("landlock.mask_dirs entry must be an absolute path or a bare directory name: %r" % e)
+    print(e)')" || die "invalid landlock.mask_dirs"
+    if [[ -n "${mask_list}" ]]; then
+        # The mask source: a fresh empty dir under the session state root
+        # (already VM-shared — the CA, profile stage and denials log live
+        # there). Recreated every launch; mounted :ro, so nothing in-cage
+        # can put content into it.
+        empty_src="${TJOR_SESSION_DIR}/mask-empty"
+        rm -rf "${empty_src}"
+        mkdir -p "${empty_src}"
+        while IFS= read -r entry; do
+            [[ -n "${entry}" ]] || continue
+            if [[ "${entry}" == /* ]]; then
+                if [[ -d "${entry}" ]]; then
+                    if [[ -z "${masked[${entry}]:-}" ]]; then
+                        masked["${entry}"]=1; dirmasked["${entry}"]=1
+                        mounts+=(--volume "${empty_src}:${entry}:ro")
+                        echo "tjor: + dir mask $(safeprint "${entry}")" >&2
+                    fi
+                else
+                    warn "landlock.mask_dirs entry not maskable (no such directory at launch): $(safeprint "${entry}")"
+                fi
+            else
+                for dir in "${safe[@]:-}"; do
+                    [[ -n "${dir}" ]] || continue
+                    while IFS= read -r -d '' mp; do
+                        [[ -n "${masked[${mp}]:-}" ]] && continue
+                        # A hit nested inside an already-masked dir is
+                        # already structurally empty — and mounting into it
+                        # would fail (read-only empty mountpoint).
+                        for prev in "${!dirmasked[@]}"; do [[ "${mp}" == "${prev}"/* ]] && continue 2; done
+                        masked["${mp}"]=1; dirmasked["${mp}"]=1
+                        mounts+=(--volume "${empty_src}:${mp}:ro")
+                        echo "tjor: + dir mask $(safeprint "${mp}")" >&2
+                    done < <(find "${dir}" -name .git -prune -o -type d -name "${entry}" -print0 2>/dev/null)
+                done
+            fi
+        done <<<"${mask_list}"
+    fi
     if [[ "$(cfg landlock.mask_dotenv --default true)" != "false" ]]; then
         for dir in "${safe[@]:-}"; do
             [[ -n "${dir}" ]] || continue
@@ -876,6 +997,9 @@ run_agent() { # $1 = detach flag, $2.. = command
             # non-secret templates and .git internals.
             while IFS= read -r -d '' mp; do
                 [[ -n "${masked[${mp}]:-}" ]] && continue
+                # Inside a masked directory the file is already unreachable —
+                # and a mount there would fail (read-only empty mountpoint).
+                for prev in "${!dirmasked[@]}"; do [[ "${mp}" == "${prev}"/* ]] && continue 2; done
                 masked["${mp}"]=1
                 mounts+=(--volume "/dev/null:${mp}:ro")
                 # The filename comes from the mounted (untrusted) repo: this
@@ -902,6 +1026,9 @@ for p in json.load(sys.stdin):
     while IFS= read -r mp; do
         [[ -n "${mp}" ]] || continue
         [[ -n "${masked[${mp}]:-}" ]] && continue
+        # An explicit deny path inside a masked directory is already covered
+        # by the stronger structural mask (and unmountable-into anyway).
+        for prev in "${!dirmasked[@]}"; do [[ "${mp}" == "${prev}"/* ]] && continue 2; done
         if [[ -f "${mp}" ]]; then
             masked["${mp}"]=1
             mounts+=(--volume "/dev/null:${mp}:ro")
@@ -947,7 +1074,7 @@ for p in json.load(sys.stdin):
     else
         warn "no terminal on stdin — the agent container gets no PTY; interactive harnesses (claude, opencode TUIs) will NOT work in this session (one-shot commands are unaffected)"
     fi
-    ctr="$(compose run -d "${ttyforce[@]}" "${mounts[@]}" -e TJOR_SAFE_DIRS="${safe_dirs}" -e TJOR_PROFILE_DIR="${profile_env}" "${gw_env[@]}" agent "$@")" || die "failed to start the agent container"
+    ctr="$(compose run -d "${ttyforce[@]}" "${mounts[@]}" -e TJOR_SAFE_DIRS="${safe_dirs}" -e TJOR_RO_DIRS="${ro_dirs}" -e TJOR_PROFILE_DIR="${profile_env}" "${gw_env[@]}" agent "$@")" || die "failed to start the agent container"
     # Fail-closed on the PTY we asked for: if a future compose changes its
     # allocation semantics, abort loudly — never hand the harness a silent
     # pipe-stdin hang that LOOKS like a running session.
@@ -1514,8 +1641,8 @@ tjor — run AI coding agents inside a portable, fail-closed container cage
 
 usage: tjor <command> [args]
 
-  run [--harness opencode|claude|copilot] [--task <id>] [--session <name>] [--dir <path>]... [--unsafe-dir] [--profile <name>|--profile-dir <path>] [--detach] [cmd...]
-                                                     launch a caged session (--dir: mount another repo at its host path — sensitive paths refused unless --unsafe-dir; --profile/--profile-dir: overlay host-defined agents/commands, credential-safe; --detach: start without attaching)
+  run [--harness opencode|claude|copilot] [--task <id>] [--session <name>] [--dir <path>]... [--dir-ro <path>]... [--unsafe-dir] [--profile <name>|--profile-dir <path>] [--detach] [cmd...]
+                                                     launch a caged session (--dir: mount another repo at its host path; --dir-ro: same but READ-ONLY, container-wide — sensitive paths refused unless --unsafe-dir; --profile/--profile-dir: overlay host-defined agents/commands, credential-safe; --detach: start without attaching)
   ls                                                 list all sessions (and re-verify their boundaries)
   attach [session]                                   reattach to a running agent's terminal (short name or full id)
   gc [--age <hours>] [--dry-run]                     reap idle session containers/networks/volumes

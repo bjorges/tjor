@@ -34,6 +34,8 @@ cleanup() {
     [[ -n "${SID:-}" ]] && ( cd "${REPO}" 2>/dev/null && "${T}" down --session ll >/dev/null 2>&1 )
     ( cd "${REPO}" 2>/dev/null && "${T}" down --session dp >/dev/null 2>&1 )
     ( cd "${REPO}" 2>/dev/null && "${T}" down --session mo >/dev/null 2>&1 )
+    ( cd "${REPO}" 2>/dev/null && "${T}" down --session m3 >/dev/null 2>&1 )
+    ( cd "${REPO}" 2>/dev/null && "${T}" down --session m4 >/dev/null 2>&1 )
     docker network rm "tjor-${SID:-nope}_internal" >/dev/null 2>&1
     rm -rf "${REPO}" "${SCRATCH}" "${HOME}"/.tjor/sessions/landlock-repo-*
     return 0
@@ -169,6 +171,64 @@ check "deny_paths mask applied with mask_dotenv=false (#48)" \
 check "mask_dotenv=false skips automatic dotenv discovery" bash -c \
     "! grep -q 'dotenv mask ${REPO}/.env\$' '${SCRATCH}/dp.out'"
 ( cd "${REPO}" && "${T}" down --session dp >/dev/null 2>&1 )
+
+# ---- A3. mask_dirs: project config dirs structurally empty (#43) -------------
+# Launcher-side mount masking — needs no Landlock support, runs on any engine.
+# mask_dotenv=false alongside proves the independence guarantee (#48 class).
+mkdir -p "${REPO}/.opencode/plugins" "${REPO}/subx/.opencode/tools"
+printf 'EVILCODE-%s\n' "${SECRET}" > "${REPO}/.opencode/plugins/evil.js"
+printf 'EVILTOOL\n' > "${REPO}/subx/.opencode/tools/t.js"
+# A hostile PARENT dir name: the announced mask path must reach the terminal
+# escape-sanitized (same discipline as the dotenv lines).
+HD="${REPO}/$(printf '\033')[31mX"
+mkdir -p "${HD}/.opencode"
+cat > "${USERCFG}/tjor/config.toml" <<CFG
+[landlock]
+mode = "off"
+mask_dotenv = false
+mask_dirs = [".opencode"]
+CFG
+M3R="${REPO}/m3-result.txt"
+( cd "${REPO}" && XDG_CONFIG_HOME="${USERCFG}" "${T}" run --session m3 -- sh -c "
+    R='${M3R}'; : > \"\$R\"
+    echo \"top=[\$(ls -A '${REPO}/.opencode' 2>/dev/null | tr '\n' ' ')]\" >> \"\$R\"
+    echo \"nested=[\$(ls -A '${REPO}/subx/.opencode' 2>/dev/null | tr '\n' ' ')]\" >> \"\$R\"
+    (cat '${REPO}/.opencode/plugins/evil.js' >/dev/null 2>&1 && echo 'read=OK' || echo 'read=denied') >> \"\$R\"
+    (touch '${REPO}/.opencode/w' 2>/dev/null && echo 'write=OK' || echo 'write=refused') >> \"\$R\"
+    rm -rf '${REPO}/.opencode' 2>/dev/null
+    ([ -d '${REPO}/.opencode' ] && echo 'unlink=refused' || echo 'unlink=REMOVED') >> \"\$R\"
+    echo DONE >> \"\$R\"
+" < /dev/null > "${SCRATCH}/m3.out" 2>&1 || true )
+m3field() { grep "^$1=" "${M3R}" 2>/dev/null | head -1 | cut -d= -f2-; }
+check "launch announced the .opencode mask" grep -q "dir mask ${REPO}/.opencode" "${SCRATCH}/m3.out"
+check "launch announced the nested .opencode mask" grep -q "dir mask ${REPO}/subx/.opencode" "${SCRATCH}/m3.out"
+check "hostile parent dir name announced escape-sanitized" \
+    grep -q 'dir mask .*\^\[\[31mX/\.opencode' "${SCRATCH}/m3.out"
+check "no raw ESC byte on any dir-mask line" bash -c \
+    "! grep 'dir mask' '${SCRATCH}/m3.out' | grep -q \"\$(printf '\033')\""
+check "masked .opencode lists empty in-cage" test "$(m3field top)" = "[]"
+check "nested .opencode lists empty in-cage" test "$(m3field nested)" = "[]"
+check "plugin file unreadable at its path" test "$(m3field read)" = "denied"
+check "write into the masked dir refused" test "$(m3field write)" = "refused"
+check "masked dir cannot be removed in-cage" test "$(m3field unlink)" = "refused"
+check "plugin content nowhere in the probe result" bash -c "! grep -q 'EVILCODE' '${M3R}'"
+check "mask_dirs applied with mask_dotenv=false (independence)" bash -c \
+    "! grep -q 'dotenv mask ${REPO}/.env' '${SCRATCH}/m3.out'"
+( cd "${REPO}" && "${T}" down --session m3 >/dev/null 2>&1 )
+rm -rf "${HD}"
+
+# Invalid entry (neither absolute nor a bare name) aborts the launch.
+cat > "${USERCFG}/tjor/config.toml" <<CFG
+[landlock]
+mask_dirs = ["foo/bar"]
+CFG
+if ( cd "${REPO}" && XDG_CONFIG_HOME="${USERCFG}" "${T}" run --session m4 -- true < /dev/null > "${SCRATCH}/m4.out" 2>&1 ); then
+    bad "invalid mask_dirs entry aborts the launch"
+else
+    ok "invalid mask_dirs entry aborts the launch"
+fi
+check "invalid mask_dirs error names the key" grep -qi "mask_dirs" "${SCRATCH}/m4.out"
+( cd "${REPO}" && "${T}" down --session m4 >/dev/null 2>&1 )
 
 # ---- B. handoff branches on the image, Landlock forced unavailable -----------
 # auto + unavailable: LOUD degradation, still runs.

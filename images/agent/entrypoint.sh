@@ -150,6 +150,11 @@ for h in harnesses:
             rel = src.relative_to(profile)
             if rel == pathlib.Path("instructions") / "AGENTS.md":
                 continue
+            # managed/ (#46) is not a harness definition dir: its
+            # opencode.json is deployed root-owned to /etc/opencode by the
+            # entrypoint (step 2b), never into the agent-writable config.
+            if rel.parts and rel.parts[0] == "managed":
+                continue
             dst = cfg / rel
             desymlink(dst.parent)
             shutil.copyfile(src, safe_write_target(dst))
@@ -168,6 +173,36 @@ for h in harnesses:
         data["autoupdate"] = False
         cfgfile.write_text(json.dumps(data, indent=2) + "\n")
 PY
+
+# 2b. Managed opencode config tier (#46): a staged profile may carry
+#     managed/opencode.json; deploy it ROOT-owned to opencode's managed
+#     settings path, which opencode loads after — and which cannot be
+#     overridden by — any user- or project-level opencode config. Deployed
+#     before the privilege drop, so the agent user can never write, replace,
+#     or remove it: the one config control that survives whatever trees the
+#     session grows. Invalid JSON aborts with the boundary code — a session
+#     must never LOOK hardened without BEING it (the launcher already
+#     validated; this is the enforcement point for non-launcher starts).
+#     With no staged managed file, a stale one (an earlier restart of this
+#     container) is removed, keeping no-profile behavior identical to
+#     pre-#46. NOTE: OPENCODE_CONFIG_DIR is deliberately NOT set — in the
+#     shipped opencode it REPLACES the global config dir, which would
+#     displace the baseline cargo and autoupdate pin deployed in step 2
+#     (design: add-ro-mounts-and-config-neutralization).
+managed_src="${TJOR_PROFILE_DIR:-}/managed/opencode.json"
+if [[ -n "${TJOR_PROFILE_DIR:-}" && -f "${managed_src}" ]]; then
+    if ! python3 -c 'import json, sys; json.load(open(sys.argv[1]))' "${managed_src}" 2>/dev/null; then
+        echo "tjor-entrypoint: FATAL: staged managed/opencode.json is not valid JSON — refusing to start (a hardened profile must not silently lose its managed settings)." >&2
+        exit "${TJOR_EXIT_BOUNDARY}"
+    fi
+    mkdir -p /etc/opencode
+    chmod 0755 /etc/opencode
+    install -m 0644 -o root -g root "${managed_src}" /etc/opencode/opencode.json
+    echo "tjor-entrypoint: managed opencode config deployed (/etc/opencode/opencode.json, root-owned)" >&2
+else
+    rm -f /etc/opencode/opencode.json
+fi
+unset managed_src
 
 # 3. Git transport: SSH egress is structurally blocked (only proxied
 #    HTTP(S) leaves the cage), so rewrite SSH remotes to HTTPS system-wide.
@@ -374,10 +409,22 @@ elif [[ -n "${landlock_abi}" ]]; then
           --allow-port "${TJOR_PROXY_PORT:-8080}" --allow-localhost-any
           --allow-read "${AGENT_HOME}" --allow-write "${AGENT_HOME}")
     # Grant each further operator-mounted repo (--dir extras) — the same
-    # newline-delimited list git trusts (step 3).
+    # newline-delimited list git trusts (step 3). A root also listed in
+    # TJOR_RO_DIRS was mounted read-only (#44): grant --allow-read so the
+    # kernel tier AGREES with the :ro mount instead of claiming a
+    # writability the mount would refuse anyway (the :ro mount is the
+    # enforcement; this keeps the two layers telling the same story).
+    # Exact-line match (grep -qxF) for the same reason the list is
+    # newline-delimited: paths may contain colons, and a prefix match would
+    # misclassify a sibling.
     if [[ -n "${TJOR_SAFE_DIRS:-}" ]]; then
         while IFS= read -r _d; do
-            [[ -n "${_d}" && "${_d}" != "${project_dir}" ]] && wrap+=(--allow-write "${_d}")
+            [[ -n "${_d}" && "${_d}" != "${project_dir}" ]] || continue
+            if grep -qxF -- "${_d}" <<<"${TJOR_RO_DIRS:-}"; then
+                wrap+=(--allow-read "${_d}")
+            else
+                wrap+=(--allow-write "${_d}")
+            fi
         done <<<"${TJOR_SAFE_DIRS}"
     fi
     exec gosu agent env HOME="${AGENT_HOME}" USER=agent "${wrap[@]}" exec -- "$@"

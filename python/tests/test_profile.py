@@ -131,6 +131,30 @@ class TestStageAllowList:
         staged = tjor_profile.stage(src, tmp_path / "staged")
         assert set(staged) == {"agent/secret-scanner.md", "command/rotate-credentials.md"}
 
+    def test_managed_opencode_json_staged(self, tmp_path):
+        # #46: `managed` is allow-listed; its opencode.json rides the same
+        # staging pipeline (the entrypoint deploys it root-owned to
+        # /etc/opencode and keeps it OUT of the per-harness overlay).
+        src = tmp_path / "profile"
+        _write(src / "managed" / "opencode.json", '{"permission": {"bash": "ask"}}')
+        _write(src / "agent" / "reviewer.md")
+        dest = tmp_path / "staged"
+        staged = tjor_profile.stage(src, dest)
+        assert "managed/opencode.json" in staged
+        assert "agent/reviewer.md" in staged
+        assert (dest / "managed" / "opencode.json").read_text() == '{"permission": {"bash": "ask"}}'
+
+    def test_credentials_inside_managed_still_filtered(self, tmp_path):
+        # The managed dir gets no credential exemption: the structural
+        # allow-list admits the dir, the name/suffix denylist still applies
+        # inside it at any depth.
+        src = tmp_path / "profile"
+        _write(src / "managed" / "opencode.json", "{}")
+        _write(src / "managed" / "auth.json", '{"token":"SECRET"}')
+        _write(src / "managed" / "deep" / "id_rsa", "SECRET")
+        staged = tjor_profile.stage(src, tmp_path / "staged")
+        assert staged == ["managed/opencode.json"]
+
     def test_instructions_staged_like_other_allowed_dirs(self, tmp_path):
         # #C2: instructions/AGENTS.md is staged (and credential-filtered /
         # symlink-protected) exactly like any other allow-listed subdir; the

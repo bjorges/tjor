@@ -5,6 +5,42 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **`tjor run --dir-ro <path>`: true read-only repo mounts (#44).** Mounted
+  `:ro` at the container level — enforced container-wide (a `docker exec`
+  included), on every runtime — while staying a full repo mount otherwise:
+  git-trusted (`safe.directory`) and covered by launch-time secret masking.
+  When the kernel-sandbox tier is active it grants the tree `--allow-read`
+  instead of `--allow-write`, so the kernel and the mount tell the same
+  story. Sensitive host paths are refused exactly as for `--dir` (read-only
+  still exfiltrates); the same path via both `--dir` and `--dir-ro` aborts
+  rather than silently picking a writability. The launcher's
+  `TJOR_SAFE_DIRS`/`TJOR_RO_DIRS` env pair now documents the
+  operator-approved roots and their writability class as a stable contract
+  (groundwork for #53's dynamic git trust).
+- **`[landlock] mask_dirs`: structural directory masking (#43).** Extends
+  the `/dev/null`-style launch-time masking to directories: each entry — an
+  absolute path, or a bare name (e.g. `".opencode"`) discovered recursively
+  in every mounted repo — is bind-mounted over with a read-only EMPTY
+  directory, so it is structurally empty in-cage on every runtime. This
+  closes the project-config execution surface (opencode auto-loads
+  `.opencode/plugins`/`.opencode/tools` with full command execution outside
+  its permission matcher) by containment, not detection. Applied
+  independently of `mask_dotenv` (the #48 lesson, spec-pinned); globs and
+  relative paths abort the launch; announcements are escape-sanitized (the
+  dir names come from untrusted repos). Documented residual: a directory
+  created mid-session is not masked.
+- **Managed opencode config tier for profiles (#46).** A profile may stage
+  `managed/opencode.json`; the entrypoint deploys it root-owned and
+  agent-immutable to `/etc/opencode/opencode.json` (opencode's
+  managed-settings path — loads after, and cannot be overridden by, user or
+  project config) before the privilege drop. Invalid JSON refuses the launch
+  on both sides (launcher preflight and entrypoint, boundary exit code 90);
+  with no staged file, a stale managed file is removed. The issue's proposed
+  `OPENCODE_CONFIG_DIR` export was verified against the shipped opencode
+  1.18.28 bundle and deliberately dropped: it *replaces* the global config
+  dir and would displace the baseline instruction cargo and autoupdate pin.
+
 ### Testing
 - **End-to-end hostile-filename regression test for the dotenv-mask
   escape-injection fix.** The v0.15.0 fix was covered only by the sanitizer's

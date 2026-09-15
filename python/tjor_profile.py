@@ -42,9 +42,16 @@ import sys
 # each harness's own dialect path. It goes through the exact same structural
 # allow-list and credential/symlink defense-in-depth as every other dir here;
 # the entrypoint alone knows to treat its one file specially.
+#
+# `managed` (#46) is likewise special-cased by the entrypoint: its one
+# meaningful file, `managed/opencode.json`, is deployed ROOT-owned to
+# opencode's managed-settings path (/etc/opencode/opencode.json — loads after,
+# and cannot be overridden by, any user/project opencode config) before the
+# privilege drop, and the subdir is EXCLUDED from the per-harness config
+# overlay. Same structural allow-list and credential filtering as the rest.
 ALLOWED = (
     "agent", "agents", "command", "commands", "skill", "skills",
-    "prompt", "prompts", "mode", "modes", "instructions",
+    "prompt", "prompts", "mode", "modes", "instructions", "managed",
 )
 
 # Defense in depth WITHIN an allowed subdir: the allow-list is structural (dir

@@ -42,7 +42,10 @@ installed: each gets the cage's neutral instructions in its own dialect
 `~/.copilot/copilot-instructions.md`) and has in-session self-update disabled,
 so the image-pinned version can't drift. `tjor run --dir <path>` (repeatable)
 mounts additional repositories into the session at their host paths, so one
-agent can work across several repos at once. `tjor policy <url>` previews an
+agent can work across several repos at once; `--dir-ro <path>` does the same
+**read-only** — enforced at the mount, container-wide, so nothing in the cage
+can write, delete, or rename inside that tree (the kernel-sandbox tier grants
+it read-only too, when active). `tjor policy <url>` previews an
 egress verdict; `tjor down` removes a repo's topology.
 
 Managing sessions (D3):
@@ -177,6 +180,21 @@ separate trust step (unlike a repo's `.tjor/`, which travels with code and needs
 `tjor trust`). Content must already be in the active harness's format; tjor
 deploys it, it doesn't translate between harnesses.
 
+**Managed opencode config (hardened profiles).** A profile may carry
+`managed/opencode.json`. It is deployed **root-owned** to
+`/etc/opencode/opencode.json` — opencode's managed-settings path, which loads
+after, and cannot be overridden by, any user- or project-level opencode
+config — before the privilege drop, so the agent can't write, replace, or
+remove it. That makes it the right home for permission policy a hardened
+profile must keep even when a mounted repo ships its own `opencode.json` or
+agent definitions. A staged managed file that isn't valid JSON refuses the
+launch (a profile must never *look* hardened without *being* it); with no
+profile, nothing is deployed and any stale managed file is removed. Honest
+scope note: managed settings override config *keys*; they don't stop a repo's
+project config from *adding* plugins or local MCP servers — that surface is
+closed structurally by `mask_dirs = [".opencode"]` above, and hardened
+profiles should use both together.
+
 ## LLM gateway (LiteLLM, D4)
 
 Optionally route the harness through a **LiteLLM gateway** instead of allow-listing
@@ -243,6 +261,19 @@ What it does, in two independent mechanisms:
   Landlock is unavailable. A masked file can't be unlinked or replaced by the
   agent. Residual, stated plainly: a dotenv file *created mid-session* is not
   masked — masking is a launch-time snapshot.
+- **Directory masking (`mask_dirs`, mounts, every runtime).** The same
+  mechanism for whole directories: each configured entry — an absolute path,
+  or a bare name like `".opencode"` discovered recursively in every mounted
+  repo — is masked with a read-only **empty** bind mount, so it is
+  structurally empty in-cage. This is the structural close for project config
+  that auto-executes (opencode loads `.opencode/plugins` and
+  `.opencode/tools` with full command execution, outside its permission
+  matcher): with the directory masked, there is nothing to load, on every
+  runtime, regardless of what the repo ships. Off by default (`mask_dirs =
+  []`); hardened/read-only investigation profiles should set
+  `mask_dirs = [".opencode"]` and pair it with a managed opencode config (see
+  Agent profiles). Same honest residual as dotenv masking: a directory
+  *created mid-session* is not masked.
 
 Configure under `[landlock]`:
 
@@ -253,6 +284,9 @@ mode = "auto"          # auto: enforce when the kernel supports it, else degrade
                        # off: kernel tier disabled (stated at launch)
 mask_dotenv = true     # launch-time dotenv masking (independent of Landlock)
 deny_paths = []        # extra files to mask (absolute; only ever ADDS)
+mask_dirs = []         # directories to mask structurally: absolute paths or bare
+                       # names discovered in every mounted repo (no globs);
+                       # independent of mask_dotenv; e.g. [".opencode"]
 ```
 
 The tier states its status in the agent's startup log, one greppable line:
