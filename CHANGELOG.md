@@ -3,6 +3,68 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [0.15.0] — 2026-09-15 — Security-review follow-ups + automated releases
+
+External security review of v0.11.0–v0.14.0 (three specialist passes: security,
+shell, Python). Every changelog security claim was verified against the code —
+8 of 9 held exactly as stated; the findings below are the gaps it surfaced,
+each verified before fixing.
+
+### Security
+- **Dotenv-mask status lines are escape-injection safe.** The `+ dotenv mask
+  <file>` lines echoed a filename discovered in the mounted (untrusted) repo
+  without sanitizing — a repo-planted filename carrying ANSI/OSC escapes or
+  bidi overrides could spoof or hide the very line the operator relies on to
+  confirm a secret WAS masked. All three mask/deny_paths status lines now
+  route through the existing `tjor_safeprint` filter (new launcher `safeprint()`
+  helper), the same defense the trust review and denial log already use.
+- **Unknown config keys under `[landlock]`/`[broker]` abort the launch (#39
+  escalation).** Validation stays warn-only in general, but a typo'd key
+  inside a security-enforcing table means the operator believes a stricter
+  boundary setting is applied when it is not — and in unattended/CI use nobody
+  reads the warning. `tjor_cfg check` now exits nonzero (naming the key and
+  source file) and the launcher refuses to start. A misspelled table NAME
+  itself still only warns: it cannot claim to configure these tables.
+
+### Fixed
+- **A truncated `--session` qualified id is refused, not defaulted (#52
+  class).** `<base>-` (trailing dash, empty name — a copy-paste truncation)
+  stripped to an empty short name and silently resolved to the DEFAULT
+  session, so a teardown aimed at a named session could hit the wrong one. It
+  now dies with a "truncated fully-qualified id?" error.
+- **Foreign-id disambiguation fails closed when Docker is unreachable (#52
+  class).** The "does this qualified-looking id exist?" probe could not tell
+  "no such session" from "daemon unreachable", misclassifying a real foreign
+  session id as a fresh short name. The state dir is now checked first (no
+  daemon needed); if Docker itself must be asked and is unreachable, tjor
+  refuses with a clear error instead of guessing.
+- **`api_origin()` default port is scheme-aware (#49 follow-up).** The kube
+  broker's injection origin hardcoded the https default 443, so an `http://`
+  (non-TLS) on-prem API server was scoped to a port it never uses — the token
+  silently never injected. Explicit port, else 443 for https / 80 for http.
+- **A portless bracketed IPv6 broker entry can actually match (#49
+  follow-up).** `[2001:db8::1]` (brackets, no port scope) was kept verbatim,
+  and request hosts are never bracketed — the entry could never cover
+  anything. It is now unbracketed to the bare literal, covering any port like
+  every other portless entry.
+
+### Added
+- **GitHub Releases are created automatically on each release tag.** The
+  publish-images workflow gains a `release` job: notes extracted from the
+  tag's CHANGELOG section, title from its heading, idempotent, independent of
+  the image builds (a failed image build never hides the release notes).
+  Tagging is now the only manual release step — releases had quietly stopped
+  at v0.10.1 because `gh release create` was manual.
+
+### Tests
+- **The landlock test's "masking is independent of the kernel tier" block was
+  a no-op** — an `if` around a bare `:` behind a comment claiming an
+  assertion. Replaced with a real `mode = "off"` launch asserting the dotenv
+  mask still applies (and the missing `mo`-session cleanup added to the trap).
+- Lifecycle regression checks for the truncated-id refusal (message + nonzero
+  exit); unit tests for the scheme-aware origin port, IPv6 unbracketing, and
+  the `[landlock]`/`[broker]` hard-fail (236 → 239 passing).
+
 ## [0.14.0] — 2026-09-14 — Kube hardening batch (#42, #45, #47, #48, #49, #50)
 
 ### Added
