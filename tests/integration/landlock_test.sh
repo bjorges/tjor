@@ -33,6 +33,7 @@ cleanup() {
     docker ps -aq --filter "label=tjor.workspace=${REPO}" | xargs -r docker rm -f >/dev/null 2>&1
     [[ -n "${SID:-}" ]] && ( cd "${REPO}" 2>/dev/null && "${T}" down --session ll >/dev/null 2>&1 )
     ( cd "${REPO}" 2>/dev/null && "${T}" down --session dp >/dev/null 2>&1 )
+    ( cd "${REPO}" 2>/dev/null && "${T}" down --session mo >/dev/null 2>&1 )
     docker network rm "tjor-${SID:-nope}_internal" >/dev/null 2>&1
     rm -rf "${REPO}" "${SCRATCH}" "${HOME}"/.tjor/sessions/landlock-repo-*
     return 0
@@ -198,12 +199,17 @@ else
 fi
 check "invalid mode names the bad value" grep -q "invalid TJOR_LANDLOCK mode 'always'" "${SCRATCH}/inv.out"
 
-# Masking is independent of the kernel tier: launcher-side, so it holds even
-# when Landlock is unavailable. Assert the launcher masks regardless of mode
-# by checking the mount is applied with the tier forced off.
-if [[ ${LANDLOCK_HERE} == 1 ]]; then
-    : # covered live above; the mask path in bin/tjor is mode-independent by construction
-fi
+# ---- C. masking is independent of the kernel tier ----------------------------
+# Launcher-side mount masks hold even with the tier forced off — needs no
+# Landlock support on the engine, so this always runs.
+cat > "${USERCFG}/tjor/config.toml" <<CFG
+[landlock]
+mode = "off"
+CFG
+( cd "${REPO}" && XDG_CONFIG_HOME="${USERCFG}" "${T}" run --session mo -- true < /dev/null > "${SCRATCH}/mo.out" 2>&1 || true )
+check "dotenv mask applied with landlock mode=off" \
+    grep -q "dotenv mask ${REPO}/.env" "${SCRATCH}/mo.out"
+( cd "${REPO}" && "${T}" down --session mo >/dev/null 2>&1 )
 
 echo
 echo "landlock: ${PASS} passed, ${FAIL} failed"

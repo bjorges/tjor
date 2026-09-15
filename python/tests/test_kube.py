@@ -52,6 +52,9 @@ class TestApiOrigin:
             ("https://10.0.0.1:6443", "10.0.0.1:6443"),
             ("https://[2001:db8::1]:6443", "[2001:db8::1]:6443"),
             ("https://[2001:db8::1]", "[2001:db8::1]:443"),
+            ("http://api.k8s.example.com", "api.k8s.example.com:80"),  # http default
+            ("http://api.k8s.example.com:8080", "api.k8s.example.com:8080"),
+            ("http://[2001:db8::1]", "[2001:db8::1]:80"),
         ],
     )
     def test_origin_composed(self, server, expected):

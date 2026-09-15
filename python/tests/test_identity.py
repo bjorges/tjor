@@ -129,6 +129,13 @@ class TestBrokerHostPairs:
         # a trailing :1 group must not be read as a port
         assert ti.parse_broker_hosts("2001:db8::1") == [("2001:db8::1", None)]
 
+    def test_portless_bracketed_ipv6_is_unbracketed(self):
+        # brackets kept verbatim would never match an (unbracketed) request host
+        assert ti.parse_broker_hosts("[2001:db8::1]") == [("2001:db8::1", None)]
+        pairs = ti.parse_broker_hosts("[2001:db8::1]")
+        assert ti.broker_covers(pairs, "2001:db8::1", 6443)
+        assert ti.broker_covers(pairs, "2001:db8::1", 443)
+
     def test_oversized_port_suffix_stays_a_plain_glob(self):
         # >5 digits is not a port; the entry is left whole (and, containing a
         # colon, can never match a hostname — failing toward non-injection)

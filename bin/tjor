@@ -63,6 +63,11 @@ sha256() {
 
 cfg() { python3 "${TJOR_ROOT}/python/tjor_cfg.py" get "$@"; }
 
+# Render an attacker-influenced string safe to echo (escape-injection defense,
+# the same tjor_safeprint filter the trust review and denial log use): control
+# bytes become visible tokens instead of driving the terminal.
+safeprint() { printf %s "$1" | python3 "${TJOR_ROOT}/python/tjor_safeprint.py"; }
+
 # The active policy file, most-specific first: explicit override → a TRUSTED
 # repo .tjor/policy.toml → the user policy → the packaged default. A repo
 # policy is honored only after `tjor trust` (it can widen egress).
@@ -652,17 +657,35 @@ resolve_session() { # $1 = harness, $2 = task id (optional), $3 = session name (
             echo "tjor: --session ${name} is this workspace's fully-qualified default session id — resolving to the default session" >&2
         elif [[ "${name}" == "${base}-"* ]]; then
             short="${name#"${base}-"}"
+            # An empty remainder (trailing dash) is a truncated paste, not a
+            # request for the default session — resolving it silently would
+            # target the wrong session, the exact failure class #52 is about.
+            [[ -n "${short}" ]] || die "--session ${name} is this workspace's session prefix with nothing after the dash — a truncated fully-qualified id? (the default session is ${base})"
             echo "tjor: --session ${name} is already fully qualified — resolving to short name '${short}'" >&2
-        elif [[ "${name}" =~ ^[a-z0-9._-]+-[0-9a-f]{8}(-[a-z0-9._-]{1,32})?$ ]] \
-             && { [[ -d "${root}/${name}" ]] || docker ps -aq --filter "label=tjor.session=${name}" 2>/dev/null | grep -q .; }; then
-            if [[ "${4:-}" == "launch" ]]; then
-                die "--session ${name} is the fully-qualified id of another workspace's session — launch from that workspace, or pick a short name for a new session here"
+        elif [[ "${name}" =~ ^[a-z0-9._-]+-[0-9a-f]{8}(-[a-z0-9._-]{1,32})?$ ]]; then
+            # Qualified-LOOKING: disambiguate against reality — state dir
+            # first (no daemon needed), else labeled containers. If Docker
+            # itself is unreachable we cannot tell, so refuse rather than
+            # guess: misclassifying a real foreign id as a fresh short name
+            # would fail open.
+            local exists="" ctrs
+            [[ -d "${root}/${name}" ]] && exists=1
+            if [[ -z "${exists}" ]]; then
+                ctrs="$(docker ps -aq --filter "label=tjor.session=${name}" 2>/dev/null)" \
+                    || die "--session ${name} looks like a fully-qualified session id, but Docker is unreachable so tjor cannot tell whether that session exists — start docker/colima and retry"
+                [[ -n "${ctrs}" ]] && exists=1
             fi
-            echo "tjor: --session ${name} matches an existing session's fully-qualified id — using it verbatim (workspace-independent)" >&2
-            sid="${name}"
+            if [[ -n "${exists}" ]]; then
+                if [[ "${4:-}" == "launch" ]]; then
+                    die "--session ${name} is the fully-qualified id of another workspace's session — launch from that workspace, or pick a short name for a new session here"
+                fi
+                echo "tjor: --session ${name} matches an existing session's fully-qualified id — using it verbatim (workspace-independent)" >&2
+                sid="${name}"
+            else
+                echo "tjor: note: --session ${name} looks like a fully-qualified session id, but no such session exists — treating it as a short name" >&2
+                short="${name}"
+            fi
         else
-            [[ "${name}" =~ ^[a-z0-9._-]+-[0-9a-f]{8}(-[a-z0-9._-]{1,32})?$ ]] \
-                && echo "tjor: note: --session ${name} looks like a fully-qualified session id, but no such session exists — treating it as a short name" >&2
             short="${name}"
         fi
         if [[ -n "${short}" ]]; then
@@ -851,7 +874,10 @@ run_agent() { # $1 = detach flag, $2.. = command
                 [[ -n "${masked[${mp}]:-}" ]] && continue
                 masked["${mp}"]=1
                 mounts+=(--volume "/dev/null:${mp}:ro")
-                echo "tjor: + dotenv mask ${mp}" >&2
+                # The filename comes from the mounted (untrusted) repo: this
+                # status line is what tells the operator a secret WAS masked,
+                # so it must not be spoofable by escape bytes in the name.
+                echo "tjor: + dotenv mask $(safeprint "${mp}")" >&2
             done < <(find "${dir}" -name .git -prune -o -type f \
                         \( -name '.env' -o -name '.env.*' \) \
                         ! -name '*.example' ! -name '*.sample' ! -name '*.template' \
@@ -875,9 +901,9 @@ for p in json.load(sys.stdin):
         if [[ -f "${mp}" ]]; then
             masked["${mp}"]=1
             mounts+=(--volume "/dev/null:${mp}:ro")
-            echo "tjor: + dotenv mask ${mp} (deny_paths)" >&2
+            echo "tjor: + dotenv mask $(safeprint "${mp}") (deny_paths)" >&2
         else
-            warn "landlock.deny_paths entry not maskable (no such file at launch): ${mp}"
+            warn "landlock.deny_paths entry not maskable (no such file at launch): $(safeprint "${mp}")"
         fi
     done <<<"${deny_list}"
     # Agent profile (#29): mount the credential-filtered staging dir read-only

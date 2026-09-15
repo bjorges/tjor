@@ -14,7 +14,7 @@ launcher/entrypoint) so they are unit-tested against the real code that runs:
     proxy's scoped SSRF-guard exemption (#45). Hostname-level questions only.
   * `api_origin(server)` — the exact `host:port` origin (#49): the broker's
     injection scope, so the SA token never reaches a same-hostname service on
-    a different port. Explicit port, else the https default 443.
+    a different port. Explicit port, else the scheme default (443/80).
   * `kubeconfig(server, ca_path, token)` — a minimal in-cage kubeconfig that
     points at the REAL API server but carries only a PLACEHOLDER bearer token;
     `kubectl` sends `Authorization: Bearer <placeholder>` and the proxy
@@ -60,13 +60,13 @@ def api_host(server):
 def api_origin(server):
     """Exact ``host:port`` origin of a kubeconfig cluster server URL (#49) —
     the kube broker's injection scope. Uses the URL's explicit port, else the
-    https default 443; an IPv6 host is bracketed so the port suffix parses
-    unambiguously."""
+    scheme's default (443 https, 80 http); an IPv6 host is bracketed so the
+    port suffix parses unambiguously."""
     parsed = urllib.parse.urlparse(normalize_server(server))
     host = parsed.hostname
     if not host:
         raise ValueError(f"no host in API server URL: {server!r}")
-    port = parsed.port or 443
+    port = parsed.port or (80 if parsed.scheme == "http" else 443)
     return (f"[{host}]:{port}") if ":" in host else f"{host}:{port}"
 
 

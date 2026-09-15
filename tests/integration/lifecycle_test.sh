@@ -138,6 +138,12 @@ check "down with the qualified id works from a DIFFERENT cwd" bash -c \
     "cd '${SCRATCH}' && '${T}' down --session '${SID_C}' >/dev/null 2>&1 && ! docker ps -aq --filter 'label=tjor.session=${SID_C}' | grep -q ."
 check "down against a nonexistent session says so" bash -c \
     "cd '${REPO}' && '${T}' down --session never-was 2>&1 | grep -q 'nothing found for session'"
+# A truncated paste of the qualified prefix (trailing dash, empty name) must be
+# refused — it used to resolve silently to the DEFAULT session (#52 class).
+check "a truncated qualified id (trailing dash) is refused, not defaulted" bash -c \
+    "cd '${REPO}' && '${T}' down --session '${BASE_SID}-' 2>&1 | grep -q 'truncated'"
+check "the truncated-id refusal exits nonzero" bash -c \
+    "cd '${REPO}' && ! '${T}' down --session '${BASE_SID}-' >/dev/null 2>&1"
 
 # ---- 4. gc ---------------------------------------------------------------------
 "${T}" gc --age 0 --dry-run > "${SCRATCH}/gc0.out" 2>&1

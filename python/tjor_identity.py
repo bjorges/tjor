@@ -90,7 +90,10 @@ def parse_broker_hosts(raw: str) -> list[tuple[str, int | None]]:
     """Broker destination entries: comma/whitespace-separated host globs, each
     optionally scoped to ONE port (``host:6443``, ``[2001:db8::1]:6443``). A
     ``:port`` suffix (1-5 digits) counts as scope only when the prefix is
-    bracketed or colon-free, so a bare IPv6 literal is never mis-split.
+    bracketed or colon-free, so a bare IPv6 literal is never mis-split. A
+    bracketed entry WITHOUT a port (``[2001:db8::1]``) is unbracketed to the
+    bare literal — request hosts are never bracketed, so keeping the brackets
+    would make the entry silently unmatchable.
     Returns ``(host_glob, port | None)`` pairs; ``None`` means any port — the
     pre-#49 behavior, kept for pat/github-app configs."""
     pairs: list[tuple[str, int | None]] = []
@@ -100,8 +103,9 @@ def parse_broker_hosts(raw: str) -> list[tuple[str, int | None]]:
             m = re.fullmatch(r"([^:]+):(\d{1,5})", entry)
         if m:
             pairs.append((m.group(1), int(m.group(2))))
-        else:
-            pairs.append((entry, None))
+            continue
+        m = re.fullmatch(r"\[(.+)\]", entry)
+        pairs.append((m.group(1), None) if m else (entry, None))
     return pairs
 
 
