@@ -3,6 +3,34 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+### Fixed
+- **Repos and worktrees created mid-session are git-trusted — scoped, never
+  blanket (#53).** `safe.directory` registration was launch-time and
+  exact-match, so the standard "`git worktree add`, then work in it" first
+  step hit a dubious-ownership refusal every session, and a mounted parent
+  of many repos bought no git trust for anything inside it. Each WRITABLE
+  approved root (workspace, `--dir`) is now registered as a tree —
+  `<root>` + `<root>/*`, git ≥ 2.46 scoped prefix semantics, verified
+  empirically in the shipped image (2.47.3) — so mid-session worktrees,
+  clones, and nested pre-existing repos just work. Read-only roots
+  (`--dir-ro`) deliberately keep exact-match trust: git's ownership refusal
+  is what stops hostile pre-existing nested `.git/config` (fsmonitor,
+  pager, filters, hooks, credential helpers) from executing in unvetted
+  read-only content, and nothing new can be created under a `:ro` mount
+  anyway. Degenerate roots whose entry would equal blanket trust (`/`,
+  literal `*`, trailing `/*` — verified: `safe.directory = /*` trusts every
+  path) abort the launch on both the launcher and entrypoint sides;
+  trailing slashes are normalized. The git ≥ 2.46 floor is enforced as a
+  Dockerfile build assertion (git is the base distro's apt package, not a
+  pinned download). Trust tests run under
+  `GIT_TEST_ASSUME_DIFFERENT_OWNER=1` with a vacuity-guard baseline —
+  git's own-uid short-circuit otherwise makes such tests pass without the
+  feature — plus sibling-prefix, symlink-escape, and out-of-root negative
+  coverage. Shaped by a four-lens external review of the proposal;
+  ADR 0008 §4 amended: "the exact writable trees, read-only paths exactly".
+
 ## [0.16.0] — 2026-09-15 — Read-only mounts + project-config neutralization (#43, #44, #46)
 
 The hardened-profile building blocks: a mounted tree the agent structurally

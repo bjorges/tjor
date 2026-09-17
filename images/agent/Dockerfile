@@ -11,6 +11,20 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         gosu python3 unzip \
     && rm -rf /var/lib/apt/lists/*
 
+# git >= 2.46 is a hard floor (#53, spec: session-launch): the entrypoint
+# registers 'safe.directory <root>/*' prefix-trust entries, which an older
+# git silently treats as inert exact strings — trust that LOOKS registered
+# without BEING it. git is the base distro's apt package (not sha256-pinned
+# like the tools below), so the floor is gated here: a base-image bump to an
+# older distro fails the build instead of shipping inert entries.
+RUN set -eu; v="$(git --version | awk '{print $3}')"; \
+    maj="${v%%.*}"; rest="${v#*.}"; min="${rest%%.*}"; \
+    if [ "${maj}" -gt 2 ] || { [ "${maj}" -eq 2 ] && [ "${min}" -ge 46 ]; }; then \
+        echo "git ${v}: >= 2.46 floor satisfied"; \
+    else \
+        echo "git ${v} < 2.46: safe.directory prefix trust unsupported — refusing to build" >&2; exit 1; \
+    fi
+
 ARG TARGETARCH
 
 # gh from the official release, sha256-gated. Not the distro package: Debian's

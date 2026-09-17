@@ -32,6 +32,22 @@ pull succeeded" — not *what* was pulled.
    git-config surface (see the entrypoint; residual risk bounded by the
    non-root agent + no-egress cage).
 
+   *Amended (add-scoped-prefix-git-trust, #53):* scoped now means **the
+   exact writable trees, read-only paths exactly**. git ≥ 2.46 supports
+   trailing-`/*` prefix entries, and each *writable* root is registered as
+   `<root>` + `<root>/*` so worktrees and repos created mid-session — the
+   normal first step of task work — are trusted without a dynamic
+   registration mechanism. This widens trust in kind, not just degree: it
+   covers every repo that will ever exist under the root, including
+   vendored ones the operator never individually reviewed. The scoping is
+   the answer: tree trust applies only where the operator already accepted
+   agent-driven mutation of the whole tree (a writable mount); read-only
+   mounts keep exact-match trust, so git's ownership refusal still stops
+   hostile pre-existing nested `.git/config` from executing in unvetted
+   content. Degenerate entries that would equal blanket trust (`/`, `*`,
+   trailing `/*`) are refused on both the launcher and entrypoint sides —
+   the "not `*`" principle is unchanged.
+
 **Open question deferred to the maintainer:** whether `publish` should default
 to `true` (fast first run, tag-pull trust) or `false` (build-from-source by
 default) for a security-focused tool. It currently defaults to `true` with the

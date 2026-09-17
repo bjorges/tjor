@@ -45,7 +45,18 @@ mounts additional repositories into the session at their host paths, so one
 agent can work across several repos at once; `--dir-ro <path>` does the same
 **read-only** — enforced at the mount, container-wide, so nothing in the cage
 can write, delete, or rename inside that tree (the kernel-sandbox tier grants
-it read-only too, when active). `tjor policy <url>` previews an
+it read-only too, when active). Writable mounts are git-trusted as **trees**
+(git ≥ 2.46 scoped prefix trust): a worktree or repo the agent creates under
+them mid-session, or a repo nested under a mounted parent dir, just works —
+trust never extends outside the mounted roots, and never becomes a blanket
+`*`. The stated trade-off: that includes vendored repos inside a mounted
+repo, so their `.git/config` is trusted too (bounded by the cage, chosen by
+the mount). Read-only mounts keep **exact-path** trust: git's
+dubious-ownership refusal stays in force for nested repos there — it is what
+keeps a hostile pre-existing `.git/config` (fsmonitor, pager, hooks) from
+executing in unvetted read-only content. Need git in repos under a `--dir-ro`
+parent? Mount the individual repos `--dir-ro`, or mount the parent writable.
+`tjor policy <url>` previews an
 egress verdict; `tjor down` removes a repo's topology.
 
 Managing sessions (D3):
@@ -193,7 +204,12 @@ profile, nothing is deployed and any stale managed file is removed. Honest
 scope note: managed settings override config *keys*; they don't stop a repo's
 project config from *adding* plugins or local MCP servers — that surface is
 closed structurally by `mask_dirs = [".opencode"]` above, and hardened
-profiles should use both together.
+profiles should use both together. This pairing matters more now that
+worktree creation is routine (#53): a fresh worktree re-materializes
+working-tree content that launch-time `mask_dirs` masking does not cover
+(its documented mid-session residual) — the managed tier is the control
+that survives tree growth, and a read-only investigation profile
+additionally keeps git's ownership barrier for nested content.
 
 ## LLM gateway (LiteLLM, D4)
 

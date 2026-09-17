@@ -233,8 +233,37 @@ git config --system --add url."https://gitlab.com/".insteadOf "ssh://git@gitlab.
 git config --system --unset-all safe.directory 2>/dev/null || true
 if [[ -n "${TJOR_SAFE_DIRS:-}" ]]; then
     # Read one path per line so a colon inside a path is preserved verbatim.
+    #
+    # Tree trust (#53, spec: session-launch): a WRITABLE root is registered
+    # as '<root>' AND '<root>/*' — git >= 2.46 gives the trailing-/* entry
+    # prefix semantics (the image gates >= 2.46 at build), so worktrees and
+    # repos created under it mid-session, and nested pre-existing repos,
+    # are trusted without any dynamic registration step. A READ-ONLY root
+    # (TJOR_RO_DIRS) keeps the exact entry only: git's ownership refusal is
+    # what stops hostile pre-existing nested .git/config (fsmonitor, pager,
+    # filters, hooks, credential helpers) from executing in unvetted
+    # content, and nothing new can be created under a :ro mount anyway.
+    #
+    # Degenerate roots are REFUSED, not skipped: an entry that is '/', '*',
+    # or ends in '/*' would itself be wildcard-interpretable — verified:
+    # safe.directory '/*' trusts every absolute path, the bare-'*' ADR 0008
+    # forbids. Trailing slashes are normalized first ('root/' would
+    # register an inert 'root//*'). Blank lines are list formatting, not
+    # roots. The launcher refuses these earlier; this is the enforcement
+    # point for non-launcher starts.
     while IFS= read -r _d; do
-        [[ -n "${_d}" ]] && git config --system --add safe.directory "${_d}"
+        [[ -n "${_d}" ]] || continue
+        while [[ "${_d}" == */ && "${_d}" != "/" ]]; do _d="${_d%/}"; done
+        case "${_d}" in
+            /|\*|*/\*)
+                echo "tjor-entrypoint: FATAL: mount root '${_d}' would make git trust wildcard-interpretable (blanket trust) — refusing to start." >&2
+                exit "${TJOR_EXIT_BOUNDARY}"
+                ;;
+        esac
+        git config --system --add safe.directory "${_d}"
+        if ! grep -qxF -- "${_d}" <<<"${TJOR_RO_DIRS:-}"; then
+            git config --system --add safe.directory "${_d}/*"
+        fi
     done <<<"${TJOR_SAFE_DIRS}"
 fi
 # The placeholder helper is wired only when the broker actually COVERS GitHub

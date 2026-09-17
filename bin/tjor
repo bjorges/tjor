@@ -881,14 +881,17 @@ run_agent() { # $1 = detach flag, $2.. = command
     # A newline in a mount path is pathological (git can't represent it in a
     # config value either) and is refused below.
     #
-    # CONTRACT (consumed by the entrypoint; relied on by future work, #53):
-    # TJOR_SAFE_DIRS is the durable in-container record of every
-    # operator-approved mount root, and TJOR_RO_DIRS the subset mounted
-    # read-only — together they carry each root's writability class. Any
-    # future mid-session trust growth (#53's mediated helper) must derive
-    # eligibility from these lists: only a descendant of a WRITABLE approved
-    # root can come into existence during a session, so read-only roots are
-    # structurally ineligible for dynamic registration.
+    # CONTRACT (consumed by the entrypoint): TJOR_SAFE_DIRS is the durable
+    # in-container record of every operator-approved mount root, and
+    # TJOR_RO_DIRS the subset mounted read-only — together they carry each
+    # root's writability class. The writability class is load-bearing for
+    # GIT TRUST (#53, add-scoped-prefix-git-trust): a writable root is
+    # registered as a TREE ('<root>' + '<root>/*', git >= 2.46 prefix
+    # semantics) so worktrees/repos created mid-session are trusted; a
+    # read-only root keeps exact-match trust only, preserving git's
+    # ownership refusal against hostile pre-existing nested .git/config in
+    # unvetted content. TJOR_RO_DIRS also selects --allow-read (not
+    # --allow-write) in the kernel wrap.
     [[ -n "${TJOR_WORKSPACE:-}" ]] && safe+=("${TJOR_WORKSPACE}")
     for dir in "${TJOR_EXTRA_DIRS[@]:-}"; do
         [[ -n "${dir}" ]] || continue
@@ -915,6 +918,14 @@ run_agent() { # $1 = detach flag, $2.. = command
     for dir in "${safe[@]:-}"; do
         [[ -n "${dir}" ]] || continue
         [[ "${dir}" == *$'\n'* ]] && die "refusing a mount path containing a newline: ${dir}"
+        # Degenerate roots (#53): '/', '*', or a path ending in '/*' (a dir
+        # literally named '*') would make the git-trust registration itself
+        # wildcard-interpretable — safe.directory '/*' is blanket trust of
+        # every path, the bare '*' ADR 0008 forbids. Refuse at launch; the
+        # entrypoint re-refuses for non-launcher starts.
+        case "${dir}" in
+            /|\*|*/\*) die "refusing mount root '${dir}': its git-trust registration would be wildcard-interpretable (blanket trust is never registered)" ;;
+        esac
         safe_dirs+="${dir}"$'\n'
     done
     export TJOR_SAFE_DIRS="${safe_dirs}"
