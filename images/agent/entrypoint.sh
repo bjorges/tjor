@@ -251,6 +251,8 @@ if [[ -n "${TJOR_SAFE_DIRS:-}" ]]; then
     # register an inert 'root//*'). Blank lines are list formatting, not
     # roots. The launcher refuses these earlier; this is the enforcement
     # point for non-launcher starts.
+    # Pass 1: normalize + refuse degenerate roots, collecting the list.
+    _roots=()
     while IFS= read -r _d; do
         [[ -n "${_d}" ]] || continue
         while [[ "${_d}" == */ && "${_d}" != "/" ]]; do _d="${_d%/}"; done
@@ -260,11 +262,36 @@ if [[ -n "${TJOR_SAFE_DIRS:-}" ]]; then
                 exit "${TJOR_EXIT_BOUNDARY}"
                 ;;
         esac
+        _roots+=("${_d}")
+    done <<<"${TJOR_SAFE_DIRS}"
+    # Pass 2: refuse cross-class overlaps BEFORE registering anything
+    # (spec: session-launch). A read-only root nested inside a writable
+    # one would be covered by the parent's '<root>/*' trust (and by the
+    # parent's additive kernel grant); a writable root nested inside a
+    # read-only one stays writable at its own bind. Either way the
+    # read-only guarantees the launch claims would be false. The launcher
+    # refuses these earlier; this is the enforcement point for
+    # non-launcher starts. Same-class nesting is fine and stays allowed.
+    for _d in "${_roots[@]}"; do
+        if grep -qxF -- "${_d}" <<<"${TJOR_RO_DIRS:-}"; then _d_ro=1; else _d_ro=""; fi
+        for _e in "${_roots[@]}"; do
+            [[ "${_d}" == "${_e}" ]] && continue
+            if grep -qxF -- "${_e}" <<<"${TJOR_RO_DIRS:-}"; then _e_ro=1; else _e_ro=""; fi
+            [[ "${_d_ro}" == "${_e_ro}" ]] && continue
+            if [[ "${_d}" == "${_e}"/* ]]; then
+                echo "tjor-entrypoint: FATAL: mount roots '${_d}' and '${_e}' overlap with different writability classes — the read-only guarantees would be false; refusing to start." >&2
+                exit "${TJOR_EXIT_BOUNDARY}"
+            fi
+        done
+    done
+    # Pass 3: register — writable roots as trees, read-only roots exactly.
+    for _d in "${_roots[@]}"; do
         git config --system --add safe.directory "${_d}"
         if ! grep -qxF -- "${_d}" <<<"${TJOR_RO_DIRS:-}"; then
             git config --system --add safe.directory "${_d}/*"
         fi
-    done <<<"${TJOR_SAFE_DIRS}"
+    done
+    unset _roots _d_ro _e_ro _e
 fi
 # The placeholder helper is wired only when the broker actually COVERS GitHub
 # (#47): decided with the proxy's own host matcher (tjor_identity/tjor_policy,

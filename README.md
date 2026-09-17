@@ -56,6 +56,11 @@ dubious-ownership refusal stays in force for nested repos there — it is what
 keeps a hostile pre-existing `.git/config` (fsmonitor, pager, hooks) from
 executing in unvetted read-only content. Need git in repos under a `--dir-ro`
 parent? Mount the individual repos `--dir-ro`, or mount the parent writable.
+Mount roots of **different writability may never nest**: a read-only root
+inside a writable one (or the reverse, in either flag order, workspace
+included) refuses to launch — a writable parent would re-grant and re-trust
+the read-only tree, and a nested writable bind stays writable regardless of
+the parent's `:ro`. Same-writability nesting is fine.
 `tjor policy <url>` previews an
 egress verdict; `tjor down` removes a repo's topology.
 

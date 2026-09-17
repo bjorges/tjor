@@ -843,6 +843,29 @@ cmd_run() {
         fi
         TJOR_EXTRA_DIRS_RO+=("${abs}")
     done
+    # Overlapping roots with DIFFERENT writability classes are refused, in
+    # BOTH directions (release review of v0.16.0/v0.17.0): a writable child
+    # bind under a :ro parent stays writable inside the container; a
+    # writable parent's '<root>/*' git trust would cover repos inside a
+    # nested read-only child; and Landlock grants are additive, so a broad
+    # writable-parent grant cannot be subtracted for a read-only child.
+    # One refusal keeps all three guarantees true. Containment is judged on
+    # path-component boundaries (the '/' in the pattern): /a/b overlaps
+    # /a/b/c, never /a/b-other. Same-class nesting stays allowed — it
+    # contradicts nothing. The entrypoint re-refuses for non-launcher
+    # starts (spec: session-launch).
+    local ro_root w_root
+    for ro_root in "${TJOR_EXTRA_DIRS_RO[@]:-}"; do
+        [[ -n "${ro_root}" ]] || continue
+        for w_root in "${TJOR_WORKSPACE}" "${TJOR_EXTRA_DIRS[@]:-}"; do
+            [[ -n "${w_root}" ]] || continue
+            if [[ "${ro_root}" == "${w_root}"/* ]]; then
+                die "conflicting mount writability: read-only ${ro_root} is nested inside writable ${w_root} — the writable parent would re-grant and git-trust the read-only tree; mount the roots disjointly"
+            elif [[ "${w_root}" == "${ro_root}"/* ]]; then
+                die "conflicting mount writability: writable ${w_root} is nested inside read-only ${ro_root} — the nested bind stays writable, so the read-only tree claim would be false; mount the roots disjointly"
+            fi
+        done
+    done
     resolve_agent_image "${harness}"
     # Collision guard: a session id already backing a running agent must not
     # be launched again — a second unnamed `tjor run` in the same workspace

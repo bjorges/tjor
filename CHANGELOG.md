@@ -3,6 +3,29 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+### Security
+- **Mount roots of different writability classes may no longer overlap.**
+  A release review of v0.16.0/v0.17.0 found one policy defect with three
+  symptoms: the `--dir`/`--dir-ro` conflict check compared exact paths
+  only, so a read-only root could nest inside a writable one (the parent's
+  `<root>/*` git trust then covered repos inside the read-only child, and
+  the kernel tier's additive grants could not subtract the child from the
+  parent's write grant) and a writable root could nest inside a read-only
+  one (the nested bind stays writable, falsifying the "read-only tree"
+  claim while the launch output asserted it). The launcher now refuses
+  every cross-class ancestor/descendant pair after canonicalization —
+  both directions, either flag order, the workspace included — with
+  component-boundary containment (`/a/b` conflicts with `/a/b/c`, never
+  `/a/b-other`); the entrypoint independently refuses such a root set
+  with the boundary exit code before registering any git trust
+  (non-launcher starts). Same-class nesting remains allowed and is now
+  spec-pinned as a non-conflict. Behavior change, stated plainly: a
+  nested mixed-writability layout that previously launched (silently
+  violating its read-only claim) now aborts with an error naming both
+  roots.
+
 ## [0.17.0] — 2026-09-17 — Scoped prefix git trust (#53)
 
 "Create a worktree, then work in it" now works on the first try, in every

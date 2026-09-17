@@ -40,9 +40,10 @@ cleanup() {
     ( cd "${A}" 2>/dev/null && "${T}" down >/dev/null 2>&1 )
     docker ps -aq --filter "label=tjor.session=${SID}" | xargs -r docker rm -f >/dev/null 2>&1
     docker network rm "tjor-${SID}_internal" >/dev/null 2>&1
-    rm -rf "${A}" "${B}" "${C}" "${P}" "${HOME}/.tjor/tmp/mr-star" \
+    rm -rf "${A}" "${B}" "${B}-other" "${C}" "${P}" "${HOME}/.tjor/tmp/mr-star" \
         "${HOME}/.tjor/sessions/${SID}" "${HOME}/.tjor/sessions/${SID}-other" \
-        "${HOME}/.tjor/sessions/${SID}-g1" "${HOME}/.tjor/tmp/mr-run-out."*
+        "${HOME}/.tjor/sessions/${SID}-g1" "${HOME}/.tjor/sessions/${SID}-g2" \
+        "${HOME}/.tjor/sessions/${SID}-gx" "${HOME}/.tjor/tmp/mr-run-out."*
 }
 trap cleanup EXIT
 
@@ -136,6 +137,38 @@ else
 fi
 check "conflict error names the ambiguity" grep -q "conflicting mounts" "${CONFOUT}"
 
+echo "== mixed-writability overlaps are refused (release-review fix)"
+# A writable parent's '<root>/*' trust would cover a nested ro child; a
+# writable child bind under a ro parent stays writable. Both directions,
+# both flag orders, workspace included — all refused at resolution.
+MIXOUT="${HOME}/.tjor/tmp/mr-run-out.mix.$$"
+mix_refused() { # $1 = label, rest = tjor run args
+    local label="$1"; shift
+    if ( cd "${A}" && "${T}" run --detach --session gx "$@" true > "${MIXOUT}" 2>&1 ); then
+        bad "${label} must abort"
+        ( cd "${A}" && "${T}" down --session gx >/dev/null 2>&1 )
+    else
+        ok "${label} aborts"
+    fi
+    check "${label}: error names the writability conflict" \
+        grep -q "conflicting mount writability" "${MIXOUT}"
+}
+mkdir -p "${A}/subro" "${B}-other"
+mix_refused "ro child under writable parent" --dir "${P}" --dir-ro "${P}/n1"
+mix_refused "ro child under writable parent (flags reversed)" --dir-ro "${P}/n1" --dir "${P}"
+mix_refused "writable child under ro parent" --dir-ro "${C}" --dir "${C}/nested"
+mix_refused "ro subdir of the workspace" --dir-ro "${A}/subro"
+# Sibling name-extension is NOT an overlap: component boundaries, not
+# string prefixes — this launch must succeed.
+if ( cd "${A}" && "${T}" run --session g2 --dir "${B}" --dir-ro "${B}-other" -- true < /dev/null > "${MIXOUT}" 2>&1 ); then
+    ok "sibling name-extension launches (no false overlap)"
+else
+    bad "sibling name-extension was refused (component-boundary bug?)"
+fi
+check "sibling launch has no writability-conflict error" bash -c \
+    "! grep -q 'conflicting mount writability' '${MIXOUT}'"
+( cd "${A}" && "${T}" down --session g2 >/dev/null 2>&1 )
+
 echo "== degenerate roots are refused (blanket-trust guard, #53)"
 # A directory literally named '*' would register '<parent>/*' — a wildcard
 # entry. The launcher must refuse it outright.
@@ -179,6 +212,25 @@ if grep -qxF '/repos/slash/*' <<<"${GOT}" && ! grep -qxF '/repos/slash//*' <<<"$
     ok "trailing-slash root normalized before registration"
 else
     bad "trailing-slash root mishandled (got: ${GOT//$'\n'/ | })"
+fi
+
+echo "== entrypoint refuses mixed-writability overlaps (non-launcher starts)"
+code=0
+docker run --rm -e TJOR_HARNESS=opencode -e TJOR_SAFE_DIRS=$'/repos/p\n/repos/p/child\n' \
+    -e TJOR_RO_DIRS=$'/repos/p/child\n' "${IMG}" true >/dev/null 2>&1 || code=$?
+if [ "${code}" -eq 90 ]; then ok "ro child under writable parent: entrypoint aborts with 90"; else bad "ro-child overlap: expected 90, got ${code}"; fi
+code=0
+docker run --rm -e TJOR_HARNESS=opencode -e TJOR_SAFE_DIRS=$'/repos/p\n/repos/p/child\n' \
+    -e TJOR_RO_DIRS=$'/repos/p\n' "${IMG}" true >/dev/null 2>&1 || code=$?
+if [ "${code}" -eq 90 ]; then ok "writable child under ro parent: entrypoint aborts with 90"; else bad "rw-child overlap: expected 90, got ${code}"; fi
+GOT="$(docker run --rm -e TJOR_HARNESS=opencode -e TJOR_SAFE_DIRS=$'/repos/p\n/repos/p-other\n' \
+        -e TJOR_RO_DIRS=$'/repos/p-other\n' "${IMG}" \
+        git config --system --get-all safe.directory 2>/dev/null || true)"
+if grep -qxF '/repos/p/*' <<<"${GOT}" && grep -qxF '/repos/p-other' <<<"${GOT}" \
+        && ! grep -qxF '/repos/p-other/*' <<<"${GOT}"; then
+    ok "sibling pair registers normally (starred rw, exact ro)"
+else
+    bad "sibling pair mishandled (got: ${GOT//$'\n'/ | })"
 fi
 
 echo
