@@ -69,6 +69,19 @@ for _ in $(seq 1 180); do
 done
 [[ -n "${CTR}" ]] || { echo "FATAL: multi-repo session never started"; exit 1; }
 
+# Readiness gate: the container reports "running" from PID 1, but the
+# entrypoint registers git trust (safe.directory, step 3) a few seconds
+# later — exec'ing git before that races the registration (flaked in CI:
+# the first git checks ran 3s before registration landed, while identical
+# checks seconds later passed). The kernel-sandbox status line prints
+# AFTER the git-trust step, so it is the "trust is registered" sentinel.
+for _ in $(seq 1 60); do
+    docker logs "${CTR}" 2>&1 | grep -q "kernel-sandbox:" && break
+    sleep 1
+done
+docker logs "${CTR}" 2>&1 | grep -q "kernel-sandbox:" \
+    || { echo "FATAL: entrypoint never reached the kernel-sandbox step"; docker logs "${CTR}" 2>&1 | tail -20; exit 1; }
+
 check "primary repo mounted at its host path" bash -c "docker exec '${CTR}' test -f '${A}/file-a'"
 check "extra repo mounted at its host path" bash -c "docker exec '${CTR}' test -f '${B}/file-b'"
 check "extra repo is writable by the agent" bash -c "docker exec '${CTR}' sh -c 'echo w > \"${B}/written-in-cage\"'"

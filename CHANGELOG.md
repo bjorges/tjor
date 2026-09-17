@@ -3,6 +3,17 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+### Testing
+- **multirepo test gates on entrypoint readiness before git assertions.**
+  A container reports "running" from PID 1, but the entrypoint registers
+  git trust a few seconds later; on a slow CI runner the suite's first
+  git checks raced that registration and flaked (three failures at t+0s,
+  identical checks passing at t+3s). The test now waits for the
+  entrypoint's kernel-sandbox status line — printed after the git-trust
+  step — before asserting anything git-dependent.
+
 ## [0.17.2] — 2026-09-17 — Security: canonical root representation
 
 Two bypasses of v0.17.1's mixed-writability refusal, found by re-review,
