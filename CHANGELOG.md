@@ -3,7 +3,13 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.17.2] — 2026-09-17 — Security: canonical root representation
+
+Two bypasses of v0.17.1's mixed-writability refusal, found by re-review,
+closed with one shared control: every root is judged in one canonical
+representation. Affected: non-git workspaces launched through a symlinked
+cwd, and direct (non-launcher) container starts with non-canonically
+spelled root lists.
 
 ### Security
 - **Canonical root representation everywhere the overlap boundary is
