@@ -3,7 +3,11 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.17.0] — 2026-09-17 — Scoped prefix git trust (#53)
+
+"Create a worktree, then work in it" now works on the first try, in every
+session — trust stays scoped to the operator's writable mounts, never
+blanket. Shaped by a four-lens external review of the proposal.
 
 ### Fixed
 - **Repos and worktrees created mid-session are git-trusted — scoped, never
