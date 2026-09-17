@@ -645,7 +645,12 @@ session_base_id() { # $1 = workspace path
 resolve_session() { # $1 = harness, $2 = task id (optional), $3 = session name (optional), $4 = "launch" on the run path
     local ws root sid in_repo=""
     if ws="$(git rev-parse --show-toplevel 2>/dev/null)"; then in_repo=1; else
-        ws="$(pwd)"
+        # PHYSICAL path (pwd -P), matching git's own canonicalized toplevel
+        # and the --dir/--dir-ro resolution: a logical (symlinked) spelling
+        # here would compare in a different namespace than the extras and
+        # let a symlinked workspace evade the mixed-writability overlap
+        # refusal (re-review of v0.17.1).
+        ws="$(pwd -P)"
         warn "not inside a git repository — using ${ws} as the workspace"
     fi
     # shellcheck disable=SC2088  # literal ~ is expanded on the next line
@@ -1267,7 +1272,7 @@ cmd_attach() {
     # qualified against the CURRENT workspace — so the name a user launched
     # with (`tjor run --session foo`) reattaches with `tjor attach foo`.
     if [[ -n "${want}" ]]; then
-        qualified="$(session_base_id "$(git rev-parse --show-toplevel 2>/dev/null || pwd)")-$(tr '[:upper:]' '[:lower:]' <<<"${want}")"
+        qualified="$(session_base_id "$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)")-$(tr '[:upper:]' '[:lower:]' <<<"${want}")"
     fi
     # Field-separate on US (\x1f), not '|' — a workspace path can contain a
     # literal pipe (consistent with ls/gc).

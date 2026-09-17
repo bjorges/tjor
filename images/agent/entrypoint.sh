@@ -231,67 +231,99 @@ git config --system --add url."https://gitlab.com/".insteadOf "ssh://git@gitlab.
 #   itself — non-root agent (enforced above) + no direct egress — and by the
 #   operator having explicitly chosen to mount that repo.
 git config --system --unset-all safe.directory 2>/dev/null || true
-if [[ -n "${TJOR_SAFE_DIRS:-}" ]]; then
-    # Read one path per line so a colon inside a path is preserved verbatim.
-    #
+# Normalize + validate ONE root spelling; echoes the normalized path, or
+# returns 1 for a malformed or wildcard-interpretable value. Rules: must be
+# absolute; no carriage returns; trailing slashes stripped; no '//', no '.'
+# or '..' segments; never '/', '*', or a value ending in '/*' (verified:
+# safe.directory '/*' trusts every absolute path — the bare-'*' ADR 0008
+# forbids). EVERY consumer below classifies from this one representation —
+# comparing a normalized value against a raw spelling is exactly the
+# trailing-slash bypass the v0.17.1 re-review found (a read-only child
+# spelled 'child/' was classified writable and even got tree trust).
+_norm_root() {
+    local d="$1"
+    [[ "${d}" == *$'\r'* ]] && return 1
+    [[ "${d}" == /* ]] || return 1
+    while [[ "${d}" == */ && "${d}" != "/" ]]; do d="${d%/}"; done
+    case "${d}" in
+        /|\*|*/\*) return 1 ;;
+        *//*|*/./*|*/../*|*/.|*/..) return 1 ;;
+    esac
+    printf '%s' "${d}"
+}
+# Normalized, newline-delimited lists — built once here, consumed again by
+# the kernel-wrap read/write split in step 6. Read one path per line so a
+# colon inside a path is preserved verbatim.
+SAFE_NORM=""
+RO_NORM=""
+if [[ -n "${TJOR_SAFE_DIRS:-}" || -n "${TJOR_RO_DIRS:-}" ]]; then
     # Tree trust (#53, spec: session-launch): a WRITABLE root is registered
-    # as '<root>' AND '<root>/*' — git >= 2.46 gives the trailing-/* entry
-    # prefix semantics (the image gates >= 2.46 at build), so worktrees and
-    # repos created under it mid-session, and nested pre-existing repos,
-    # are trusted without any dynamic registration step. A READ-ONLY root
-    # (TJOR_RO_DIRS) keeps the exact entry only: git's ownership refusal is
+    # as '<root>' AND '<root>/*' — git >= 2.46 prefix semantics (gated at
+    # image build) — so worktrees/repos created mid-session and nested
+    # pre-existing repos are trusted with no dynamic registration. A
+    # READ-ONLY root keeps the exact entry only: git's ownership refusal is
     # what stops hostile pre-existing nested .git/config (fsmonitor, pager,
     # filters, hooks, credential helpers) from executing in unvetted
-    # content, and nothing new can be created under a :ro mount anyway.
-    #
-    # Degenerate roots are REFUSED, not skipped: an entry that is '/', '*',
-    # or ends in '/*' would itself be wildcard-interpretable — verified:
-    # safe.directory '/*' trusts every absolute path, the bare-'*' ADR 0008
-    # forbids. Trailing slashes are normalized first ('root/' would
-    # register an inert 'root//*'). Blank lines are list formatting, not
-    # roots. The launcher refuses these earlier; this is the enforcement
-    # point for non-launcher starts.
-    # Pass 1: normalize + refuse degenerate roots, collecting the list.
-    _roots=()
+    # content. The launcher refuses malformed and overlapping roots
+    # earlier; everything below is the enforcement point for non-launcher
+    # starts. Blank lines are list formatting, not roots.
+    _safe=(); _ro=()
     while IFS= read -r _d; do
         [[ -n "${_d}" ]] || continue
-        while [[ "${_d}" == */ && "${_d}" != "/" ]]; do _d="${_d%/}"; done
-        case "${_d}" in
-            /|\*|*/\*)
-                echo "tjor-entrypoint: FATAL: mount root '${_d}' would make git trust wildcard-interpretable (blanket trust) — refusing to start." >&2
-                exit "${TJOR_EXIT_BOUNDARY}"
-                ;;
-        esac
-        _roots+=("${_d}")
-    done <<<"${TJOR_SAFE_DIRS}"
-    # Pass 2: refuse cross-class overlaps BEFORE registering anything
-    # (spec: session-launch). A read-only root nested inside a writable
-    # one would be covered by the parent's '<root>/*' trust (and by the
-    # parent's additive kernel grant); a writable root nested inside a
-    # read-only one stays writable at its own bind. Either way the
-    # read-only guarantees the launch claims would be false. The launcher
-    # refuses these earlier; this is the enforcement point for
-    # non-launcher starts. Same-class nesting is fine and stays allowed.
-    for _d in "${_roots[@]}"; do
-        if grep -qxF -- "${_d}" <<<"${TJOR_RO_DIRS:-}"; then _d_ro=1; else _d_ro=""; fi
-        for _e in "${_roots[@]}"; do
-            [[ "${_d}" == "${_e}" ]] && continue
-            if grep -qxF -- "${_e}" <<<"${TJOR_RO_DIRS:-}"; then _e_ro=1; else _e_ro=""; fi
-            [[ "${_d_ro}" == "${_e_ro}" ]] && continue
-            if [[ "${_d}" == "${_e}"/* ]]; then
-                echo "tjor-entrypoint: FATAL: mount roots '${_d}' and '${_e}' overlap with different writability classes — the read-only guarantees would be false; refusing to start." >&2
+        if ! _n="$(_norm_root "${_d}")"; then
+            echo "tjor-entrypoint: FATAL: malformed or wildcard-interpretable mount root '${_d}' — refusing to start." >&2
+            exit "${TJOR_EXIT_BOUNDARY}"
+        fi
+        _safe+=("${_n}")
+    done <<<"${TJOR_SAFE_DIRS:-}"
+    while IFS= read -r _d; do
+        [[ -n "${_d}" ]] || continue
+        if ! _n="$(_norm_root "${_d}")"; then
+            echo "tjor-entrypoint: FATAL: malformed or wildcard-interpretable read-only root '${_d}' — refusing to start." >&2
+            exit "${TJOR_EXIT_BOUNDARY}"
+        fi
+        _ro+=("${_n}")
+    done <<<"${TJOR_RO_DIRS:-}"
+    # Every read-only root must BE an approved root: anything else has no
+    # meaning in the contract, and guessing (ignore? writable? read-only?)
+    # is how the next spelling bypass gets in.
+    for _r in "${_ro[@]}"; do
+        _found=""
+        for _s in "${_safe[@]}"; do [[ "${_r}" == "${_s}" ]] && { _found=1; break; }; done
+        if [[ -z "${_found}" ]]; then
+            echo "tjor-entrypoint: FATAL: read-only root '${_r}' is not among the approved mount roots — refusing to start." >&2
+            exit "${TJOR_EXIT_BOUNDARY}"
+        fi
+    done
+    # Cross-class overlaps are refused BEFORE any registration (spec:
+    # session-launch): a read-only root nested inside a writable one would
+    # be covered by the parent's '<root>/*' trust and additive kernel
+    # grant; a writable root nested inside a read-only one stays writable
+    # at its own bind. Same-class nesting is fine and stays allowed.
+    for _s in "${_safe[@]}"; do
+        _s_ro=""
+        for _r in "${_ro[@]}"; do [[ "${_s}" == "${_r}" ]] && { _s_ro=1; break; }; done
+        for _e in "${_safe[@]}"; do
+            [[ "${_s}" == "${_e}" ]] && continue
+            _e_ro=""
+            for _r in "${_ro[@]}"; do [[ "${_e}" == "${_r}" ]] && { _e_ro=1; break; }; done
+            [[ "${_s_ro}" == "${_e_ro}" ]] && continue
+            if [[ "${_s}" == "${_e}"/* ]]; then
+                echo "tjor-entrypoint: FATAL: mount roots '${_s}' and '${_e}' overlap with different writability classes — the read-only guarantees would be false; refusing to start." >&2
                 exit "${TJOR_EXIT_BOUNDARY}"
             fi
         done
     done
-    # Pass 3: register — writable roots as trees, read-only roots exactly.
-    for _d in "${_roots[@]}"; do
-        git config --system --add safe.directory "${_d}"
-        if ! grep -qxF -- "${_d}" <<<"${TJOR_RO_DIRS:-}"; then
-            git config --system --add safe.directory "${_d}/*"
-        fi
+    # Register — writable roots as trees, read-only roots exactly.
+    for _s in "${_safe[@]}"; do
+        SAFE_NORM+="${_s}"$'\n'
+        git config --system --add safe.directory "${_s}"
+        _s_ro=""
+        for _r in "${_ro[@]}"; do [[ "${_s}" == "${_r}" ]] && { _s_ro=1; break; }; done
+        [[ -n "${_s_ro}" ]] || git config --system --add safe.directory "${_s}/*"
     done
-    unset _roots _d_ro _e_ro _e
+    for _r in "${_ro[@]}"; do RO_NORM+="${_r}"$'\n'; done
+    unset _safe _ro _d _n _r _s _e _s_ro _e_ro _found
 fi
 # The placeholder helper is wired only when the broker actually COVERS GitHub
 # (#47): decided with the proxy's own host matcher (tjor_identity/tjor_policy,
@@ -436,7 +468,7 @@ fi
 # launcher, PWD=/), cplt rightly refuses to sandbox "/" — classify the tier
 # unavailable so auto degrades LOUDLY and require refuses; never a silent
 # unwrapped run.
-project_dir="${TJOR_SAFE_DIRS:-}"
+project_dir="${SAFE_NORM:-}"
 project_dir="${project_dir%%$'\n'*}"
 [[ -n "${project_dir}" && -d "${project_dir}" ]] || project_dir="${PWD}"
 if [[ -n "${landlock_abi}" && "${project_dir}" == "/" ]]; then
@@ -465,23 +497,22 @@ elif [[ -n "${landlock_abi}" ]]; then
           --allow-port "${TJOR_PROXY_PORT:-8080}" --allow-localhost-any
           --allow-read "${AGENT_HOME}" --allow-write "${AGENT_HOME}")
     # Grant each further operator-mounted repo (--dir extras) — the same
-    # newline-delimited list git trusts (step 3). A root also listed in
-    # TJOR_RO_DIRS was mounted read-only (#44): grant --allow-read so the
-    # kernel tier AGREES with the :ro mount instead of claiming a
-    # writability the mount would refuse anyway (the :ro mount is the
-    # enforcement; this keeps the two layers telling the same story).
-    # Exact-line match (grep -qxF) for the same reason the list is
-    # newline-delimited: paths may contain colons, and a prefix match would
-    # misclassify a sibling.
-    if [[ -n "${TJOR_SAFE_DIRS:-}" ]]; then
+    # NORMALIZED list git trusts (step 3; never the raw env, so the wrap
+    # split can't disagree with the trust split over a spelling). A root
+    # in the read-only class was mounted :ro (#44): grant --allow-read so
+    # the kernel tier AGREES with the mount instead of claiming a
+    # writability it would refuse anyway. Exact-line match (grep -qxF)
+    # for the same reason the list is newline-delimited: paths may
+    # contain colons, and a prefix match would misclassify a sibling.
+    if [[ -n "${SAFE_NORM:-}" ]]; then
         while IFS= read -r _d; do
             [[ -n "${_d}" && "${_d}" != "${project_dir}" ]] || continue
-            if grep -qxF -- "${_d}" <<<"${TJOR_RO_DIRS:-}"; then
+            if grep -qxF -- "${_d}" <<<"${RO_NORM:-}"; then
                 wrap+=(--allow-read "${_d}")
             else
                 wrap+=(--allow-write "${_d}")
             fi
-        done <<<"${TJOR_SAFE_DIRS}"
+        done <<<"${SAFE_NORM}"
     fi
     exec gosu agent env HOME="${AGENT_HOME}" USER=agent "${wrap[@]}" exec -- "$@"
 elif [[ "${TJOR_LANDLOCK}" == "require" ]]; then

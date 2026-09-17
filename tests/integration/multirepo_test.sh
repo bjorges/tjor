@@ -41,9 +41,11 @@ cleanup() {
     docker ps -aq --filter "label=tjor.session=${SID}" | xargs -r docker rm -f >/dev/null 2>&1
     docker network rm "tjor-${SID}_internal" >/dev/null 2>&1
     rm -rf "${A}" "${B}" "${B}-other" "${C}" "${P}" "${HOME}/.tjor/tmp/mr-star" \
+        "${HOME}/.tjor/tmp/mr-alias" "${HOME}/.tjor/tmp/mr-real" \
         "${HOME}/.tjor/sessions/${SID}" "${HOME}/.tjor/sessions/${SID}-other" \
         "${HOME}/.tjor/sessions/${SID}-g1" "${HOME}/.tjor/sessions/${SID}-g2" \
-        "${HOME}/.tjor/sessions/${SID}-gx" "${HOME}/.tjor/tmp/mr-run-out."*
+        "${HOME}/.tjor/sessions/${SID}-gx" "${HOME}/.tjor/sessions/mr-real-"* \
+        "${HOME}/.tjor/sessions/mr-alias-"* "${HOME}/.tjor/tmp/mr-run-out."*
 }
 trap cleanup EXIT
 
@@ -169,6 +171,23 @@ check "sibling launch has no writability-conflict error" bash -c \
     "! grep -q 'conflicting mount writability' '${MIXOUT}'"
 ( cd "${A}" && "${T}" down --session g2 >/dev/null 2>&1 )
 
+echo "== symlinked non-git workspace cannot evade the overlap refusal"
+# Re-review of v0.17.1: the non-git workspace fallback used LOGICAL pwd
+# while extras resolve physically — an aliased cwd and its physical ro
+# descendant compared in different namespaces and the launch succeeded.
+REALW="${HOME}/.tjor/tmp/mr-real"
+mkdir -p "${REALW}/sub"
+ln -sfn "${REALW}" "${HOME}/.tjor/tmp/mr-alias"
+SYMOUT="${HOME}/.tjor/tmp/mr-run-out.sym.$$"
+if ( cd "${HOME}/.tjor/tmp/mr-alias" && "${T}" run --detach --session g4 --dir-ro "${REALW}/sub" true > "${SYMOUT}" 2>&1 ); then
+    bad "symlinked workspace + physical ro descendant must abort"
+    ( cd "${HOME}/.tjor/tmp/mr-alias" && "${T}" down --session g4 >/dev/null 2>&1 )
+else
+    ok "symlinked workspace + physical ro descendant aborts"
+fi
+check "symlink-evasion error names the writability conflict" \
+    grep -q "conflicting mount writability" "${SYMOUT}"
+
 echo "== degenerate roots are refused (blanket-trust guard, #53)"
 # A directory literally named '*' would register '<parent>/*' — a wildcard
 # entry. The launcher must refuse it outright.
@@ -232,6 +251,20 @@ if grep -qxF '/repos/p/*' <<<"${GOT}" && grep -qxF '/repos/p-other' <<<"${GOT}" 
 else
     bad "sibling pair mishandled (got: ${GOT//$'\n'/ | })"
 fi
+
+echo "== non-canonical spellings are refused, never misclassified (re-review)"
+ep90() { # $1 = label, $2 = TJOR_SAFE_DIRS, $3 = TJOR_RO_DIRS
+    local code=0
+    docker run --rm -e TJOR_HARNESS=opencode -e TJOR_SAFE_DIRS="$2" \
+        -e TJOR_RO_DIRS="$3" "${IMG}" true >/dev/null 2>&1 || code=$?
+    if [ "${code}" -eq 90 ]; then ok "$1: aborts with boundary code 90"; else bad "$1: expected 90, got ${code}"; fi
+}
+ep90 "trailing-slash ro child (the exact repro)" $'/repos/p\n/repos/p/child/\n' $'/repos/p/child/\n'
+ep90 "trailing-slash ro parent, writable child"  $'/repos/p/\n/repos/p/child\n' $'/repos/p/\n'
+ep90 "dot-dot segment in an approved root"       $'/repos/p/../q\n'             ''
+ep90 "repeated separator in an approved root"    $'/repos//p\n'                 ''
+ep90 "relative approved root"                    $'repos/p\n'                   ''
+ep90 "ro root not among the approved roots"      $'/repos/p\n'                  $'/repos/q\n'
 
 echo
 echo "multirepo: ${PASS} passed, ${FAIL} failed"

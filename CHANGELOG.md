@@ -3,6 +3,32 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+### Security
+- **Canonical root representation everywhere the overlap boundary is
+  judged.** A re-review of v0.17.1 found two bypasses of the
+  mixed-writability refusal, both spelled-differently-same-tree: (1) a
+  NON-GIT workspace was recorded with logical `pwd` while extras resolve
+  physically, so a symlinked working directory and its physical read-only
+  descendant never textually overlapped — the launch succeeded and the
+  writable workspace mount (with its tree-wide git trust) covered the
+  supposedly read-only subtree through the alias; the fallback now
+  canonicalizes physically (`pwd -P`), matching git's own toplevel.
+  (2) The entrypoint classified read-only membership by exact match
+  against the RAW `TJOR_RO_DIRS` while normalizing `TJOR_SAFE_DIRS`, so a
+  trailing slash in a hand-provided environment made a read-only child
+  writable — verified: it even received its own tree trust. Both env
+  lists are now parsed, normalized, and strictly validated into one
+  shared representation before read-only classification, overlap
+  checking, git-trust registration, AND the kernel-wrap read/write
+  split; malformed spellings (relative, `//`, `.`/`..` segments,
+  carriage returns) and read-only roots not among the approved roots are
+  refused with the boundary exit code. Edge-case behavior change: a
+  non-git workspace reached through a symlinked cwd now derives its
+  session id from the physical path (git workspaces are unaffected —
+  `git rev-parse --show-toplevel` was already canonical).
+
 ## [0.17.1] — 2026-09-17 — Security: mixed-writability mount overlaps refused
 
 One policy defect found by a release review of v0.16.0/v0.17.0, three
