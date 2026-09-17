@@ -3,7 +3,12 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.17.1] — 2026-09-17 — Security: mixed-writability mount overlaps refused
+
+One policy defect found by a release review of v0.16.0/v0.17.0, three
+symptoms, one shared control. Affected layouts: only sessions nesting a
+read-only mount inside a writable one or vice versa — such launches now
+abort instead of silently weakening their read-only claims.
 
 ### Security
 - **Mount roots of different writability classes may no longer overlap.**
