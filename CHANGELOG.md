@@ -3,6 +3,22 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+### Changed
+- **v0.18.4 review follow-ups (no behavior change).** A three-lens review of
+  v0.18.4 approved it with no critical/high findings; these close the
+  non-blocking notes: the resolve-timeout `why` token is a shared constant
+  (`_RESOLVE_TIMEOUT_WHY`) so the cache-write and TTL-selection sites can't
+  desync via a typo; a re-entrant resolve-timeout preserves the original
+  negative-cache timestamp so coalesced waiters can't extend the window past
+  `_RESOLVE_NEGATIVE_TTL` (defensive — only reachable under concurrency); the
+  kube API-host/origin comma-refusal message now names both `host` and
+  `origin` (it previously always blamed the host); and `_env_pos`'s `cast`
+  parameter is typed. The disclosed Medium residual (many *distinct* slow-DNS
+  hosts can still saturate the cap, fail-closed) is tracked as #61 (bound the
+  OS resolver timeout / make cap saturation observable).
+
 ## [0.18.4] — 2026-09-19 — Egress-guard DNS availability hardening
 
 Closes the v0.18.2 re-review High: the bounded-resolution fix bounded each call

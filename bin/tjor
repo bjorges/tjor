@@ -563,7 +563,7 @@ PY
                 # would desync the lists — refuse it (parity with the context
                 # comma check; belt-and-suspenders over same_server, #57 review).
                 case "${api}${origin}" in
-                    *,*) warn "broker source=kube: api_host/origin for context '${ctx:-active}' contains a comma ('${api}') — refusing (would desync the env lists). Broker disabled."; return 0 ;;
+                    *,*) warn "broker source=kube: the API host/origin for context '${ctx:-active}' contains a comma (host='${api}', origin='${origin}') — refusing (would desync the env lists). Broker disabled."; return 0 ;;
                 esac
                 # Context name in the agent's kubeconfig: the configured name for
                 # a list entry, "tjor" for the single flat entry (unchanged).

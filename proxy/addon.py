@@ -39,7 +39,7 @@ import os
 import socket
 import sys
 import time
-from typing import NamedTuple
+from typing import Callable, NamedTuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -196,7 +196,7 @@ _IP_CACHE_MAX = 1024
 # Knobs are env-configurable (TJOR_ style, like TJOR_IP_GUARD).
 
 
-def _env_pos(name: str, default: float, cast) -> float:
+def _env_pos(name: str, default: float, cast: Callable[[str], float]) -> float:
     """A positive TJOR_ numeric knob, or the default on missing/invalid/<=0."""
     try:
         v = cast(os.environ.get(name, ""))
@@ -209,6 +209,9 @@ _RESOLVE_TIMEOUT = _env_pos("TJOR_RESOLVE_TIMEOUT", 5.0, float)
 _RESOLVE_WORKERS = int(_env_pos("TJOR_RESOLVE_WORKERS", 8, int))
 _RESOLVE_MAX_INFLIGHT = int(_env_pos("TJOR_RESOLVE_MAX_INFLIGHT", _RESOLVE_WORKERS, int))
 _RESOLVE_NEGATIVE_TTL = _env_pos("TJOR_RESOLVE_NEGATIVE_TTL", 5.0, float)
+# The `why` token for a bounded-out resolution — one shared constant so the
+# cache-write site and the negative-TTL selection can never desync via a typo.
+_RESOLVE_TIMEOUT_WHY = "resolve-timeout"
 _resolve_pool = concurrent.futures.ThreadPoolExecutor(
     max_workers=_RESOLVE_WORKERS, thread_name_prefix="tjor-resolve")
 _inflight: dict[str, concurrent.futures.Future] = {}  # host -> its in-flight resolution
@@ -350,7 +353,7 @@ def _validated_addresses(host: str) -> tuple[bool, str, frozenset[str]]:
         # everything else (public, or a non-global denial) keeps the positive
         # TTL. So a transient stall clears quickly while repeat hits within the
         # window don't re-consume a worker.
-        ttl = _RESOLVE_NEGATIVE_TTL if hit.why == "resolve-timeout" else _IP_TTL_SECONDS
+        ttl = _RESOLVE_NEGATIVE_TTL if hit.why == _RESOLVE_TIMEOUT_WHY else _IP_TTL_SECONDS
         if now - hit.ts < ttl:
             return hit.ok, hit.why, hit.addresses
 
@@ -376,8 +379,14 @@ def _validated_addresses(host: str) -> tuple[bool, str, frozenset[str]]:
         try:
             addresses = fut.result(timeout=_RESOLVE_TIMEOUT)
         except concurrent.futures.TimeoutError:
-            _cache_put(host, _CacheEntry(now, False, "resolve-timeout", frozenset()))
-            return False, "resolve-timeout", frozenset()
+            # Keep the ORIGINAL timeout's timestamp if one is already cached, so
+            # coalesced waiters each timing out can't push the negative-cache
+            # window past _RESOLVE_NEGATIVE_TTL (@homer edge case; only reachable
+            # under concurrency, but cheap to make correct regardless).
+            prev = _ip_cache.get(host)
+            ts = prev.ts if (prev is not None and prev.why == _RESOLVE_TIMEOUT_WHY) else now
+            _cache_put(host, _CacheEntry(ts, False, _RESOLVE_TIMEOUT_WHY, frozenset()))
+            return False, _RESOLVE_TIMEOUT_WHY, frozenset()
         except OSError:
             return True, "unresolvable", frozenset()  # fast NXDOMAIN: permitted, uncached
 

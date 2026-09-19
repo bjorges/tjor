@@ -612,6 +612,28 @@ class TestPoolAvailability:
         finally:
             stuck.cancel()
 
+    def test_negative_cache_window_not_extended_by_reentry(self):
+        # A second timeout for a host that already has a fresh negative-cache
+        # entry must NOT refresh the timestamp (which would extend the window
+        # past _RESOLVE_NEGATIVE_TTL). Simulate by pre-seeding a negative entry
+        # with an OLD timestamp, expiring it just enough to re-resolve, and
+        # asserting the re-written entry keeps the older ts rather than `now`.
+        import concurrent.futures, time as _t
+        addon = load_addon()
+        addon._RESOLVE_TIMEOUT = 0.2
+        addon._RESOLVE_NEGATIVE_TTL = 0.05  # tiny: the seeded entry is already expired
+        old_ts = _t.monotonic() - 10.0
+        addon._ip_cache["slow.test"] = addon._CacheEntry(old_ts, False, "resolve-timeout", frozenset())
+        stuck = concurrent.futures.Future()
+        addon._inflight = {"slow.test": stuck}   # still hung -> this attempt also times out
+        try:
+            ok, why, _ = addon._validated_addresses("slow.test")
+            assert not ok and why == "resolve-timeout"
+            # ts preserved (not bumped to ~now) -> window not extended
+            assert addon._ip_cache["slow.test"].ts == old_ts
+        finally:
+            stuck.cancel()
+
     def test_cap_fails_fast_when_saturated(self):
         import concurrent.futures, time as _t
         addon = load_addon()
