@@ -3,7 +3,11 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.18.2] — 2026-09-19 — Bounded egress-guard DNS resolution
+
+Closes #59: the egress guard resolved hostnames synchronously on mitmproxy's
+event loop, so a hung DNS answer could stall a session (self-DoS). Resolution
+is now time-bounded and fails closed on timeout.
 
 ### Security
 - **The egress guard's DNS resolution is time-bounded (#59).** The
