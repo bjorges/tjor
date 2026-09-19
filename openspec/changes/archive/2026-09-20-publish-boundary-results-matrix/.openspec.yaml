@@ -1,0 +1,7 @@
+schema: spec-driven
+created: 2026-09-19
+# Pure tooling + docs: a generator, a generated matrix, and a doc-lint
+# invariant. No runtime/product behavior or capability changes (the matrix
+# documents guarantees other capabilities already own and test), so there is
+# no spec delta — mirrors how the existing doc_consistency lint was added.
+skip_specs: true

@@ -4,7 +4,7 @@
 
 tjor runs AI coding agents (Claude Code, opencode, GitHub Copilot CLI) inside a portable, fail-closed container cage with per-session state, identity, lifecycle, and brokered credentials. The agent works at full speed inside the boundary — and the boundary, not the prompt, is the policy. Per-session identity metadata (D1), the session lifecycle UX (D3 — `ls`/`attach`/`gc`/`reset`, named and detached sessions), the credential broker (D2), and an optional LLM gateway (D4) are all shipped — the roadmap deltas are complete.
 
-**Status: pre-alpha, working skeleton.** The cage core runs: fail-closed egress with an adversarial conformance suite (15/15 probes green), opencode doing real work inside. Specs live in [`openspec/`](openspec/), decisions in [`docs/decisions/`](docs/decisions/).
+**Status: pre-alpha, working skeleton.** The cage core runs: fail-closed egress with an adversarial conformance suite, opencode doing real work inside. Every adversarial guarantee, the probe that proves it, and the spec it backs are enumerated in the [boundary results matrix](docs/boundary-matrix.md) (generated from the suites). Specs live in [`openspec/`](openspec/), decisions in [`docs/decisions/`](docs/decisions/).
 
 ## Install
 
@@ -22,6 +22,7 @@ anything missing. (No brew? Clone the repo and run `./bin/tjor`.)
 ```console
 $ tjor doctor                    # host preflight + active policy + guarantee tiers
 $ tjor conformance               # adversarial suite: proves the boundary holds on YOUR runtime
+                                 #   (guarantees enumerated in docs/boundary-matrix.md)
 $ cd ~/your/project
 $ tjor run                       # caged opencode session in this repo
 ```

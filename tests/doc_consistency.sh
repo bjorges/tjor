@@ -45,3 +45,19 @@ if ! grep -q 'investigation-profiles.md' "${README}"; then
     exit 1
 fi
 echo "doc-consistency: investigation-profile guide present and referenced"
+
+# Boundary results matrix (#38): docs/boundary-matrix.md is regenerated from the
+# conformance + kernel-sandbox suites. The generator's --check runs the
+# registry<->source cross-check (a new/renamed/removed probe with no mapping
+# fails) AND diffs the committed matrix against a fresh render (a stale doc
+# fails) — same drift class as above: a probe and its published guarantee row
+# separating.
+ROOT_DIR="$(dirname "${README}")"
+if ! grep -q 'boundary-matrix.md' "${README}"; then
+    echo "doc-consistency: FAILED — README does not reference docs/boundary-matrix.md (#38)" >&2
+    exit 1
+fi
+if ! python3 "${ROOT_DIR}/python/gen_boundary_matrix.py" --check; then
+    echo "doc-consistency: FAILED — boundary matrix is stale or its registry is out of sync with the suites (#38)" >&2
+    exit 1
+fi

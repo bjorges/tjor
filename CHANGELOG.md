@@ -5,6 +5,20 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **Published adversarial boundary results matrix (#38, builds on #13).** The
+  cage's adversarial guarantees are proven by the conformance probes and the
+  kernel-sandbox suite, but their results lived only in CI logs. `docs/boundary-matrix.md`
+  now enumerates each guarantee, the probe that proves it, its suite, and the
+  spec capability it backs — generated from the suite sources by
+  `python/gen_boundary_matrix.py` and referenced from the README. A registry
+  maps every probe/check and the generator asserts it equals the names parsed
+  from source (a new/renamed/removed probe with no mapping, or a stale entry,
+  fails), while `tests/doc_consistency.sh` (`--check`) also diffs the committed
+  matrix against a fresh render — so it can't drift. Status is coverage (each
+  guarantee is backed by a live probe the CI conformance/landlock jobs run),
+  not embedded per-run pass/fail.
+
 ### Changed
 - **v0.18.4 review follow-ups (no behavior change).** A three-lens review of
   v0.18.4 approved it with no critical/high findings; these close the
