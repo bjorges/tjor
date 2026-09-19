@@ -3,7 +3,14 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.17.5] — 2026-09-19 — Review follow-ups & CI de-flake
+
+Non-behavioral hardening after a three-lens review approved v0.17.3 and
+v0.17.4 with no blockers: type-safety and DRY cleanups on the egress
+guard, docstring/fail-closed-contract affirmations, added `same_server()`
+hardening tests, and an accepted-risk note for the `#58` validate→mint
+window. Two review findings are tracked as follow-ups (#59, #60). Also
+carries the multirepo CI readiness-gate de-flake.
 
 ### Changed
 - **Review follow-ups for the v0.17.3/v0.17.4 pin patches (no behavior
