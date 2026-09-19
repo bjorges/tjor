@@ -110,6 +110,12 @@ _denial_log_count = 0
 # log unbounded (the sibling identity-forgery logger is likewise bounded).
 _DENIAL_LOG_MAX = 1000
 
+# Resolver-capacity saturation signal (#61): when the concurrent-distinct-
+# resolution cap is hit, surface a rate-limited operator line to stderr (visible
+# via `docker logs`) so a sustained many-slow-host condition is observable
+# rather than silent. Bounded like the identity-forgery logger below.
+_resolve_saturation_count = 0
+
 
 def _safe_ascii(s: str, limit: int = 253) -> str:
     """Collapse anything outside printable, non-space ASCII to '?' (bounded).
@@ -139,6 +145,24 @@ def _log_denial(host: str, rule: str) -> None:
                 fh.write("...(denial log capped for this session; further denials not recorded)\n")
     except OSError:
         pass
+
+
+def _log_saturation(host: str) -> None:
+    """Rate-limited operator signal (#61) when the resolver's concurrent-distinct
+    cap is hit. To stderr (visible via `docker logs`), first 20 then every 100th,
+    like the identity-forgery logger — so a sustained many-slow-host attack is
+    observable without the log growing unbounded. `host` is attacker-influenced,
+    so it is escape-sanitized."""
+    global _resolve_saturation_count
+    _resolve_saturation_count += 1
+    if _resolve_saturation_count <= 20 or _resolve_saturation_count % 100 == 0:
+        print(
+            f"tjor: ip-guard resolver capacity saturated "
+            f"(#{_resolve_saturation_count}) — denying {_safe_ascii(host)} "
+            f"(a slow-DNS host is consuming resolution capacity)",
+            file=sys.stderr,
+            flush=True,
+        )
 
 
 def _current_policy() -> tjor_policy.Policy:
@@ -367,7 +391,9 @@ def _validated_addresses(host: str) -> tuple[bool, str, frozenset[str]]:
         fut = _inflight.get(host)
         if fut is None:
             if len(_inflight) >= _RESOLVE_MAX_INFLIGHT:
-                # Capacity saturated: fail closed FAST, don't queue a backlog.
+                # Capacity saturated: fail closed FAST, don't queue a backlog,
+                # and surface a rate-limited operator signal (#61).
+                _log_saturation(host)
                 return False, "resolve-capacity", frozenset()
             fut = _resolve_pool.submit(_resolver, host)
             _inflight[host] = fut

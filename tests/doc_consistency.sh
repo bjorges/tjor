@@ -61,3 +61,13 @@ if ! python3 "${ROOT_DIR}/python/gen_boundary_matrix.py" --check; then
     echo "doc-consistency: FAILED — boundary matrix is stale or its registry is out of sync with the suites (#38)" >&2
     exit 1
 fi
+
+# Bounded proxy resolver (#61): the proxy entrypoint must set a bounded
+# RES_OPTIONS so a hung getaddrinfo recovers within a known wall time (the
+# empirical black-hole bound is a manual/CI check; this asserts the bound is
+# wired at all). glibc honors RES_OPTIONS.
+if ! grep -q 'RES_OPTIONS' "${ROOT_DIR}/proxy/entrypoint.sh"; then
+    echo "doc-consistency: FAILED — proxy/entrypoint.sh does not set RES_OPTIONS to bound the resolver (#61)" >&2
+    exit 1
+fi
+echo "doc-consistency: proxy resolver bound (RES_OPTIONS) wired in the entrypoint"

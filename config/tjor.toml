@@ -9,7 +9,10 @@ port = 8080
 # The guard's DNS resolution is time-bounded and kept available under slow-DNS
 # load (#59); the bounds are env-tunable on the proxy sidecar and rarely need
 # changing: TJOR_RESOLVE_TIMEOUT (s), TJOR_RESOLVE_WORKERS,
-# TJOR_RESOLVE_MAX_INFLIGHT, TJOR_RESOLVE_NEGATIVE_TTL (s).
+# TJOR_RESOLVE_MAX_INFLIGHT, TJOR_RESOLVE_NEGATIVE_TTL (s). The proxy's OS
+# resolver is also bounded (#61) so a hung/black-holed lookup recovers fast —
+# tune via TJOR_PROXY_RES_OPTIONS (glibc RES_OPTIONS; default "timeout:1
+# attempts:2"). Cap saturation is logged to the proxy's stderr (`docker logs`).
 ip_guard = true
 
 [identity]

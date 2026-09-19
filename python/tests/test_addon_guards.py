@@ -651,6 +651,29 @@ class TestPoolAvailability:
         finally:
             f1.cancel(); f2.cancel()
 
+    def test_saturation_emits_rate_limited_operator_signal(self, capsys):
+        # #61: cap saturation surfaces a rate-limited, sanitized stderr line —
+        # bounded (first-N/every-Nth), not one per call, host escape-sanitized.
+        import concurrent.futures
+        addon = load_addon()
+        addon._RESOLVE_MAX_INFLIGHT = 1
+        addon._resolve_saturation_count = 0
+        stuck = concurrent.futures.Future()
+        addon._inflight = {"stuck.host": stuck}   # saturated at cap=1
+        try:
+            capsys.readouterr()  # drain import-time stderr
+            for _ in range(150):
+                ok, why, _ = addon._validated_addresses("evil\x1b]0;x\x07.test")
+                assert not ok and why == "resolve-capacity"
+            err = capsys.readouterr().err
+            lines = [l for l in err.splitlines() if "resolver capacity saturated" in l]
+            # first 20 + #100 == 21 lines for 150 hits (rate-limited, not 150)
+            assert len(lines) == 21, f"expected 21 rate-limited lines, got {len(lines)}"
+            assert "\x1b" not in err                 # host escape-sanitized
+            assert "?" in lines[0]                    # the sanitized host is shown
+        finally:
+            stuck.cancel()
+
 
 class TestSafeAscii:
     """The shared sanitizer for attacker-influenced strings written to logs a

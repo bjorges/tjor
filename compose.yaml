@@ -36,6 +36,10 @@ services:
     cap_add: [SETUID, SETGID, CHOWN, DAC_READ_SEARCH]
     environment:
       TJOR_IP_GUARD: ${TJOR_IP_GUARD:-on}
+      # Bound the proxy's OS DNS resolver (#61) so a hung/black-holed lookup
+      # recovers fast (glibc RES_OPTIONS). Empty here -> the proxy entrypoint's
+      # small built-in default (timeout:1 attempts:2); set to tune. Advanced.
+      TJOR_PROXY_RES_OPTIONS: ${TJOR_PROXY_RES_OPTIONS:-}
       # Session identity registration (D1): the proxy verifies outbound
       # x-agent-* headers against these and strips forgeries; injection only
       # for TJOR_INJECT_HOSTS matches.

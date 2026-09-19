@@ -3,6 +3,24 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+### Security
+- **The proxy's OS DNS resolver is bounded, and cap saturation is observable
+  (#61, closes the v0.18.4 residual).** The v0.18.4 pool hardening assumed a
+  hung `getaddrinfo()` eventually gives up; the proxy image never bounded it, so
+  a black-holed lookup could hang a worker for the OS default (tens of seconds),
+  freeing the resolver cap slowly. The proxy entrypoint now exports a small,
+  tunable `RES_OPTIONS` (glibc; default `timeout:1 attempts:2`, override via
+  `TJOR_PROXY_RES_OPTIONS`), so a hung/black-holed lookup returns within a
+  bounded wall time and its worker frees fast — the cap self-recovers without a
+  proxy restart, making the "self-recovering" property provable. And when the
+  cap saturates, the proxy emits a rate-limited operator signal to stderr, so a
+  sustained many-slow-host condition is visible rather than silent. No
+  security-boundary change: still fails closed, and a black-holed *allowed* host
+  hits the existing "unresolvable → permitted (nothing can connect)" path fast
+  rather than the slower `resolve-timeout` deny (both safe — nothing connects).
+
 ## [0.18.5] — 2026-09-20 — Boundary results matrix + review follow-ups
 
 Publishes the adversarial boundary results matrix (#38) — the cage's guarantees

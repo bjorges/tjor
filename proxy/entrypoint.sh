@@ -6,6 +6,16 @@
 # access to the launcher-generated CA key in the confdir.
 set -eu
 
+# Bound the OS resolver (#61). The base image is glibc, which honors
+# RES_OPTIONS, so a hung/black-holed getaddrinfo returns within this wall time
+# instead of the OS default — the guard's resolver workers (and mitmproxy's own
+# upstream connect, same process) recover fast, so the resolver cap self-heals
+# without a proxy restart. Small default; override via TJOR_PROXY_RES_OPTIONS,
+# and an operator-supplied RES_OPTIONS is left untouched. Exported so the
+# mitmproxy process (exec'd below, incl. via gosu/su-exec) inherits it.
+: "${RES_OPTIONS:=${TJOR_PROXY_RES_OPTIONS:-timeout:1 attempts:2}}"
+export RES_OPTIONS
+
 DIR=/home/mitmproxy/.mitmproxy
 mkdir -p "$DIR"
 
