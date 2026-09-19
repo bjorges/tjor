@@ -3,7 +3,13 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.17.3] — 2026-09-19 — Security: kube_api_host validated pin
+
+The kube broker's `kube_api_host` override becomes a validated pin: it is
+checked against the active kubectl context's server before any token is
+minted, so a minted token and the proxy's injection/allowlist scope can no
+longer silently refer to two different clusters (#58). Also carries the
+multirepo CI-flake fix.
 
 ### Security
 - **`kube_api_host` is now a validated pin of the expected cluster (#58).**
