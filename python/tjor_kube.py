@@ -114,9 +114,48 @@ def kubeconfig(server, ca_path, token=PLACEHOLDER_TOKEN):
     return json.dumps(doc, indent=2) + "\n"
 
 
+def multi_kubeconfig(entries, ca_path, token=PLACEHOLDER_TOKEN):
+    """A placeholder kubeconfig with one context per configured cluster (#57).
+
+    ``entries`` is a list of ``(context_name, server)`` pairs. Each context
+    points at its real server, trusts the session CA at ``ca_path``, and
+    carries only ``token`` — a placeholder by default; the proxy injects the
+    real per-cluster SA token toward that cluster's origin. ``current-context``
+    is the first entry so a switch-free ``kubectl`` still targets a defined
+    cluster; the agent moves between clusters with ``kubectl config
+    use-context``. Context names must be unique (they are what the operator
+    switches by); a duplicate is refused so two clusters can never collide
+    onto one context.
+    """
+    entries = list(entries)
+    if not entries:
+        raise ValueError("no clusters given for multi-context kubeconfig")
+    names = [ctx for ctx, _ in entries]
+    if len(set(names)) != len(names):
+        raise ValueError(f"duplicate context name(s): {names!r}")
+    clusters, contexts, users = [], [], []
+    for ctx, server in entries:
+        if not ctx:
+            raise ValueError("empty context name")
+        server = normalize_server(server)
+        api_host(server)  # validate a host is present before we emit
+        clusters.append({"name": ctx, "cluster": {"server": server, "certificate-authority": ca_path}})
+        contexts.append({"name": ctx, "context": {"cluster": ctx, "user": ctx}})
+        users.append({"name": ctx, "user": {"token": token}})
+    doc = {
+        "apiVersion": "v1",
+        "kind": "Config",
+        "clusters": clusters,
+        "contexts": contexts,
+        "current-context": names[0],
+        "users": users,
+    }
+    return json.dumps(doc, indent=2) + "\n"
+
+
 def _main(argv):
     if len(argv) < 2:
-        sys.exit("usage: tjor_kube.py {host|origin|url|same|config} ...")
+        sys.exit("usage: tjor_kube.py {host|origin|url|same|config|multiconfig} ...")
     cmd = argv[1]
     try:
         if cmd == "host":  # host <server>
@@ -135,6 +174,13 @@ def _main(argv):
         elif cmd == "config":  # config <server> <ca_path> [token]
             sys.stdout.write(kubeconfig(*argv[2:5]) if len(argv) >= 5
                              else kubeconfig(argv[2], argv[3]))
+        elif cmd == "multiconfig":  # multiconfig <ca_path> <ctx> <server> [<ctx> <server> ...]
+            ca = argv[2]
+            rest = argv[3:]
+            if not rest or len(rest) % 2 != 0:
+                raise ValueError("multiconfig needs <ca_path> then (context server) pairs")
+            entries = list(zip(rest[0::2], rest[1::2]))
+            sys.stdout.write(multi_kubeconfig(entries, ca))
         else:
             sys.exit(f"tjor_kube.py: unknown command {cmd!r}")
     except (IndexError, ValueError) as exc:

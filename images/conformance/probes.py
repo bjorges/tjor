@@ -240,6 +240,17 @@ def p_broker_no_leak():
     assert BROKER_TOKEN not in str(arrived), "broker token leaked to a non-destination host"
 
 
+# Multi-cluster kube isolation (#57): cross-cluster token isolation — cluster
+# A's token never reaching cluster B's origin — is asserted authoritatively by
+# the addon unit suite (python/tests/test_addon_guards.py::TestKubeMultiInjection),
+# which drives the real per-origin injection path with a two-cluster broker.
+# It is NOT a live probe here for the same reason the #41 rebinding case is a
+# unit test, not a conformance probe: this topology runs a single stub broker
+# with TJOR_IP_GUARD=off, so it cannot stand up two private-endpoint clusters
+# to exercise the isolation end-to-end. A live two-cluster fixture is tracked
+# as future work if the boundary results matrix (#38) wants an e2e datapoint.
+
+
 def main() -> int:
     if not PROXY_IP or not DNS_IP:
         print("conformance: TJOR_PROXY_IP / TJOR_DNS_IP not set", file=sys.stderr)

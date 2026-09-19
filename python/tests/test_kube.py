@@ -185,6 +185,78 @@ class TestKubeconfig:
             tjor_kube.kubeconfig("https://", "/ca.pem")
 
 
+class TestMultiKubeconfig:
+    """Multi-context placeholder kubeconfig (#57): one context per cluster,
+    each with the placeholder token, first as current-context."""
+
+    ENTRIES = [
+        ("prod-aks", "https://api.prod:6443"),
+        ("staging-eks", "stg.example.com:6443"),  # bare host, assumed https
+    ]
+
+    def _load(self, entries=None, ca="/etc/ssl/certs/ca.crt", **kw):
+        out = tjor_kube.multi_kubeconfig(entries or self.ENTRIES, ca, **kw)
+        return out, json.loads(out)
+
+    def test_one_context_per_cluster(self):
+        _, doc = self._load()
+        assert [c["name"] for c in doc["contexts"]] == ["prod-aks", "staging-eks"]
+        assert [c["name"] for c in doc["clusters"]] == ["prod-aks", "staging-eks"]
+        assert [u["name"] for u in doc["users"]] == ["prod-aks", "staging-eks"]
+        # each context binds to its own cluster + user
+        for c in doc["contexts"]:
+            assert c["context"]["cluster"] == c["name"]
+            assert c["context"]["user"] == c["name"]
+
+    def test_first_is_current_context(self):
+        _, doc = self._load()
+        assert doc["current-context"] == "prod-aks"
+
+    def test_placeholder_token_only_in_every_user(self):
+        _, doc = self._load()
+        for u in doc["users"]:
+            assert u["user"] == {"token": tjor_kube.PLACEHOLDER_TOKEN}
+
+    def test_servers_normalized_and_ca_set(self):
+        _, doc = self._load()
+        servers = {c["name"]: c["cluster"]["server"] for c in doc["clusters"]}
+        assert servers["prod-aks"] == "https://api.prod:6443"
+        assert servers["staging-eks"] == "https://stg.example.com:6443"  # bare host got https
+        for c in doc["clusters"]:
+            assert c["cluster"]["certificate-authority"] == "/etc/ssl/certs/ca.crt"
+
+    def test_no_real_secret_ever(self):
+        # even a single entry never embeds anything but the placeholder by default
+        _, doc = self._load(entries=[("only", "https://api.only:6443")])
+        assert doc["users"][0]["user"]["token"] == tjor_kube.PLACEHOLDER_TOKEN
+
+    def test_duplicate_context_refused(self):
+        with pytest.raises(ValueError):
+            tjor_kube.multi_kubeconfig(
+                [("dup", "https://a:6443"), ("dup", "https://b:6443")], "/ca.pem")
+
+    def test_empty_list_refused(self):
+        with pytest.raises(ValueError):
+            tjor_kube.multi_kubeconfig([], "/ca.pem")
+
+    def test_invalid_server_refused(self):
+        with pytest.raises(ValueError):
+            tjor_kube.multi_kubeconfig([("c", "https://")], "/ca.pem")
+
+    def test_cli_multiconfig_emits_json(self, capsys):
+        tjor_kube._main(["tjor_kube.py", "multiconfig", "/ca.pem",
+                         "prod-aks", "https://api.prod:6443",
+                         "staging-eks", "stg.example.com:6443"])
+        doc = json.loads(capsys.readouterr().out)
+        assert doc["current-context"] == "prod-aks"
+        assert len(doc["contexts"]) == 2
+        assert all(u["user"]["token"] == tjor_kube.PLACEHOLDER_TOKEN for u in doc["users"])
+
+    def test_cli_multiconfig_odd_args_exit(self):
+        with pytest.raises(SystemExit):
+            tjor_kube._main(["tjor_kube.py", "multiconfig", "/ca.pem", "prod-aks"])
+
+
 class TestCli:
     def test_host_command(self, capsys):
         tjor_kube._main(["tjor_kube.py", "host", "https://api.example.com:6443"])

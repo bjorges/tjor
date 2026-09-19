@@ -210,6 +210,72 @@ class TestBrokerInjection:
         assert flow.request.headers["authorization"] == "Bearer agent-own"
 
 
+class TestKubeMultiInjection:
+    """Multi-cluster kube broker (#57): each cluster's Bearer token injected
+    ONLY toward its own exact origin (#49); no cross-cluster leakage."""
+
+    CFG = {
+        "source": "kube",
+        "clusters": [
+            {"origin": "api.prod:6443", "token": "prod-sa"},
+            {"origin": "api.staging:6443", "token": "staging-sa"},
+        ],
+    }
+
+    def make(self):
+        import tjor_broker as tb
+        addon = load_addon()
+        addon.BROKER = None
+        addon.KUBE_BROKER = tb.KubeMultiBroker(self.CFG)
+        return addon
+
+    def _flow(self, host, port, auth=None):
+        pytest.importorskip("mitmproxy")
+        import types
+        from mitmproxy.http import Headers
+        pairs = [(b"authorization", auth.encode())] if auth else []
+        return types.SimpleNamespace(request=types.SimpleNamespace(
+            host=host, port=port, headers=Headers(pairs)))
+
+    def test_bearer_scheme_used_not_token(self):
+        addon = self.make()
+        assert addon.broker_authorization("api.prod", 6443) == "Bearer prod-sa"
+
+    def test_each_origin_gets_its_own_token(self):
+        addon = self.make()
+        assert addon.broker_authorization("api.prod", 6443) == "Bearer prod-sa"
+        assert addon.broker_authorization("api.staging", 6443) == "Bearer staging-sa"
+
+    def test_cross_cluster_isolation(self):
+        addon = self.make()
+        # prod's origin must never carry staging's token
+        assert "staging" not in (addon.broker_authorization("api.prod", 6443) or "")
+        assert "prod" not in (addon.broker_authorization("api.staging", 6443) or "")
+
+    def test_non_cluster_host_gets_nothing(self):
+        addon = self.make()
+        assert addon.broker_authorization("elsewhere.test", 443) is None
+        assert addon.broker_authorization("api.prod", 443) is None  # right host, wrong port
+
+    def test_apply_overwrites_placeholder_toward_cluster(self):
+        addon = self.make()
+        f = self._flow("api.prod", 6443, auth="Bearer tjor-broker-placeholder")
+        addon._apply_broker(f)
+        assert f.request.headers["authorization"] == "Bearer prod-sa"
+
+    def test_apply_leaves_non_cluster_untouched(self):
+        addon = self.make()
+        f = self._flow("elsewhere.test", 443, auth="Bearer agent-own")
+        addon._apply_broker(f)
+        assert f.request.headers["authorization"] == "Bearer agent-own"
+
+    def test_apply_does_not_leak_across_ports(self):
+        addon = self.make()
+        f = self._flow("api.prod", 443, auth="Bearer agent-own")  # not the cluster port
+        addon._apply_broker(f)
+        assert f.request.headers["authorization"] == "Bearer agent-own"
+
+
 class TestAddressGuard:
     def test_private_resolution_denied(self):
         addon = load_addon()
@@ -420,18 +486,29 @@ class TestGateway:
 
     def test_ip_guard_exempts_only_the_kube_api_host(self):
         # Kube broker (#45): a private-endpoint cluster API server gets the
-        # same single-host, config-scoped exemption as the gateway.
+        # same config-scoped exemption as the gateway.
         addon = load_addon()
-        addon.KUBE_API_HOST = "api.private-cluster.internal"
+        addon.KUBE_API_HOSTS = frozenset({"api.private-cluster.internal"})
         addon._resolver = lambda h: {"10.12.0.4"}   # private for any host
         ok, why = addon.resolved_addresses_ok("api.private-cluster.internal")
         assert ok and why == "kube-exempt"
         ok2, _ = addon.resolved_addresses_ok("sneaky.internal.test")
         assert not ok2
 
+    def test_ip_guard_exempts_every_configured_cluster_host(self):
+        # #57: each configured cluster host is exempt; a non-cluster private
+        # host is still denied.
+        addon = load_addon()
+        addon.KUBE_API_HOSTS = frozenset({"api.prod.internal", "api.staging.internal"})
+        addon._resolver = lambda h: {"10.9.0.7"}
+        for host in ("api.prod.internal", "api.staging.internal"):
+            ok, why = addon.resolved_addresses_ok(host)
+            assert ok and why == "kube-exempt"
+        assert not addon.resolved_addresses_ok("other.internal.test")[0]
+
     def test_no_exemption_when_kube_broker_inactive(self):
         addon = load_addon()
-        addon.KUBE_API_HOST = ""
+        addon.KUBE_API_HOSTS = frozenset()
         addon._resolver = lambda h: {"10.12.0.4"}
         ok, _ = addon.resolved_addresses_ok("api.private-cluster.internal")
         assert not ok   # no kube broker -> guard applies normally
@@ -558,8 +635,8 @@ class TestServerConnectPin:
         addon = self._addon()
         addon._resolver = lambda host: {"172.20.0.5"}
         addon.GATEWAY_HOST = "tjor-gateway"
-        addon.KUBE_API_HOST = "api.private-cluster.internal"
-        for host in ("tjor-gateway", "api.private-cluster.internal"):
+        addon.KUBE_API_HOSTS = frozenset({"api.prod.internal", "api.staging.internal"})
+        for host in ("tjor-gateway", "api.prod.internal", "api.staging.internal"):
             data = self._hookdata(host)
             addon.TjorPolicy().server_connect(data)
             assert data.server.error is None

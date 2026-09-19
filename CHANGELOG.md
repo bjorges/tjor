@@ -3,6 +3,38 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+### Added
+- **Multi-cluster kube broker (#57).** One session can now reach several
+  Kubernetes clusters at once: list them under `[[broker.kube_clusters]]`
+  (each with its own `context`, `kube_sa`, `namespace`, `duration`, and
+  optional `api_host` pin), and the agent gets a single kubeconfig with a
+  context per cluster — switch between them live with `kubectl config
+  use-context`, no restart. Each cluster's short-TTL token is minted against
+  its own context (`kubectl create token --context …`) and injected only
+  toward that cluster's exact API origin (#49), so one cluster's token never
+  reaches another; every cluster API host gets the scoped SSRF-guard
+  exemption and resolve-and-pin treatment (#45/#41). Provisioning is
+  all-or-nothing and fail-closed: any cluster that can't validate its pin
+  (#58, per entry) or mint, or a duplicate API origin, disables the whole
+  broker loudly — never a session with a context that has no working token.
+  All clusters are provisioned at launch; there is no mechanism to add one to
+  a running session (the sealed-cage model is preserved). The deliberate
+  trade-off — simultaneous live credentials for N clusters in one session —
+  is a conscious, per-cluster-scoped grant, not an ambient one. The existing
+  flat single-cluster config keeps working unchanged.
+
+### Security
+- **Kube tokens are now injected with the `Bearer` scheme the Kubernetes API
+  requires.** The single-cluster kube broker previously injected
+  `Authorization: token <sa-token>` (the GitHub scheme, inherited from the
+  pat-shaped broker.json), which the API server does not accept as a bearer
+  token — a latent bug never caught because the kube path has no live-cluster
+  e2e. Both the single- and multi-cluster kube paths now use `Bearer`,
+  carried by a `source: "kube"` broker.json handled by a per-origin credential
+  map in the proxy. Found while implementing #57.
+
 ## [0.17.5] — 2026-09-19 — Review follow-ups & CI de-flake
 
 Non-behavioral hardening after a three-lens review approved v0.17.3 and

@@ -369,14 +369,18 @@ else
     git config --system credential."https://gist.github.com".helper '!gh auth git-credential'
 fi
 
-# 3b. Kube broker (#26): render a PLACEHOLDER kubeconfig so caged `kubectl`
-#     sends `Authorization: Bearer <placeholder>` and the proxy overwrites it
-#     with the real short-TTL SA token (which never enters the cage). Uses the
-#     SAME tjor_kube.py the launcher used to derive the host. TLS to the
-#     (proxy-MITM'd) API server is trusted via the session CA in CA_BUNDLE.
-#     Symlink-safe: the home persists, so a prior session could have planted a
-#     symlink here — de-symlink the dir and target before this root-owned write.
-if [[ -n "${TJOR_BROKER_ENABLED:-}" && -n "${TJOR_KUBE_SERVER:-}" ]]; then
+# 3b. Kube broker (#26 single-cluster, #57 multi-cluster): render a PLACEHOLDER
+#     kubeconfig with ONE CONTEXT PER CLUSTER so caged `kubectl` sends
+#     `Authorization: Bearer <placeholder>` and the proxy overwrites it with
+#     that cluster's real short-TTL SA token (which never enters the cage). The
+#     agent switches clusters with `kubectl config use-context`. Uses the SAME
+#     tjor_kube.py the launcher used; TLS to each (proxy-MITM'd) API server is
+#     trusted via the session CA in CA_BUNDLE. TJOR_KUBE_CONTEXTS and
+#     TJOR_KUBE_SERVERS are parallel comma-lists (one entry each for a
+#     single-cluster session). Symlink-safe: the home persists, so a prior
+#     session could have planted a symlink here — de-symlink dir and target
+#     before this root-owned write.
+if [[ -n "${TJOR_BROKER_ENABLED:-}" && -n "${TJOR_KUBE_SERVERS:-}" ]]; then
     kube_dir="${AGENT_HOME}/.kube"
     [[ -L "${kube_dir}" || ( -e "${kube_dir}" && ! -d "${kube_dir}" ) ]] && rm -rf "${kube_dir}"
     mkdir -p "${kube_dir}"
@@ -391,7 +395,15 @@ if [[ -n "${TJOR_BROKER_ENABLED:-}" && -n "${TJOR_KUBE_SERVER:-}" ]]; then
     for kube_target in "${kube_cfg}" "${kube_tmp}"; do
         [[ -L "${kube_target}" || ( -e "${kube_target}" && ! -f "${kube_target}" ) ]] && rm -rf "${kube_target}"
     done
-    if python3 /opt/tjor/python/tjor_kube.py config "${TJOR_KUBE_SERVER}" "${CA_BUNDLE}" >"${kube_tmp}" 2>/dev/null; then
+    # Build the (context, server) pair arguments for multiconfig from the two
+    # parallel comma-lists.
+    kube_args=()
+    IFS=',' read -r -a kube_ctxs <<<"${TJOR_KUBE_CONTEXTS}"
+    IFS=',' read -r -a kube_srvs <<<"${TJOR_KUBE_SERVERS}"
+    for kube_i in "${!kube_srvs[@]}"; do
+        kube_args+=("${kube_ctxs[kube_i]:-tjor}" "${kube_srvs[kube_i]}")
+    done
+    if python3 /opt/tjor/python/tjor_kube.py multiconfig "${CA_BUNDLE}" "${kube_args[@]}" >"${kube_tmp}" 2>/dev/null; then
         mv -f "${kube_tmp}" "${kube_cfg}"
         chmod 600 "${kube_cfg}"
         chown -R agent:agent "${kube_dir}" 2>/dev/null || true
@@ -399,7 +411,7 @@ if [[ -n "${TJOR_BROKER_ENABLED:-}" && -n "${TJOR_KUBE_SERVER:-}" ]]; then
         rm -f "${kube_tmp}"
         echo "tjor-entrypoint: WARNING: failed to render kube placeholder config" >&2
     fi
-    unset kube_dir kube_cfg kube_tmp kube_target
+    unset kube_dir kube_cfg kube_tmp kube_target kube_args kube_ctxs kube_srvs kube_i
 fi
 
 # 4. Ownership + writability. The setup above runs as root and creates XDG

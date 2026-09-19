@@ -200,3 +200,75 @@ class BrokerState:
 def load_config(path: str) -> dict:
     with open(path, "rb") as fh:
         return json.loads(fh.read().decode("utf-8"))
+
+
+class KubeMultiBroker:
+    """Per-cluster ServiceAccount bearer tokens for the ``kube`` source
+    (#26 single-cluster, #57 multi-cluster). Each configured cluster's token
+    is minted host-side at launch and injected only toward that cluster's
+    exact API origin (host + port, #49); there is no in-cage refresh (the
+    tokens are short-TTL, and a long session relaunches). Unlike the
+    GitHub sources, the Kubernetes API server requires the **Bearer** scheme,
+    so ``authorization()`` returns ``Bearer <token>`` (not ``token <t>``).
+
+    Config shape (``broker.json``)::
+
+        {"source": "kube", "clusters": [{"origin": "host:port", "token": "..."}]}
+
+    Origins are parsed with the shared broker-host parser (robust IPv6
+    bracketing) and canonicalized with the shared host canonicalizer, so a
+    lookup by a request's ``(host, port)`` matches exactly what the launcher
+    recorded. A single-cluster session is simply the one-entry case.
+    """
+
+    def __init__(self, config: dict):
+        # Local imports: keep this module's top-level dependency surface clean;
+        # these siblings are pure (no third-party deps) and always ship beside
+        # the broker in the proxy image and on the test path.
+        import tjor_identity
+        import tjor_policy
+
+        self._by_origin: dict[tuple[str, int], str] = {}
+        clusters = config.get("clusters") or []
+        for c in clusters:
+            origin, token = c.get("origin"), c.get("token")
+            if not origin or not token:
+                raise BrokerError(f"kube cluster entry missing origin/token: {c!r}")
+            pairs = tjor_identity.parse_broker_hosts(origin)
+            if len(pairs) != 1 or pairs[0][1] is None:
+                raise BrokerError(f"kube cluster origin must be one host:port: {origin!r}")
+            host, port = pairs[0]
+            key = (tjor_policy._canon_host(host), int(port))
+            if key in self._by_origin:
+                raise BrokerError(f"duplicate kube cluster origin: {origin!r}")
+            self._by_origin[key] = token
+        if not self._by_origin:
+            raise BrokerError("kube broker configured with no clusters")
+
+    def authorization(self, host: str, port: int) -> str | None:
+        """The Bearer value to inject toward ``host:port``, or None
+        (fail-closed) when that origin is not a configured cluster."""
+        import tjor_policy
+
+        token = self._by_origin.get((tjor_policy._canon_host(host), int(port)))
+        return f"Bearer {token}" if token is not None else None
+
+    def teardown(self) -> bool:
+        """Forget the tokens. The SA tokens are short-TTL and have no
+        server-side revoke endpoint here, so this just drops them from memory;
+        it returns True (nothing left to revoke), matching the pat contract."""
+        self._by_origin = {}
+        return True
+
+
+def write_kube_broker_json(path: str, clusters):
+    """Write the v2 ``kube`` broker.json atomically at 0600 (proxy-only, never
+    world-readable between create and use). ``clusters`` is an iterable of
+    ``(origin, token)`` pairs. Kept beside the launcher's ``write_broker_json``
+    so the secret is created with the mode, not chmod'd after."""
+    import os
+
+    doc = {"source": "kube", "clusters": [{"origin": o, "token": t} for o, t in clusters]}
+    fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
+    with os.fdopen(fd, "w") as fh:
+        fh.write(json.dumps(doc))

@@ -39,7 +39,8 @@ OPEN_PATHS = frozenset({
     "images.digests",   # harness -> image digest
 })
 EXTRA_KNOWN = frozenset({
-    "gateway.models",   # array of tables of free-form LiteLLM params
+    "gateway.models",         # array of tables of free-form LiteLLM params
+    "broker.kube_clusters",   # array of tables (#57); per-entry keys validated in the launcher
 })
 
 # The warn-only stance has one exception: an unknown key INSIDE a table whose

@@ -123,6 +123,30 @@ class TestConfigMerge:
         monkeypatch.delenv("TJOR_REPO_ROOT", raising=False)
         assert tjor_cfg.check() == 0
 
+    def test_kube_clusters_list_is_accepted(self, tmp_path, monkeypatch):
+        # #57: the array-of-tables is accepted (per-entry keys are validated in
+        # the launcher, not here) — it must NOT abort despite [broker] being a
+        # security table.
+        user = tmp_path / "config.toml"
+        user.write_text(
+            '[broker]\nsource = "kube"\n\n'
+            '[[broker.kube_clusters]]\ncontext = "prod"\nkube_sa = "agent-ro"\n'
+        )
+        monkeypatch.setenv("TJOR_USER_CONFIG", str(user))
+        monkeypatch.delenv("TJOR_REPO_ROOT", raising=False)
+        assert tjor_cfg.check() == 0
+
+    def test_typo_broker_key_still_aborts_alongside_kube_clusters(self, tmp_path, monkeypatch):
+        import pytest
+
+        user = tmp_path / "config.toml"
+        user.write_text('[broker]\nsource = "kube"\nkube_saa = "typo"\n')
+        monkeypatch.setenv("TJOR_USER_CONFIG", str(user))
+        monkeypatch.delenv("TJOR_REPO_ROOT", raising=False)
+        with pytest.raises(SystemExit) as exc:
+            tjor_cfg.check()
+        assert "broker.kube_saa" in str(exc.value)
+
     def test_broken_user_config_is_a_clean_hard_error(self, tmp_path, monkeypatch):
         import pytest
 

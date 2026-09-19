@@ -59,10 +59,11 @@ services:
       # only here (egress side); the agent holds a placeholder. Empty = disabled.
       TJOR_GATEWAY_HOST: ${TJOR_GATEWAY_HOST:-}
       TJOR_GATEWAY_KEY: ${TJOR_GATEWAY_KEY:-}
-      # Kube broker (#45): the cluster API host (hostname only, no secret) —
-      # gets the same scoped SSRF-guard exemption as the gateway host, so a
-      # private-endpoint control plane works without ip_guard=false globally.
-      TJOR_KUBE_API_HOST: ${TJOR_KUBE_API_HOST:-}
+      # Kube broker (#45, #57): the cluster API host(s), comma-separated
+      # (hostnames only, no secret) — EACH gets the same scoped SSRF-guard
+      # exemption as the gateway host, so private-endpoint control planes work
+      # without ip_guard=false globally. One host for a single-cluster session.
+      TJOR_KUBE_API_HOSTS: ${TJOR_KUBE_API_HOSTS:-}
     labels:
       tjor.role: proxy
       tjor.session: ${TJOR_SESSION:-}
@@ -154,10 +155,12 @@ services:
       # actually covers GitHub (a kube-only broker keeps the gh fallback, so
       # git doesn't send an unsubstitutable placeholder to github.com).
       TJOR_BROKER_HOSTS: ${TJOR_BROKER_HOSTS:-}
-      # Kube broker (#26): the API server URL the entrypoint renders a
-      # PLACEHOLDER kubeconfig for (empty unless the kube broker is active).
-      # Only the server address — never a token — is passed to the agent.
-      TJOR_KUBE_SERVER: ${TJOR_KUBE_SERVER:-}
+      # Kube broker (#26, #57): the per-cluster context names and API server
+      # URLs (comma-separated, parallel) the entrypoint renders a multi-context
+      # PLACEHOLDER kubeconfig from (empty unless the kube broker is active).
+      # Only server addresses — never a token — are passed to the agent.
+      TJOR_KUBE_CONTEXTS: ${TJOR_KUBE_CONTEXTS:-}
+      TJOR_KUBE_SERVERS: ${TJOR_KUBE_SERVERS:-}
       # Host uid for runtime alignment (uid-agnostic image, #21).
       TJOR_AGENT_UID: ${TJOR_AGENT_UID:-}
       # Kernel-sandbox tier (#9): Landlock mode (auto|require|off) for the

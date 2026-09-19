@@ -58,16 +58,23 @@ if not IDENTITY.valid:
 # config and any key live ONLY in this sidecar (egress side, unreachable
 # from the agent network). The agent holds a placeholder; the proxy swaps in
 # the real, short-TTL credential toward the destination host(s) only.
-BROKER = None
+BROKER = None       # pat/github-app: one credential, injected as `token <t>`
+KUBE_BROKER = None  # kube (#26/#57): per-origin bearer tokens, injected as `Bearer <t>`
 # Origin-scoped (#49): entries may carry a port (`host:6443`); a port-less
 # entry covers any port (pat/github-app back-compat). The kube source always
-# scopes to the API server's exact origin.
+# scopes to each cluster's API server's exact origin.
 BROKER_HOSTS = tjor_identity.parse_broker_hosts(os.environ.get("TJOR_BROKER_HOSTS", ""))
 _broker_config = os.environ.get("TJOR_BROKER_CONFIG", "")
-if _broker_config and BROKER_HOSTS:
+if _broker_config:
     try:
-        BROKER = tjor_broker.BrokerState(tjor_broker.load_config(_broker_config))
-    except (OSError, ValueError) as exc:
+        _bcfg = tjor_broker.load_config(_broker_config)
+        if _bcfg.get("source") == "kube":
+            # Kubernetes needs the Bearer scheme and a per-cluster token map;
+            # this covers both the single- (one entry) and multi-cluster cases.
+            KUBE_BROKER = tjor_broker.KubeMultiBroker(_bcfg)
+        elif BROKER_HOSTS:
+            BROKER = tjor_broker.BrokerState(_bcfg)
+    except (OSError, ValueError, tjor_broker.BrokerError) as exc:
         print(f"tjor: broker config invalid — no credential will be injected: {exc}",
               file=sys.stderr, flush=True)
 
@@ -81,13 +88,16 @@ _gw_host_raw = os.environ.get("TJOR_GATEWAY_HOST", "").strip()
 GATEWAY_HOST = tjor_policy._canon_host(_gw_host_raw) if _gw_host_raw else ""
 GATEWAY_KEY = os.environ.get("TJOR_GATEWAY_KEY", "")
 
-# Kube broker (#45): the cluster API server host, set by the launcher only
-# while the kube broker is active (hostname only — never a credential). A
-# private-endpoint control plane (on-prem, private AKS/EKS) legitimately
-# resolves to a non-global address; it gets the SAME scoped SSRF-guard
-# exemption as the gateway host, so `ip_guard` never needs a global opt-out.
-_kube_host_raw = os.environ.get("TJOR_KUBE_API_HOST", "").strip()
-KUBE_API_HOST = tjor_policy._canon_host(_kube_host_raw) if _kube_host_raw else ""
+# Kube broker (#45, #57): the cluster API server host(s), set by the launcher
+# only while the kube broker is active (hostnames only — never a credential).
+# A private-endpoint control plane (on-prem, private AKS/EKS) legitimately
+# resolves to a non-global address; EACH configured cluster host gets the SAME
+# scoped SSRF-guard exemption as the gateway host, so `ip_guard` never needs a
+# global opt-out. A set now (one entry for a single-cluster session).
+KUBE_API_HOSTS = frozenset(
+    tjor_policy._canon_host(h)
+    for h in tjor_identity.parse_inject_hosts(os.environ.get("TJOR_KUBE_API_HOSTS", ""))
+)
 
 DENIAL_LOG = os.environ.get("TJOR_DENIAL_LOG", "")
 _denial_log_count = 0
@@ -279,10 +289,10 @@ def _validated_addresses(host: str) -> tuple[bool, str, frozenset[str]]:
     # config-scoped host, not a blanket TJOR_IP_GUARD=off.
     if GATEWAY_HOST and host == GATEWAY_HOST:
         return True, "gateway-exempt", frozenset()
-    # Kube broker (#45): same single-host, config-scoped exemption for the
-    # cluster API server — a private-endpoint control plane must be reachable
-    # without disabling the guard for every other allowed host.
-    if KUBE_API_HOST and host == KUBE_API_HOST:
+    # Kube broker (#45, #57): the same config-scoped exemption for EACH
+    # configured cluster API server — a private-endpoint control plane must be
+    # reachable without disabling the guard for every other allowed host.
+    if host in KUBE_API_HOSTS:
         return True, "kube-exempt", frozenset()
     now = time.monotonic()
     hit = _ip_cache.get(host)
@@ -421,7 +431,15 @@ def broker_authorization(host: str, port: int) -> str | None:
     """Testable seam: the Authorization value to inject toward `host:port`, or
     None if this origin is not a broker destination or no credential is
     available (fail-closed). Origin-scoped (#49): a port-scoped destination
-    entry never matches the same hostname on a different port."""
+    entry never matches the same hostname on a different port. The kube source
+    returns a per-cluster `Bearer <t>` (the scheme the K8s API requires); the
+    pat/github-app source returns `token <t>` toward BROKER_HOSTS."""
+    if KUBE_BROKER is not None:
+        try:
+            return KUBE_BROKER.authorization(host, port)  # Bearer, exact origin, or None
+        except Exception as exc:  # noqa: BLE001
+            print(f"tjor: kube broker error — no credential injected: {exc!r}", file=sys.stderr, flush=True)
+            return None
     if BROKER is None or not tjor_identity.broker_covers(BROKER_HOSTS, host, port):
         return None
     try:
@@ -438,6 +456,17 @@ def _apply_broker(flow) -> None:
     placeholder is STRIPPED (never forwarded) so the upstream rejects rather
     than the agent's placeholder leaking or a stale token being used."""
     host, port = flow.request.host, flow.request.port
+    if KUBE_BROKER is not None:
+        # kube: a destination is exactly a configured cluster origin (#49/#57).
+        # Toward one, overwrite the placeholder with that cluster's real Bearer
+        # token; toward anything else, leave the request untouched.
+        auth = broker_authorization(host, port)
+        if auth is None:
+            return
+        if "authorization" in flow.request.headers:
+            del flow.request.headers["authorization"]
+        flow.request.headers["authorization"] = auth
+        return
     if BROKER is None or not tjor_identity.broker_covers(BROKER_HOSTS, host, port):
         return
     auth = broker_authorization(host, port)
@@ -483,7 +512,7 @@ class TjorPolicy:
             # Deliberate internal endpoints keep live docker DNS (their IPs
             # change on container restart): never pinned, same scoped
             # exemptions as the verdict path.
-            if (GATEWAY_HOST and canon == GATEWAY_HOST) or (KUBE_API_HOST and canon == KUBE_API_HOST):
+            if (GATEWAY_HOST and canon == GATEWAY_HOST) or canon in KUBE_API_HOSTS:
                 return
             if _is_ip_literal(canon):
                 return  # an IP literal IS the judged address — nothing to pin

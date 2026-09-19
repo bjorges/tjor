@@ -415,13 +415,23 @@ kube_server_url() {
     printf '%s' "${server}"
 }
 
+# Same, but for a NAMED context (#57 multi-cluster): read the server of the
+# context a per-cluster entry mints against, so its api_host pin is validated
+# against the right cluster (#58, per entry).
+kube_server_url_ctx() { # $1 = kubectl context name
+    local server
+    server="$(kubectl config view --minify --context "$1" -o 'jsonpath={.clusters[0].cluster.server}' 2>/dev/null)" || return 1
+    [[ -n "${server}" ]] || return 1
+    printf '%s' "${server}"
+}
+
 prepare_broker() {
     # Credential broker (D2): assemble the broker config into the SESSION DIR
     # (mounted only into the proxy sidecar, egress side), resolving secrets
     # host-side so nothing sensitive is ever passed to the agent. Sets
     # TJOR_BROKER_* for compose. Fail-closed: any problem disables injection
     # loudly rather than silently downgrading to a long-lived token.
-    export TJOR_BROKER_CONFIG_MOUNT="" TJOR_BROKER_HOSTS="" TJOR_BROKER_ENABLED="" TJOR_BROKER_DIR="" TJOR_KUBE_SERVER="" TJOR_KUBE_API_HOST=""
+    export TJOR_BROKER_CONFIG_MOUNT="" TJOR_BROKER_HOSTS="" TJOR_BROKER_ENABLED="" TJOR_BROKER_DIR="" TJOR_KUBE_SERVERS="" TJOR_KUBE_CONTEXTS="" TJOR_KUBE_API_HOSTS=""
     local source; source="$(cfg broker.source --default '')"
     [[ -n "${source}" ]] || return 0
     local dir="${TJOR_SESSION_DIR}/broker"
@@ -445,73 +455,155 @@ prepare_broker() {
             local repos; repos="$(cfg broker.repositories --default '[]')"
             write_broker_json "${dir}/broker.json" github-app "${app}" "${inst}" "${keypath}" "${repos}" ;;
         kube)
-            # Mint a short-TTL SA token host-side (kubectl does the cluster
-            # auth), inject it like a pat toward the API server host ONLY. The
-            # agent gets a placeholder kubeconfig; the real token stays in the
-            # proxy. RBAC on the SA is the cluster-enforced action policy.
+            # Mint a short-TTL SA token host-side per cluster (kubectl does the
+            # cluster auth), and inject each toward its OWN API origin ONLY as a
+            # Bearer token — the scheme the Kubernetes API requires (#57). The
+            # agent gets a multi-context placeholder kubeconfig and switches
+            # clusters client-side; the real tokens stay in the proxy. RBAC on
+            # each SA is the cluster-enforced action policy. Fail-closed and
+            # ALL-OR-NOTHING: any cluster that can't validate/mint, or a
+            # duplicate origin/context, disables the WHOLE broker — never a
+            # session whose kubeconfig lists a context with no working token.
             command -v kubectl >/dev/null 2>&1 \
                 || { warn "broker source=kube needs kubectl on the host — broker disabled"; return 0; }
-            local sa ns ttl server api
-            sa="$(cfg broker.kube_sa --default '')"
-            ns="$(cfg broker.kube_namespace --default default)"
-            ttl="$(cfg broker.kube_duration --default 1h)"
-            [[ -n "${sa}" ]] \
-                || { warn "broker source=kube needs broker.kube_sa (the ServiceAccount to mint a token for) — broker disabled"; return 0; }
-            # Validate SA + namespace as Kubernetes DNS names before handing them
-            # to kubectl: a value starting with '-' would be parsed as a kubectl
-            # FLAG, not a positional (argument injection). Secondary defense —
-            # these come from trust-gated config seen during `tjor trust` — but
-            # cheap and correct. Names are DNS-1123-ish: start/end alphanumeric.
-            local _v
-            for _v in "${sa}" "${ns}"; do
-                [[ "${_v}" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] \
-                    || { warn "broker source=kube: invalid ServiceAccount/namespace '${_v}' (lowercase DNS name; no leading '-') — broker disabled"; return 0; }
+            # Normalize config into TSV entries (one cluster per line:
+            # context<TAB>sa<TAB>ns<TAB>ttl<TAB>api_host). The explicit
+            # [[broker.kube_clusters]] list wins; else a single flat entry from
+            # the back-compat keys, with an empty context = the active context.
+            # [broker] is a security table, so an unknown per-entry key aborts
+            # (a typo must never silently mis-scope a cluster).
+            # clusters_json passed as an ARGUMENT (not stdin), so the heredoc
+            # is free to carry the normalizer program (`python3 -` reads it from
+            # stdin). On any validation error python exits non-zero with the
+            # message on stderr (merged via 2>&1 into `entries`).
+            local clusters_json entries
+            clusters_json="$(cfg broker.kube_clusters --default '[]')"
+            entries="$(python3 - "${clusters_json}" \
+                        "$(cfg broker.kube_sa --default '')" \
+                        "$(cfg broker.kube_namespace --default default)" \
+                        "$(cfg broker.kube_duration --default 1h)" \
+                        "$(cfg broker.kube_api_host --default '')" 2>&1 <<'PY'
+import json, sys
+clusters = json.loads(sys.argv[1])
+flat_sa, flat_ns, flat_ttl, flat_api = sys.argv[2:6]
+ALLOWED = {"context", "kube_sa", "kube_namespace", "kube_duration", "api_host"}
+rows = []
+if clusters:
+    if not isinstance(clusters, list):
+        sys.exit("broker.kube_clusters must be a list of tables")
+    for i, c in enumerate(clusters):
+        if not isinstance(c, dict):
+            sys.exit(f"broker.kube_clusters[{i}] must be a table")
+        extra = sorted(set(c) - ALLOWED)
+        if extra:
+            sys.exit(f"broker.kube_clusters[{i}] has unknown key(s): {extra}")
+        ctx, sa = c.get("context", ""), c.get("kube_sa", "")
+        if not ctx:
+            sys.exit(f"broker.kube_clusters[{i}] needs 'context'")
+        if not sa:
+            sys.exit(f"broker.kube_clusters[{i}] needs 'kube_sa'")
+        # \x1f (unit separator) between fields, NOT a tab: tab is IFS
+        # whitespace, so bash `read` would trim the empty leading context
+        # field and shift every column. \x1f is non-whitespace, so empty
+        # fields (an unpinned entry, the flat entry's empty context) survive.
+        rows.append("\x1f".join([ctx, sa, c.get("kube_namespace", "default"),
+                                 c.get("kube_duration", "1h"), c.get("api_host", "")]))
+else:
+    if not flat_sa:
+        sys.exit("needs broker.kube_sa (or a [[broker.kube_clusters]] list)")
+    rows.append("\x1f".join(["", flat_sa, flat_ns or "default", flat_ttl or "1h", flat_api]))
+sys.stdout.write("\n".join(rows))
+PY
+)" || { warn "broker source=kube: ${entries} — broker disabled"; return 0; }
+            # PASS 1 — validate EVERY cluster (keys, DNS names, duration, server
+            # readability, api_host pin (#58), unique origin/context) with NO
+            # minting. So a bad config disables the broker before any token is
+            # ever requested (spec: "before minting any cluster's token").
+            local -a k_ctxnames=() k_servers=() k_apis=() k_origins=() k_sas=() k_nss=() k_ttls=() k_ctxs=() k_tokens=()
+            local ctx sa ns ttl pin ctxname server api origin ctxsrv token _v o c
+            while IFS=$'\x1f' read -r ctx sa ns ttl pin; do
+                [[ -n "${sa}" ]] || continue
+                # DNS-name + duration validation per entry (argument-injection
+                # defense: a leading '-' would be read as a kubectl flag).
+                for _v in "${sa}" "${ns}"; do
+                    [[ "${_v}" =~ ^[a-z0-9]([a-z0-9.-]*[a-z0-9])?$ ]] \
+                        || { warn "broker source=kube: invalid ServiceAccount/namespace '${_v}' (lowercase DNS name; no leading '-') — broker disabled"; return 0; }
+                done
+                [[ "${ttl}" =~ ^[0-9]+[smh]$ ]] \
+                    || { warn "broker source=kube: invalid kube_duration '${ttl}' (e.g. 3600s, 30m, 1h) — broker disabled"; return 0; }
+                # A list entry's context name must itself be flag-safe (it is
+                # passed to kubectl as `--context <ctx>`).
+                [[ -z "${ctx}" || "${ctx}" != -* ]] \
+                    || { warn "broker source=kube: invalid context name '${ctx}' (must not start with '-') — broker disabled"; return 0; }
+                # Determine the server for this entry and validate any api_host
+                # pin against the context it is minted against (#58, per entry).
+                if [[ -n "${pin}" ]]; then
+                    server="${pin}"
+                    if [[ -n "${ctx}" ]]; then ctxsrv="$(kube_server_url_ctx "${ctx}")"; else ctxsrv="$(kube_server_url)"; fi \
+                        || { warn "broker source=kube: api_host is set for '${ctx:-active context}' but that context's server could not be read, so the pin cannot be validated against the cluster the token would be minted for — fix the context or unset api_host. Broker disabled."; return 0; }
+                    python3 "${TJOR_ROOT}/python/tjor_kube.py" same "${pin}" "${ctxsrv}" 2>/dev/null \
+                        || { warn "broker source=kube: api_host ('${pin}') does not name the server of context '${ctx:-active}' ('${ctxsrv}') — token and injection scope would refer to different clusters. Fix api_host or the context. Broker disabled."; return 0; }
+                else
+                    if [[ -n "${ctx}" ]]; then server="$(kube_server_url_ctx "${ctx}")"; else server="$(kube_server_url)"; fi \
+                        || { warn "broker source=kube: could not read the API server for context '${ctx:-active}' ('kubectl config view --minify') — set api_host or fix the context. Broker disabled."; return 0; }
+                fi
+                server="$(python3 "${TJOR_ROOT}/python/tjor_kube.py" url "${server}" 2>/dev/null)" \
+                    && api="$(python3 "${TJOR_ROOT}/python/tjor_kube.py" host "${server}" 2>/dev/null)" \
+                    && origin="$(python3 "${TJOR_ROOT}/python/tjor_kube.py" origin "${server}" 2>/dev/null)" \
+                    || { warn "broker source=kube: could not parse an API host from the server URL for context '${ctx:-active}' — broker disabled"; return 0; }
+                # Context name in the agent's kubeconfig: the configured name for
+                # a list entry, "tjor" for the single flat entry (unchanged).
+                ctxname="${ctx:-tjor}"
+                # Refuse ambiguity: an origin can carry only one token; a context
+                # name can name only one cluster.
+                for o in ${k_origins[@]+"${k_origins[@]}"}; do
+                    [[ "${o}" == "${origin}" ]] && { warn "broker source=kube: two clusters resolve to the same API origin '${origin}' — an origin cannot carry two tokens. Broker disabled."; return 0; }
+                done
+                for c in ${k_ctxnames[@]+"${k_ctxnames[@]}"}; do
+                    [[ "${c}" == "${ctxname}" ]] && { warn "broker source=kube: duplicate context name '${ctxname}' — broker disabled."; return 0; }
+                done
+                k_ctxnames+=("${ctxname}"); k_servers+=("${server}"); k_apis+=("${api}"); k_origins+=("${origin}")
+                k_sas+=("${sa}"); k_nss+=("${ns}"); k_ttls+=("${ttl}"); k_ctxs+=("${ctx}")
+            done <<<"${entries}"
+            [[ "${#k_origins[@]}" -gt 0 ]] \
+                || { warn "broker source=kube: no clusters were configured — broker disabled"; return 0; }
+            # PASS 2 — mint each validated cluster. A mint failure still disables
+            # the WHOLE broker (all-or-nothing); the tokens already minted are
+            # simply discarded (broker.json is never written or exported).
+            local _i
+            for _i in "${!k_origins[@]}"; do
+                if [[ -n "${k_ctxs[_i]}" ]]; then
+                    token="$(kubectl create token "${k_sas[_i]}" --context "${k_ctxs[_i]}" --namespace "${k_nss[_i]}" --duration "${k_ttls[_i]}" 2>/dev/null)"
+                else
+                    token="$(kubectl create token "${k_sas[_i]}" --namespace "${k_nss[_i]}" --duration "${k_ttls[_i]}" 2>/dev/null)"
+                fi \
+                    || { warn "broker source=kube: 'kubectl create token ${k_sas[_i]} -n ${k_nss[_i]}${k_ctxs[_i]:+ --context ${k_ctxs[_i]}}' failed — your kubectl identity needs 'create' on the SA's serviceaccounts/token subresource, and the SA must exist. Broker disabled."; return 0; }
+                [[ -n "${token}" ]] \
+                    || { warn "broker source=kube: kubectl returned an empty token for context '${k_ctxs[_i]:-active}' — broker disabled"; return 0; }
+                k_tokens+=("${token}")
+                echo "tjor: kube broker — minted a short-TTL token for ${k_ctxnames[_i]} (SA ${k_nss[_i]}/${k_sas[_i]}); allow the API host in your egress policy:  tjor policy add ${k_apis[_i]}" >&2
             done
-            [[ "${ttl}" =~ ^[0-9]+[smh]$ ]] \
-                || { warn "broker source=kube: invalid kube_duration '${ttl}' (e.g. 3600s, 30m, 1h) — broker disabled"; return 0; }
-            # API server: pinned override, else derived from the active context.
-            # An explicit override is a validated PIN of the expected cluster
-            # (#58), not a selector — minting always targets the ACTIVE
-            # context, so a mismatching override would scope injection to one
-            # cluster while the token belongs to another. Validated below,
-            # before any token is minted.
-            local pinned
-            server="$(cfg broker.kube_api_host --default '')"; pinned="${server}"
-            if [[ -z "${server}" ]]; then
-                server="$(kube_server_url)" \
-                    || { warn "broker source=kube: could not read the API server from your kubeconfig ('kubectl config view --minify') — set broker.kube_api_host or fix your context. Broker disabled."; return 0; }
-            fi
-            local origin
-            server="$(python3 "${TJOR_ROOT}/python/tjor_kube.py" url "${server}" 2>/dev/null)" \
-                && api="$(python3 "${TJOR_ROOT}/python/tjor_kube.py" host "${server}" 2>/dev/null)" \
-                && origin="$(python3 "${TJOR_ROOT}/python/tjor_kube.py" origin "${server}" 2>/dev/null)" \
-                || { warn "broker source=kube: could not parse an API host from the server URL — broker disabled"; return 0; }
-            if [[ -n "${pinned}" ]]; then
-                local active
-                active="$(kube_server_url)" \
-                    || { warn "broker source=kube: kube_api_host is set but the active context's server could not be read ('kubectl config view --minify'), so the override cannot be validated against the cluster the token would be minted for — fix your context or unset broker.kube_api_host. Broker disabled."; return 0; }
-                python3 "${TJOR_ROOT}/python/tjor_kube.py" same "${server}" "${active}" 2>/dev/null \
-                    || { warn "broker source=kube: kube_api_host ('${pinned}') does not name the active context's server ('${active}') — the token would be minted for the ACTIVE cluster while injection and allowlisting are scoped to the configured one. Switch clusters ('kubectl config use-context …') or fix/remove broker.kube_api_host. Broker disabled."; return 0; }
-            fi
-            # ACCEPTED RESIDUAL RISK (#58 review): the active context is read
-            # above for validation and again, implicitly, by 'kubectl create
-            # token' below — two separate reads. A `kubectl config use-context`
-            # switch racing between them could mint against a context different
-            # from the one validated. This is a HOST-SIDE race the operator
-            # controls at launch, not an agent-reachable surface (the cage is
-            # not up yet), and closing it fully would mean pinning a resolved
-            # --context through minting. Bounded and accepted; documented so it
-            # is a conscious choice, not an oversight.
-            local token
-            token="$(kubectl create token "${sa}" --namespace "${ns}" --duration "${ttl}" 2>/dev/null)" \
-                || { warn "broker source=kube: 'kubectl create token ${sa} -n ${ns}' failed — your kubectl identity needs 'create' on the SA's serviceaccounts/token subresource, and the SA must exist. Broker disabled."; return 0; }
-            [[ -n "${token}" ]] \
-                || { warn "broker source=kube: kubectl returned an empty token — broker disabled"; return 0; }
-            write_broker_json "${dir}/broker.json" pat "${token}"
-            hosts="${origin}"                    # inject ONLY toward the API server's exact origin (host:port, #49)
-            export TJOR_KUBE_SERVER="${server}"  # the agent renders a placeholder kubeconfig for this server
-            export TJOR_KUBE_API_HOST="${api}"   # scoped SSRF-guard exemption at the proxy (#45; hostname-level)
-            echo "tjor: kube broker — minted a short-TTL token for SA ${ns}/${sa}; allow the API host in your egress policy:  tjor policy add ${api}" >&2 ;;
+            # Assemble the v2 broker.json (source=kube, per-origin tokens). The
+            # program is in -c so STDIN is free for the tokens — they go over
+            # stdin, never argv, so no secret lands in a process listing; the
+            # origins (non-secret) are argv, parallel to the token lines.
+            local t
+            { for t in "${k_tokens[@]}"; do printf '%s\n' "${t}"; done; } \
+                | TJOR_ROOT="${TJOR_ROOT}" python3 -c '
+import os, sys
+sys.path.insert(0, os.path.join(os.environ["TJOR_ROOT"], "python"))
+import tjor_broker
+out, origins = sys.argv[1], sys.argv[2:]
+tokens = sys.stdin.read().splitlines()
+tjor_broker.write_kube_broker_json(out, zip(origins, tokens))
+' "${dir}/broker.json" ${k_origins[@]+"${k_origins[@]}"} \
+                || { warn "broker source=kube: failed to write broker.json — broker disabled"; return 0; }
+            local IFS=,
+            hosts="${k_origins[*]}"                          # inject each token toward its exact origin (#49)
+            export TJOR_KUBE_SERVERS="${k_servers[*]}"       # per-cluster servers the agent renders contexts for
+            export TJOR_KUBE_CONTEXTS="${k_ctxnames[*]}"     # parallel context names
+            export TJOR_KUBE_API_HOSTS="${k_apis[*]}"        # scoped SSRF-guard exemption per cluster (#45)
+            ;;
         *) warn "unknown broker.source '${source}' — broker disabled"; return 0 ;;
     esac
     export TJOR_BROKER_CONFIG_MOUNT="${dir}/broker.json"

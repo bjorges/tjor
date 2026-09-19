@@ -67,6 +67,83 @@ class TestBrokerState:
         assert st.authorization() == "token ok" # retried on next call
 
 
+class TestKubeMultiBroker:
+    """Per-cluster kube bearer tokens (#57), keyed by exact origin (#49)."""
+
+    CFG = {
+        "source": "kube",
+        "clusters": [
+            {"origin": "api.prod:6443", "token": "prod-sa-tok"},
+            {"origin": "api.staging:6443", "token": "staging-sa-tok"},
+        ],
+    }
+
+    def test_bearer_scheme_per_origin(self):
+        b = tb.KubeMultiBroker(self.CFG)
+        # Kubernetes requires Bearer, NOT the GitHub `token` scheme.
+        assert b.authorization("api.prod", 6443) == "Bearer prod-sa-tok"
+        assert b.authorization("api.staging", 6443) == "Bearer staging-sa-tok"
+
+    def test_cross_cluster_isolation(self):
+        b = tb.KubeMultiBroker(self.CFG)
+        # prod's origin never yields staging's token and vice versa
+        assert "staging" not in (b.authorization("api.prod", 6443) or "")
+        assert "prod" not in (b.authorization("api.staging", 6443) or "")
+
+    def test_unknown_origin_is_none(self):
+        b = tb.KubeMultiBroker(self.CFG)
+        assert b.authorization("api.prod", 443) is None       # right host, wrong port (#49)
+        assert b.authorization("elsewhere.test", 6443) is None
+        assert b.authorization("api.staging", 8443) is None
+
+    def test_host_canonicalized(self):
+        b = tb.KubeMultiBroker(self.CFG)
+        assert b.authorization("API.PROD", 6443) == "Bearer prod-sa-tok"  # case-insensitive host
+
+    def test_single_cluster_is_the_one_entry_case(self):
+        b = tb.KubeMultiBroker({"source": "kube", "clusters": [{"origin": "api.only:6443", "token": "t"}]})
+        assert b.authorization("api.only", 6443) == "Bearer t"
+
+    def test_ipv6_origin(self):
+        b = tb.KubeMultiBroker({"source": "kube", "clusters": [{"origin": "[2001:db8::1]:6443", "token": "v6"}]})
+        assert b.authorization("2001:db8::1", 6443) == "Bearer v6"
+
+    def test_duplicate_origin_refused(self):
+        with pytest.raises(tb.BrokerError):
+            tb.KubeMultiBroker({"source": "kube", "clusters": [
+                {"origin": "api:6443", "token": "a"}, {"origin": "api:6443", "token": "b"}]})
+
+    def test_empty_or_incomplete_refused(self):
+        with pytest.raises(tb.BrokerError):
+            tb.KubeMultiBroker({"source": "kube", "clusters": []})
+        with pytest.raises(tb.BrokerError):
+            tb.KubeMultiBroker({"source": "kube", "clusters": [{"origin": "api:6443"}]})  # no token
+        with pytest.raises(tb.BrokerError):
+            tb.KubeMultiBroker({"source": "kube", "clusters": [{"token": "t"}]})  # no origin
+
+    def test_teardown_forgets(self):
+        b = tb.KubeMultiBroker(self.CFG)
+        assert b.teardown() is True
+        assert b.authorization("api.prod", 6443) is None
+
+
+class TestWriteKubeBrokerJson:
+    def test_shape_and_perms(self, tmp_path):
+        import json
+        p = tmp_path / "broker.json"
+        tb.write_kube_broker_json(str(p), [("api.prod:6443", "tok-a"), ("api.staging:6443", "tok-b")])
+        assert (p.stat().st_mode & 0o777) == 0o600
+        doc = json.loads(p.read_text())
+        assert doc["source"] == "kube"
+        assert doc["clusters"] == [
+            {"origin": "api.prod:6443", "token": "tok-a"},
+            {"origin": "api.staging:6443", "token": "tok-b"},
+        ]
+        # round-trips into a working broker
+        b = tb.KubeMultiBroker(doc)
+        assert b.authorization("api.prod", 6443) == "Bearer tok-a"
+
+
 class TestTeardown:
     def test_github_app_teardown_revokes(self, monkeypatch):
         revoked = []

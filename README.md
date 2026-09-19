@@ -158,6 +158,36 @@ on the host (it does the cluster auth) and that your identity can `create` the
 SA's `serviceaccounts/token`. The token is short-lived with no refresh — a
 session outliving it re-launches. See the kube-broker design under `openspec/`.
 
+**Multiple clusters in one session (#57).** List clusters explicitly instead of
+the flat keys; each mints against its own kubectl context, and the agent gets one
+kubeconfig with a context per cluster — switch between them live, no restart:
+
+```toml
+[broker]
+source = "kube"
+
+[[broker.kube_clusters]]
+context   = "prod-aks"      # the kubectl context to mint against
+kube_sa   = "agent-readonly"
+namespace = "team-a"
+
+[[broker.kube_clusters]]
+context   = "staging-eks"
+kube_sa   = "agent-readonly"
+```
+
+```console
+$ kubectl config use-context prod-aks && kubectl get pods
+$ kubectl config use-context staging-eks && kubectl get pods   # different cluster, live
+```
+
+Each cluster's token is injected only toward that cluster's exact API origin (a
+token never reaches another cluster), and each API host must be allowed in the
+egress policy — tjor prints one `tjor policy add …` line per cluster at launch.
+Provisioning is **all-or-nothing**: if any listed cluster can't validate or mint,
+or two resolve to the same API origin, the whole broker is disabled loudly. All
+clusters are set up at launch (there's no adding one to a running session).
+
 **Granting `pods/log`?** Workload logs are the read most likely to pull
 sensitive data into the session — make it a conscious trade-off: follow the
 exfiltration-conscious checklist in
