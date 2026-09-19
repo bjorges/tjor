@@ -3,7 +3,11 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.18.5] — 2026-09-20 — Boundary results matrix + review follow-ups
+
+Publishes the adversarial boundary results matrix (#38) — the cage's guarantees
+enumerated, generated from the suites and drift-checked — plus the non-blocking
+v0.18.4 review follow-ups. Docs and tooling only; no runtime behavior change.
 
 ### Added
 - **Published adversarial boundary results matrix (#38, builds on #13).** The
