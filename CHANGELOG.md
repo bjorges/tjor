@@ -3,7 +3,12 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.17.4] — 2026-09-19 — Security: DNS resolve-and-pin
+
+Closes a DNS-rebinding TOCTOU in the egress SSRF guard: the guard validated
+a hostname at request time, but mitmproxy re-resolved it at connect time, so
+a low-TTL flip could reach a private address the guard never saw. Egress
+connections are now pinned to a guard-validated address (#41).
 
 ### Security
 - **Egress connections are pinned to the address the SSRF guard validated
