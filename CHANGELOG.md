@@ -3,6 +3,20 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+### Testing
+- **multirepo readiness gate probes registered git trust, not buffered
+  logs.** The `cda35df` gate waited for the entrypoint's `kernel-sandbox:`
+  line via `docker logs | grep`, but a detached container's stdout can sit
+  block-buffered: on one CI runner the grep missed for the full 60s window
+  while the container was already booted and the harness running (the buffer
+  flushed only once the harness produced output), failing a healthy launch
+  (v0.17.3 CI). The gate now polls `git config --system --get-all
+  safe.directory` over `docker exec` — live state, immune to log buffering —
+  and waits until all four mount roots (writable A/B/P, read-only C) are
+  registered, proving the trust loop finished rather than just started.
+
 ## [0.17.4] — 2026-09-19 — Security: DNS resolve-and-pin
 
 Closes a DNS-rebinding TOCTOU in the egress SSRF guard: the guard validated

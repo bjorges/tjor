@@ -73,14 +73,33 @@ done
 # entrypoint registers git trust (safe.directory, step 3) a few seconds
 # later — exec'ing git before that races the registration (flaked in CI:
 # the first git checks ran 3s before registration landed, while identical
-# checks seconds later passed). The kernel-sandbox status line prints
-# AFTER the git-trust step, so it is the "trust is registered" sentinel.
-for _ in $(seq 1 60); do
-    docker logs "${CTR}" 2>&1 | grep -q "kernel-sandbox:" && break
+# checks seconds later passed).
+#
+# Probe the REGISTERED STATE with `docker exec`, never the entrypoint's
+# stdout. A detached container's status line can sit block-buffered and
+# reach `docker logs` long after the step ran: the old `docker logs | grep
+# kernel-sandbox` sentinel missed for the full 60s window while the
+# container was already booted and the harness running (the buffer only
+# flushed once the harness produced output), failing a healthy launch. The
+# system git config is read live and is immune to that — and it is exactly
+# what the trust assertions below read. Requiring ALL FOUR roots
+# (writable A/B/P + read-only C) proves the registration loop finished, not
+# just started, independent of the order it adds them in.
+ready=""
+for _ in $(seq 1 90); do
+    sd="$(docker exec "${CTR}" git config --system --get-all safe.directory 2>/dev/null || true)"
+    if grep -qxF -- "${A}" <<<"${sd}" && grep -qxF -- "${B}" <<<"${sd}" \
+       && grep -qxF -- "${P}" <<<"${sd}" && grep -qxF -- "${C}" <<<"${sd}"; then
+        ready=1; break
+    fi
     sleep 1
 done
-docker logs "${CTR}" 2>&1 | grep -q "kernel-sandbox:" \
-    || { echo "FATAL: entrypoint never reached the kernel-sandbox step"; docker logs "${CTR}" 2>&1 | tail -20; exit 1; }
+[[ -n "${ready}" ]] || {
+    echo "FATAL: git trust (safe.directory) not fully registered for A/B/P/C"
+    echo "  registered: $(docker exec "${CTR}" git config --system --get-all safe.directory 2>&1 | tr '\n' ' ')"
+    docker logs "${CTR}" 2>&1 | tail -20
+    exit 1
+}
 
 check "primary repo mounted at its host path" bash -c "docker exec '${CTR}' test -f '${A}/file-a'"
 check "extra repo mounted at its host path" bash -c "docker exec '${CTR}' test -f '${B}/file-b'"
