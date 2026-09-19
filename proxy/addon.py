@@ -15,7 +15,11 @@ loopback, or link-local address would let the (dual-homed) proxy be used as
 a bridge into the internal network or VM metadata (SSRF). The guard denies
 any host that resolves to a non-global address. An UNRESOLVABLE host passes
 the guard: no connection can result, so nothing can flow — while denying it
-would break policy-level tests against non-existent domains.
+would break policy-level tests against non-existent domains. Resolution is
+time-bounded (#59): a lookup that hangs past _RESOLVE_TIMEOUT fails CLOSED
+(denied / connection killed, uncached) so an adversarial agent cannot stall
+the event loop with slow DNS — distinct from a fast unresolvable, which still
+passes.
 
 Resolve-and-pin (#41): the CONNECT/request-stage verdicts and mitmproxy's
 own upstream connect used to be two separate resolutions, so a low-TTL
@@ -29,6 +33,7 @@ literals stay unpinned. Disable only for intranet use via TJOR_IP_GUARD=off.
 
 from __future__ import annotations
 
+import concurrent.futures
 import ipaddress
 import os
 import socket
@@ -171,6 +176,20 @@ _IP_GUARD = os.environ.get("TJOR_IP_GUARD", "on").lower() not in ("off", "0", "f
 _IP_TTL_SECONDS = 10.0  # trust window per host; bounds pinned-address staleness, not a TOCTOU
 _IP_CACHE_MAX = 1024
 
+# Bounded resolution (#59): the guard resolves hostnames on mitmproxy's event
+# loop, so a synchronous getaddrinfo that hangs would freeze every flow in the
+# session — a lever an adversarial in-cage agent could pull (self-DoS). Run the
+# resolver in a small capped worker pool and wait at most _RESOLVE_TIMEOUT, so
+# no single lookup blocks the loop longer than that regardless of the upstream
+# DNS. The pool is capped, so at most _RESOLVE_WORKERS hang concurrently; further
+# lookups time out (fail closed) without spawning a thread. A hung worker leaks
+# until the OS resolver gives up — acceptable for the long-running proxy, and
+# tests unblock their injected resolver so teardown never waits on one.
+_RESOLVE_TIMEOUT = 5.0
+_RESOLVE_WORKERS = 8
+_resolve_pool = concurrent.futures.ThreadPoolExecutor(
+    max_workers=_RESOLVE_WORKERS, thread_name_prefix="tjor-resolve")
+
 
 class _CacheEntry(NamedTuple):
     """One resolved-address-guard cache row. Named (not a bare tuple) so a
@@ -307,8 +326,15 @@ def _validated_addresses(host: str) -> tuple[bool, str, frozenset[str]]:
     if _is_ip_literal(host):
         addresses = {host}  # IP literal (possibly zone-suffixed): judge directly
     else:
+        # Bound the resolver so a hung lookup can't stall the loop (#59). Order
+        # matters: TimeoutError (from .result) is an OSError subclass on 3.11+,
+        # so catch the bound-exceeded case FIRST. A timeout fails CLOSED and is
+        # NOT cached (a transient stall denies only this attempt); a FAST OSError
+        # (NXDOMAIN/gaierror) keeps the documented unresolvable-passes behavior.
         try:
-            addresses = _resolver(host)
+            addresses = _resolve_pool.submit(_resolver, host).result(timeout=_RESOLVE_TIMEOUT)
+        except concurrent.futures.TimeoutError:
+            return False, "resolve-timeout", frozenset()
         except OSError:
             return True, "unresolvable", frozenset()
 

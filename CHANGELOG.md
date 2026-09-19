@@ -3,6 +3,22 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+### Security
+- **The egress guard's DNS resolution is time-bounded (#59).** The
+  resolved-address guard resolved hostnames with a synchronous `getaddrinfo`
+  on mitmproxy's event loop (on a cache miss, from both the verdict path and
+  the `#41` `server_connect` pin), so an adversarial in-cage agent could steer
+  egress at a hostname whose DNS hangs and stall its own session's event loop
+  for the full resolver timeout, wedging every concurrent flow (a self-DoS;
+  not cross-tenant, not a boundary bypass). The resolver now runs in a small
+  capped worker pool with a `_RESOLVE_TIMEOUT` (5s) bound: a lookup that
+  exceeds it fails closed (request denied `ip-guard:resolve-timeout`,
+  connection killed) and is not cached, so a transient stall denies only that
+  attempt. A *fast* unresolvable host (NXDOMAIN) keeps its existing permitted
+  behavior — only exceeding the time bound is treated as a failure.
+
 ## [0.18.1] — 2026-09-19 — Multi-cluster review follow-ups
 
 Robustness and spec-conformance follow-ups from a three-lens review of the

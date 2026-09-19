@@ -433,6 +433,76 @@ class TestAddressGuard:
         assert addon.resolved_addresses_ok("allowed.test")[0]
 
 
+class TestBoundedResolution:
+    """The resolver call is time-bounded so a hung DNS answer cannot stall the
+    event loop (#59). Fail closed on timeout; fast-unresolvable unchanged."""
+
+    def _hanging_addon(self, gate, monkeypatch=None):
+        addon = load_addon()
+        addon._RESOLVE_TIMEOUT = 0.2  # keep the suite fast; real default is 5s
+        addon._resolver = lambda host: (gate.wait(), {"1.2.3.4"})[1]  # blocks until gate is set
+        return addon
+
+    def test_hang_returns_fail_closed_within_the_bound(self):
+        import threading, time as _t
+        gate = threading.Event()
+        addon = self._hanging_addon(gate)
+        try:
+            start = _t.monotonic()
+            ok, why, addrs = addon._validated_addresses("slow.test")
+            elapsed = _t.monotonic() - start
+            assert not ok and why == "resolve-timeout" and addrs == frozenset()
+            assert elapsed < 2.0, f"resolution blocked {elapsed:.2f}s — did not bound"
+        finally:
+            gate.set()  # unblock the worker so pool teardown never waits
+
+    def test_timeout_denies_verdict_and_kills_pin(self):
+        import threading
+        pytest.importorskip("mitmproxy")
+        from mitmproxy import connection
+        from mitmproxy.proxy import server_hooks
+        gate = threading.Event()
+        addon = self._hanging_addon(gate)
+        try:
+            # allowed.test is policy-allowed, so the verdict reaches the guard.
+            v = addon.request_verdict("https://allowed.test/x", "allowed.test")
+            assert not v.allowed and v.rule == "ip-guard:resolve-timeout"
+            addon._ip_cache.clear()
+            cv = addon.connect_verdict("allowed.test")
+            assert not cv.allowed and cv.rule == "ip-guard:resolve-timeout"
+            addon._ip_cache.clear()
+            data = server_hooks.ServerConnectionHookData(
+                server=connection.Server(address=("allowed.test", 443)),
+                client=connection.Client(peername=("10.0.0.2", 5), sockname=("10.0.0.1", 8080)))
+            addon.TjorPolicy().server_connect(data)
+            assert data.server.error and "resolve-timeout" in data.server.error
+            assert data.server.address == ("allowed.test", 443)  # never pinned to an unvalidated addr
+        finally:
+            gate.set()
+
+    def test_timeout_is_not_cached(self):
+        import threading
+        gate = threading.Event()
+        addon = self._hanging_addon(gate)
+        try:
+            ok, why, _ = addon._validated_addresses("flaky.test")
+            assert not ok and why == "resolve-timeout"
+        finally:
+            gate.set()
+        # DNS recovers: the next resolution must be judged fresh, not a cached denial
+        addon._resolver = lambda host: {"140.82.121.3"}
+        ok2, why2, _ = addon._validated_addresses("flaky.test")
+        assert ok2 and why2 == ""
+
+    def test_fast_unresolvable_unchanged(self):
+        addon = load_addon()
+        def boom(host):
+            raise OSError("NXDOMAIN")  # fast failure, not a hang
+        addon._resolver = boom
+        ok, why = addon.resolved_addresses_ok("nonexistent.test")
+        assert ok and why == "unresolvable"  # permitted (nothing can connect), not a timeout
+
+
 class TestSafeAscii:
     """The shared sanitizer for attacker-influenced strings written to logs a
     human may view (denial log, proxy stderr via docker logs)."""
