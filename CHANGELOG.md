@@ -3,7 +3,14 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.18.0] — 2026-09-19 — Multi-cluster kube broker
+
+One caged session can now reach several Kubernetes clusters at once, switching
+between them live with `kubectl config use-context` (#57), each cluster's token
+isolated to its own API origin. Also fixes a latent kube auth-scheme bug found
+during the work: kube tokens are now injected as `Bearer`, the scheme the
+Kubernetes API actually requires. Additive — single-cluster sessions are
+unchanged.
 
 ### Added
 - **Multi-cluster kube broker (#57).** One session can now reach several
