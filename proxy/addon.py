@@ -176,19 +176,42 @@ _IP_GUARD = os.environ.get("TJOR_IP_GUARD", "on").lower() not in ("off", "0", "f
 _IP_TTL_SECONDS = 10.0  # trust window per host; bounds pinned-address staleness, not a TOCTOU
 _IP_CACHE_MAX = 1024
 
-# Bounded resolution (#59): the guard resolves hostnames on mitmproxy's event
-# loop, so a synchronous getaddrinfo that hangs would freeze every flow in the
-# session — a lever an adversarial in-cage agent could pull (self-DoS). Run the
-# resolver in a small capped worker pool and wait at most _RESOLVE_TIMEOUT, so
-# no single lookup blocks the loop longer than that regardless of the upstream
-# DNS. The pool is capped, so at most _RESOLVE_WORKERS hang concurrently; further
-# lookups time out (fail closed) without spawning a thread. A hung worker leaks
-# until the OS resolver gives up — acceptable for the long-running proxy, and
-# tests unblock their injected resolver so teardown never waits on one.
-_RESOLVE_TIMEOUT = 5.0
-_RESOLVE_WORKERS = 8
+# Bounded resolution (#59) + pool-availability (#59 re-review): the guard
+# resolves hostnames on mitmproxy's event loop, so a synchronous getaddrinfo
+# that hangs would stall the loop — a lever an adversarial in-cage agent could
+# pull (self-DoS). Three mechanisms keep one slow host from denying the guard
+# to every other host:
+#   * per-host COALESCING (_inflight): at most one resolution per host is in
+#     flight; N concurrent connections to one host (e.g. a wildcard-allowed
+#     slow-DNS host) share one worker instead of consuming N.
+#   * a CAP on concurrent distinct resolutions: beyond it a new host fails
+#     closed FAST ("resolve-capacity") instead of queueing a per-call-timeout
+#     backlog, so the loop stays responsive and load doesn't accumulate.
+#   * a brief NEGATIVE-CACHE of timeouts: a timed-out host is denied from cache
+#     for _RESOLVE_NEGATIVE_TTL so repeat hits don't re-consume capacity; it
+#     expires so the host recovers once DNS does.
+# Residual (documented, fail-closed): many DISTINCT genuinely-hung hosts can
+# still saturate the cap; excess fails closed fast, and capacity returns as the
+# hung workers hit the OS resolver's own timeout (no proxy restart needed).
+# Knobs are env-configurable (TJOR_ style, like TJOR_IP_GUARD).
+
+
+def _env_pos(name: str, default: float, cast) -> float:
+    """A positive TJOR_ numeric knob, or the default on missing/invalid/<=0."""
+    try:
+        v = cast(os.environ.get(name, ""))
+        return v if v > 0 else default
+    except (TypeError, ValueError):
+        return default
+
+
+_RESOLVE_TIMEOUT = _env_pos("TJOR_RESOLVE_TIMEOUT", 5.0, float)
+_RESOLVE_WORKERS = int(_env_pos("TJOR_RESOLVE_WORKERS", 8, int))
+_RESOLVE_MAX_INFLIGHT = int(_env_pos("TJOR_RESOLVE_MAX_INFLIGHT", _RESOLVE_WORKERS, int))
+_RESOLVE_NEGATIVE_TTL = _env_pos("TJOR_RESOLVE_NEGATIVE_TTL", 5.0, float)
 _resolve_pool = concurrent.futures.ThreadPoolExecutor(
     max_workers=_RESOLVE_WORKERS, thread_name_prefix="tjor-resolve")
+_inflight: dict[str, concurrent.futures.Future] = {}  # host -> its in-flight resolution
 
 
 class _CacheEntry(NamedTuple):
@@ -268,20 +291,21 @@ def _embedded_ipv4(addr: ipaddress.IPv6Address) -> list[ipaddress.IPv4Address]:
     return embedded
 
 
-def _address_public(raw: str) -> tuple[bool, str]:
+def _address_public(raw: str) -> tuple[bool, str, str]:
     """Version-independent publicness check for one address literal.
     IPv4-embedding IPv6 forms (mapped, NAT64, 6to4, Teredo) are unwrapped
     and every embedded address judged alongside the literal itself.
 
-    Note (#60): the returned reason names the specific offending address. That
-    detail is kept for the OPERATOR (denial log / stderr), but the AGENT-facing
-    denial is generalized by `_agent_reason`/`_agent_rule` at the response
-    sites, so a guard denial never hands the agent the concrete internal
-    address it resolved to."""
+    Returns ``(ok, reason_class, detail)`` — STRUCTURED, not free text (#60
+    review). ``reason_class`` is a stable, space-free token ("non-global-address",
+    "unparseable-address"); ``detail`` names the specific offending address. The
+    operator log composes the full reason from both; the agent-facing denial
+    uses only ``reason_class`` (see `_agent_reason`), so rewording ``detail``
+    can never re-leak the concrete internal address to the agent."""
     try:
         addr = ipaddress.ip_address(raw.split("%")[0])  # strip any zone id
     except ValueError:
-        return False, f"unparseable address {raw!r}"
+        return False, "unparseable-address", repr(raw)
     if isinstance(addr, ipaddress.IPv6Address) and addr.ipv4_mapped is not None:
         addr = addr.ipv4_mapped  # a mapped literal IS its IPv4 form; judge only that
     forms: list = [addr]
@@ -289,9 +313,9 @@ def _address_public(raw: str) -> tuple[bool, str]:
         forms.extend(_embedded_ipv4(addr))
     for form in forms:
         if any(form in net for net in _DENY_NETS) or not form.is_global:
-            detail = f" (embeds {form})" if form is not addr else ""
-            return False, f"non-global address {addr}{detail}"
-    return True, ""
+            detail = f"{addr} (embeds {form})" if form is not addr else f"{addr}"
+            return False, "non-global-address", detail
+    return True, "", ""
 
 
 def _system_resolver(host: str) -> set[str]:
@@ -321,35 +345,61 @@ def _validated_addresses(host: str) -> tuple[bool, str, frozenset[str]]:
         return True, "kube-exempt", frozenset()
     now = time.monotonic()
     hit = _ip_cache.get(host)
-    if hit and now - hit.ts < _IP_TTL_SECONDS:
-        return hit.ok, hit.why, hit.addresses
+    if hit:
+        # A resolve-timeout is negative-cached only for the short window;
+        # everything else (public, or a non-global denial) keeps the positive
+        # TTL. So a transient stall clears quickly while repeat hits within the
+        # window don't re-consume a worker.
+        ttl = _RESOLVE_NEGATIVE_TTL if hit.why == "resolve-timeout" else _IP_TTL_SECONDS
+        if now - hit.ts < ttl:
+            return hit.ok, hit.why, hit.addresses
 
     if _is_ip_literal(host):
         addresses = {host}  # IP literal (possibly zone-suffixed): judge directly
     else:
-        # Bound the resolver so a hung lookup can't stall the loop (#59). Order
-        # matters: TimeoutError (from .result) is an OSError subclass on 3.11+,
-        # so catch the bound-exceeded case FIRST. A timeout fails CLOSED and is
-        # NOT cached (a transient stall denies only this attempt); a FAST OSError
-        # (NXDOMAIN/gaierror) keeps the documented unresolvable-passes behavior.
+        # Resolve with per-host coalescing + a distinct-in-flight cap so one
+        # slow host can't exhaust capacity for others (#59 re-review). Order in
+        # the except matters: TimeoutError (from .result) subclasses OSError on
+        # 3.11+, so catch the bound-exceeded case FIRST.
+        fut = _inflight.get(host)
+        if fut is None:
+            if len(_inflight) >= _RESOLVE_MAX_INFLIGHT:
+                # Capacity saturated: fail closed FAST, don't queue a backlog.
+                return False, "resolve-capacity", frozenset()
+            fut = _resolve_pool.submit(_resolver, host)
+            _inflight[host] = fut
+            # Free the slot when the worker finishes (GIL-atomic pop; runs in the
+            # worker thread, or inline if already done). On timeout we DON'T pop
+            # here — the future is still running, and concurrent waiters coalesce
+            # onto it rather than spawning another.
+            fut.add_done_callback(lambda f, h=host: _inflight.pop(h, None))
         try:
-            addresses = _resolve_pool.submit(_resolver, host).result(timeout=_RESOLVE_TIMEOUT)
+            addresses = fut.result(timeout=_RESOLVE_TIMEOUT)
         except concurrent.futures.TimeoutError:
+            _cache_put(host, _CacheEntry(now, False, "resolve-timeout", frozenset()))
             return False, "resolve-timeout", frozenset()
         except OSError:
-            return True, "unresolvable", frozenset()
+            return True, "unresolvable", frozenset()  # fast NXDOMAIN: permitted, uncached
 
     ok, why = True, ""
     for raw in addresses:
-        ok, why = _address_public(raw)
+        ok, rclass, detail = _address_public(raw)
         if not ok:
+            # Operator-facing reason: stable class token + specifics (the agent
+            # gets only the class — see _agent_reason).
+            why = f"{rclass} {detail}" if detail else rclass
             break
 
     validated = frozenset(addresses) if ok else frozenset()
+    _cache_put(host, _CacheEntry(now, ok, why, validated))
+    return ok, why, validated
+
+
+def _cache_put(host: str, entry: "_CacheEntry") -> None:
+    """Insert a guard cache row, evicting wholesale at the size cap."""
     if len(_ip_cache) >= _IP_CACHE_MAX:
         _ip_cache.clear()
-    _ip_cache[host] = _CacheEntry(now, ok, why, validated)
-    return ok, why, validated
+    _ip_cache[host] = entry
 
 
 def resolved_addresses_ok(host: str) -> tuple[bool, str]:
@@ -535,19 +585,16 @@ def _apply_gateway(flow) -> None:
 # ------------------------------------------------------- agent-facing reasons
 
 def _agent_reason(why: str) -> str:
-    """The literal-free form of a guard reason for the AGENT (#60). The
-    operator denial log keeps the full reason (including the specific resolved
-    address), but a guard denial returned to the agent should state only the
-    denial CLASS, not the concrete internal address it resolved to (or the raw
-    input it echoed). Only these specifics-bearing guard reasons are
-    generalized; every other reason is already literal-free and passes through
-    unchanged (and policy blocks / default-deny describe the agent's own
-    request, so they stay informative)."""
-    if why.startswith("non-global address"):
-        return "non-global-address"
-    if why.startswith("unparseable address"):
-        return "unparseable-address"
-    return why
+    """The literal-free form of a guard reason for the AGENT (#60). A guard
+    `why` is a stable, space-free CLASS token optionally followed by a space and
+    operator-only detail (e.g. `non-global-address 10.0.0.5`). The agent gets
+    only the class — the first whitespace-delimited token — so rewording the
+    detail can never re-leak the concrete internal address (the #60-review
+    fragility: this no longer string-matches _address_public's wording, it takes
+    the structurally-first token). Class-only reasons (resolve-timeout,
+    resolve-capacity, unresolvable, exemptions) have no detail and pass through
+    unchanged; the operator denial log keeps the full `why`."""
+    return why.split(" ", 1)[0]
 
 
 def _agent_rule(rule: str) -> str:
@@ -659,6 +706,13 @@ class TjorPolicy:
             except Exception as exc:  # noqa: BLE001
                 print(f"tjor: kube broker teardown failed (tokens auto-expire): {exc!r}",
                       file=sys.stderr, flush=True)
+        # Drop the resolver pool: cancel work that hasn't started; a worker
+        # blocked in getaddrinfo can't be cancelled but is daemon-ish and the
+        # process is exiting anyway (#59 re-review — no lingering pool).
+        try:
+            _resolve_pool.shutdown(wait=False, cancel_futures=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"tjor: resolver pool shutdown failed: {exc!r}", file=sys.stderr, flush=True)
 
 
 addons = [TjorPolicy()]

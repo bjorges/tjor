@@ -38,6 +38,7 @@ case " \$* " in
             staging)   printf '%s' "https://api.staging.example:6443" ;;
             prodalias) printf '%s' "https://api.prod.example:6443" ;;  # same origin as prod
             failmint)  printf '%s' "https://api.failmint.example:6443" ;;
+            commasrv)  printf '%s' "https://a,b.example:6443" ;;  # derived api host has a comma
             badctx)    exit 1 ;;
             "")        printf '%s' "${SERVER_URL}" ;;
             *)         printf '%s' "https://api.\${ctx}.example:6443" ;;
@@ -361,6 +362,21 @@ rm -f "${WORK}/create_token_argv"
 PATH="${MOCKBIN}:${PATH}" run_prepare 2>/dev/null
 [[ -z "${TJOR_BROKER_ENABLED:-}" ]] && ok "comma in a context name refused (no context↔server desync)" || bad "comma-bearing context name was accepted"
 [[ ! -e "${WORK}/create_token_argv" ]] && ok "no token minted for a comma-bearing context (validate-first)" || bad "a token was minted for a comma-bearing context"
+
+# === 17. Refused: a derived API host containing a comma (#57 review) ========
+# A comma in the api host would desync the comma-joined TJOR_KUBE_API_HOSTS.
+write_user_cfg <<'TOML'
+[broker]
+source = "kube"
+
+[[broker.kube_clusters]]
+context = "commasrv"
+kube_sa = "ci-runner"
+TOML
+rm -f "${WORK}/create_token_argv"
+PATH="${MOCKBIN}:${PATH}" run_prepare 2>/dev/null
+[[ -z "${TJOR_BROKER_ENABLED:-}" ]] && ok "comma in the derived API host refused (no env-list desync)" || bad "comma-bearing API host was accepted"
+[[ ! -e "${WORK}/create_token_argv" ]] && ok "no token minted for a comma-bearing API host (validate-first)" || bad "a token was minted for a comma-bearing API host"
 
 echo "----"
 echo "kube wiring: ${PASS} passed, ${FAIL} failed"

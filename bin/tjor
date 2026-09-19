@@ -558,6 +558,13 @@ PY
                     && api="$(python3 "${TJOR_ROOT}/python/tjor_kube.py" host "${server}" 2>/dev/null)" \
                     && origin="$(python3 "${TJOR_ROOT}/python/tjor_kube.py" origin "${server}" 2>/dev/null)" \
                     || { warn "broker source=kube: could not parse an API host from the server URL for context '${ctx:-active}' — broker disabled"; return 0; }
+                # The api host and origin feed comma-joined env lists
+                # (TJOR_KUBE_API_HOSTS / TJOR_BROKER_HOSTS), so a comma in them
+                # would desync the lists — refuse it (parity with the context
+                # comma check; belt-and-suspenders over same_server, #57 review).
+                case "${api}${origin}" in
+                    *,*) warn "broker source=kube: api_host/origin for context '${ctx:-active}' contains a comma ('${api}') — refusing (would desync the env lists). Broker disabled."; return 0 ;;
+                esac
                 # Context name in the agent's kubeconfig: the configured name for
                 # a list entry, "tjor" for the single flat entry (unchanged).
                 ctxname="${ctx:-tjor}"

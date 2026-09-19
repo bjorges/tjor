@@ -3,6 +3,38 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+### Security
+- **Egress guard stays available under slow-DNS load (#59 re-review).** A
+  re-review found the v0.18.2 bounded-resolution fix bounded each *call* but not
+  the shared resolver pool: a sustained attack on a wildcard-allowed slow-DNS
+  host could exhaust the 8-worker pool, after which every subsequent resolution
+  was denied until the attack stopped — fail-closed (deny-all, not a bypass),
+  but a durable denial of the guard. Hardened, stdlib-only: per-host in-flight
+  **coalescing** (concurrent requests to one host share a worker), a **cap** on
+  concurrent distinct resolutions that fails closed *fast* instead of queueing a
+  backlog, and a brief **negative-cache** of resolve-timeouts so repeat hits
+  don't re-consume capacity (this reverses v0.18.2's "timeouts are never
+  cached" — recovery is now delayed by the short window instead of instant).
+  The resolver bounds are env-tunable (`TJOR_RESOLVE_TIMEOUT`,
+  `TJOR_RESOLVE_WORKERS`, `TJOR_RESOLVE_MAX_INFLIGHT`,
+  `TJOR_RESOLVE_NEGATIVE_TTL`) and the pool is shut down on teardown. Residual,
+  documented: many *distinct* genuinely-hung hosts can still saturate the cap;
+  excess fails closed fast and capacity returns as workers hit the OS resolver
+  timeout (no proxy restart).
+
+### Changed
+- **Egress denial reasons are structured, not free-text (#60 review).**
+  `_address_public` now returns a `(ok, reason_class, detail)` shape; the
+  agent-facing redaction keys off the stable `reason_class` token instead of
+  string-prefix-matching free text, so rewording the detail can never silently
+  re-leak the resolved IP. Added an end-to-end test for the `server_connect`
+  pin-kill redaction of a non-global reason (the path that had no coverage).
+- **`api_host`/origin comma check (#57 review).** A comma in a derived kube API
+  host or origin is refused (it would desync the comma-joined env lists),
+  parity with the context-name check.
+
 ## [0.18.3] — 2026-09-19 — Redacted egress denial reasons
 
 Closes #60: a guard denial no longer hands the in-cage agent the specific

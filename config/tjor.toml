@@ -6,6 +6,10 @@ port = 8080
 # Deny any allowed hostname that resolves to a non-global address (DNS-
 # rebind / SSRF guard). Set false only if your allowlist includes intranet
 # hosts on private ranges.
+# The guard's DNS resolution is time-bounded and kept available under slow-DNS
+# load (#59); the bounds are env-tunable on the proxy sidecar and rarely need
+# changing: TJOR_RESOLVE_TIMEOUT (s), TJOR_RESOLVE_WORKERS,
+# TJOR_RESOLVE_MAX_INFLIGHT, TJOR_RESOLVE_NEGATIVE_TTL (s).
 ip_guard = true
 
 [identity]

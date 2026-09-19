@@ -437,20 +437,31 @@ class TestAgentFacingReason:
     """Guard denials do not disclose the resolved address to the agent (#60):
     the operator log keeps the full reason; the agent gets only the class."""
 
-    def test_agent_reason_generalizes_specifics(self):
+    def test_agent_reason_takes_the_class_token(self):
+        # Structural: the class is the first whitespace-delimited token; the
+        # operator detail (after the space) is dropped. Rewording the detail
+        # cannot change the class (the #60-review fragility fix).
         addon = load_addon()
-        assert addon._agent_reason("non-global address 10.0.0.5") == "non-global-address"
-        assert addon._agent_reason("non-global address fd00::1 (embeds 10.0.0.5)") == "non-global-address"
-        assert addon._agent_reason("unparseable address 'weird'") == "unparseable-address"
+        assert addon._agent_reason("non-global-address 10.0.0.5") == "non-global-address"
+        assert addon._agent_reason("non-global-address fd00::1 (embeds 10.0.0.5)") == "non-global-address"
+        assert addon._agent_reason("unparseable-address 'weird'") == "unparseable-address"
 
     def test_agent_reason_passes_through_literal_free(self):
         addon = load_addon()
-        for why in ("resolve-timeout", "unresolvable", "gateway-exempt", "kube-exempt"):
+        for why in ("resolve-timeout", "resolve-capacity", "unresolvable", "gateway-exempt", "kube-exempt"):
             assert addon._agent_reason(why) == why
+
+    def test_agent_reason_is_structural_not_wording_dependent(self):
+        # The exact detail wording is irrelevant — only the first token matters,
+        # so a future reword of _address_public's detail can't re-leak an IP.
+        addon = load_addon()
+        for detail in ("10.0.0.5", "totally reworded 10.0.0.5 blah", "169.254.169.254 (embeds x)"):
+            out = addon._agent_reason(f"non-global-address {detail}")
+            assert out == "non-global-address" and "." not in out
 
     def test_agent_rule_handles_ip_guard_prefix_and_others(self):
         addon = load_addon()
-        assert addon._agent_rule("ip-guard:non-global address 10.0.0.5") == "ip-guard:non-global-address"
+        assert addon._agent_rule("ip-guard:non-global-address 10.0.0.5") == "ip-guard:non-global-address"
         assert addon._agent_rule("ip-guard:resolve-timeout") == "ip-guard:resolve-timeout"
         # non-guard rules (policy blocks / default-deny) are the agent's own
         # request and pass through unchanged
@@ -459,7 +470,7 @@ class TestAgentFacingReason:
 
     def test_no_ip_literal_reaches_the_agent(self):
         addon = load_addon()
-        rule = "ip-guard:non-global address 10.0.0.5"
+        rule = "ip-guard:non-global-address 10.0.0.5"
         assert "10.0.0.5" not in addon._agent_rule(rule)  # the whole point
 
     def test_end_to_end_403_omits_ip_but_log_keeps_it(self, tmp_path):
@@ -533,16 +544,27 @@ class TestBoundedResolution:
         finally:
             gate.set()
 
-    def test_timeout_is_not_cached(self):
+    def test_timeout_negative_cached_then_recovers(self):
+        # A timed-out host is briefly negative-cached (so repeat hits don't
+        # re-consume a worker), and once the window expires it recovers on a
+        # fresh resolution — a transient stall never poisons the host forever
+        # (#59 re-review; reverses #59's original "never cached").
         import threading
         gate = threading.Event()
         addon = self._hanging_addon(gate)
+        addon._RESOLVE_NEGATIVE_TTL = 60.0  # keep it cached for the within-window check
         try:
             ok, why, _ = addon._validated_addresses("flaky.test")
             assert not ok and why == "resolve-timeout"
         finally:
             gate.set()
-        # DNS recovers: the next resolution must be judged fresh, not a cached denial
+        # DNS has recovered, but within the negative window the guard serves the
+        # cached denial WITHOUT resolving again (resolver must not be called).
+        addon._resolver = lambda host: (_ for _ in ()).throw(AssertionError("must not re-resolve within the negative window"))
+        ok_w, why_w, _ = addon._validated_addresses("flaky.test")
+        assert not ok_w and why_w == "resolve-timeout"
+        # Once the window expires, the host is re-evaluated fresh and recovers.
+        addon._RESOLVE_NEGATIVE_TTL = -1.0  # force the negative entry expired
         addon._resolver = lambda host: {"140.82.121.3"}
         ok2, why2, _ = addon._validated_addresses("flaky.test")
         assert ok2 and why2 == ""
@@ -554,6 +576,58 @@ class TestBoundedResolution:
         addon._resolver = boom
         ok, why = addon.resolved_addresses_ok("nonexistent.test")
         assert ok and why == "unresolvable"  # permitted (nothing can connect), not a timeout
+
+
+class TestPoolAvailability:
+    """One slow host must not exhaust resolution capacity for others (#59
+    re-review). Driven deterministically by seeding _inflight, since the addon's
+    hooks run serially on the event loop (no real concurrency to race)."""
+
+    def test_coalesces_onto_existing_inflight_resolution(self):
+        import concurrent.futures
+        addon = load_addon()
+        addon._RESOLVE_TIMEOUT = 0.2
+        calls = []
+        addon._resolver = lambda h: calls.append(h) or {"1.2.3.4"}
+        stuck = concurrent.futures.Future()          # a resolution already in flight
+        addon._inflight = {"slow.test": stuck}
+        try:
+            ok, why, _ = addon._validated_addresses("slow.test")
+            # waited on the EXISTING future (timed out); did NOT submit a new worker
+            assert not ok and why == "resolve-timeout"
+            assert calls == []
+        finally:
+            stuck.cancel()
+
+    def test_one_stuck_host_leaves_capacity_for_others(self):
+        import concurrent.futures
+        addon = load_addon()
+        addon._RESOLVE_MAX_INFLIGHT = 8
+        addon._resolver = lambda h: {"140.82.121.3"}
+        stuck = concurrent.futures.Future()
+        addon._inflight = {"stuck.test": stuck}      # one host stuck, cap not reached
+        try:
+            ok, why, _ = addon._validated_addresses("fast.test")
+            assert ok and why == ""                  # a different host still resolves
+        finally:
+            stuck.cancel()
+
+    def test_cap_fails_fast_when_saturated(self):
+        import concurrent.futures, time as _t
+        addon = load_addon()
+        addon._RESOLVE_MAX_INFLIGHT = 2
+        addon._RESOLVE_TIMEOUT = 5.0                  # would be a long stall if it queued
+        f1, f2 = concurrent.futures.Future(), concurrent.futures.Future()
+        addon._inflight = {"a.slow": f1, "b.slow": f2}   # saturated
+        addon._resolver = lambda h: pytest.fail("must not submit when capacity is saturated")
+        try:
+            start = _t.monotonic()
+            ok, why, _ = addon._validated_addresses("c.new")
+            elapsed = _t.monotonic() - start
+            assert not ok and why == "resolve-capacity"
+            assert elapsed < 1.0, f"capacity denial took {elapsed:.2f}s — it queued instead of failing fast"
+        finally:
+            f1.cancel(); f2.cancel()
 
 
 class TestSafeAscii:
@@ -717,6 +791,20 @@ class TestServerConnectPin:
         addon = load_addon()
         addon._IP_GUARD = True
         return addon
+
+    def test_pin_kill_redacts_non_global_reason_from_agent(self, tmp_path):
+        # #60 coverage gap (@homer): the pin-kill path's agent-facing error for
+        # a NON-GLOBAL reason must omit the resolved IP, while the operator log
+        # keeps it. (The earlier pin tests only exercised resolve-timeout.)
+        addon = self._addon()
+        log = tmp_path / "denials.log"
+        addon.DENIAL_LOG = str(log)
+        addon._resolver = lambda host: {"10.0.0.5"}   # allowed host resolves private
+        data = self._hookdata("allowed.test")
+        addon.TjorPolicy().server_connect(data)
+        assert data.server.error and "non-global-address" in data.server.error
+        assert "10.0.0.5" not in data.server.error    # agent gets the class only
+        assert "10.0.0.5" in log.read_text()          # operator log keeps the address
 
     def test_rebinding_flip_between_check_and_connect_cannot_redirect(self, capsys):
         # The #41 TOCTOU: public at verdict time, private at connect time.
