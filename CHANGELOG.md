@@ -3,7 +3,11 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.18.3] — 2026-09-19 — Redacted egress denial reasons
+
+Closes #60: a guard denial no longer hands the in-cage agent the specific
+internal address the hostname resolved to — the agent-facing reason is
+generalized to its class while the operator denial log keeps the full detail.
 
 ### Security
 - **Egress guard denials no longer disclose the resolved address to the agent
