@@ -85,7 +85,10 @@ def same_server(a, b):
     """True iff ``a`` and ``b`` name the same API server (#58): equal
     canonical identity, so a bare ``host:port`` `kube_api_host` pin and the
     kubeconfig's full URL compare equal, while a different host, port, or
-    scheme does not."""
+    scheme does not. Any userinfo (``user:pass@``) is not part of server
+    identity and is ignored; only a genuinely equal (scheme, host, port)
+    yields True, so a mismatch can only ever fail closed, never falsely
+    match two different servers."""
     return _server_identity(a) == _server_identity(b)
 
 
@@ -120,7 +123,12 @@ def _main(argv):
             print(api_host(argv[2]))
         elif cmd == "origin":  # origin <server>  -> host:port injection scope (#49)
             print(api_origin(argv[2]))
-        elif cmd == "same":  # same <a> <b>  -> exit 0 iff the same API server (#58)
+        elif cmd == "same":  # same <a> <b> (#58): exit-code-only, no stdout
+            # `diff -q`-style contract the launcher's fail-closed pin check
+            # relies on: exit 0 == same server; exit 1 == differ; any bad
+            # input raises ValueError below and also exits non-zero. There is
+            # no path that swallows an error into a 0 — a non-match and a
+            # broken input both keep the broker disabled.
             sys.exit(0 if same_server(argv[2], argv[3]) else 1)
         elif cmd == "url":  # url <server>  -> canonical https URL
             print(normalize_server(argv[2]))

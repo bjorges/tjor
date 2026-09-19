@@ -493,6 +493,15 @@ prepare_broker() {
                 python3 "${TJOR_ROOT}/python/tjor_kube.py" same "${server}" "${active}" 2>/dev/null \
                     || { warn "broker source=kube: kube_api_host ('${pinned}') does not name the active context's server ('${active}') — the token would be minted for the ACTIVE cluster while injection and allowlisting are scoped to the configured one. Switch clusters ('kubectl config use-context …') or fix/remove broker.kube_api_host. Broker disabled."; return 0; }
             fi
+            # ACCEPTED RESIDUAL RISK (#58 review): the active context is read
+            # above for validation and again, implicitly, by 'kubectl create
+            # token' below — two separate reads. A `kubectl config use-context`
+            # switch racing between them could mint against a context different
+            # from the one validated. This is a HOST-SIDE race the operator
+            # controls at launch, not an agent-reachable surface (the cage is
+            # not up yet), and closing it fully would mean pinning a resolved
+            # --context through minting. Bounded and accepted; documented so it
+            # is a conscious choice, not an oversight.
             local token
             token="$(kubectl create token "${sa}" --namespace "${ns}" --duration "${ttl}" 2>/dev/null)" \
                 || { warn "broker source=kube: 'kubectl create token ${sa} -n ${ns}' failed — your kubectl identity needs 'create' on the SA's serviceaccounts/token subresource, and the SA must exist. Broker disabled."; return 0; }

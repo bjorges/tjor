@@ -108,6 +108,30 @@ class TestSameServer:
         with pytest.raises(ValueError):
             tjor_kube.same_server("https://api.example.com:6443", bad)
 
+    # Hardening (#58 review): userinfo and IPv6 zone-ids. The property that
+    # matters is no FALSE POSITIVE — same_server must never call two different
+    # servers the same (that would let a mismatched pin through); a false
+    # negative only fails closed (broker disabled), which is safe.
+    def test_userinfo_is_ignored_not_part_of_identity(self):
+        # credentials in the URL are not the server; the same host matches
+        assert tjor_kube.same_server(
+            "https://user:pass@api.example.com:6443", "https://api.example.com:6443")
+
+    def test_userinfo_cannot_forge_a_match_to_a_different_host(self):
+        # a different real host must NOT match just because the other host name
+        # appears in userinfo — urlparse takes the authority host, not userinfo
+        assert not tjor_kube.same_server(
+            "https://api.example.com@evil.example.net:6443", "https://api.example.com:6443")
+
+    def test_ipv6_zone_id_same_spelling_matches(self):
+        assert tjor_kube.same_server(
+            "https://[fe80::1%25eth0]:6443", "[fe80::1%25eth0]:6443")
+
+    def test_ipv6_different_zone_id_is_not_a_match(self):
+        # distinct interfaces are distinct servers — must fail closed, not merge
+        assert not tjor_kube.same_server(
+            "https://[fe80::1%25eth0]:6443", "https://[fe80::1%25eth1]:6443")
+
 
 class TestNormalizeServer:
     def test_adds_https_when_missing(self):

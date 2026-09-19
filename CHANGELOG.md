@@ -5,6 +5,23 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Changed
+- **Review follow-ups for the v0.17.3/v0.17.4 pin patches (no behavior
+  change).** From a three-lens review that approved both releases with no
+  blockers: the resolved-address guard's cache row is now a `NamedTuple`
+  (was a 4-field positional tuple — a miscounted index on the `#41` pin
+  path could have defeated the guard rather than errored); the IP-literal
+  check is a shared `_is_ip_literal()` helper (was duplicated between the
+  verdict path and the `server_connect` pin); `same_server()` and the
+  `tjor_kube.py same` CLI now document their fail-closed exit-code contract
+  and that userinfo is not part of server identity; and `same_server()`
+  gains hardening tests for userinfo and IPv6 zone-id URLs (confirming a
+  mismatch can only fail closed, never falsely match two different servers).
+  The `#58` validate→mint window is recorded as an accepted, host-side
+  residual risk. Two findings are tracked as follow-ups: #59 (bound/offload
+  the pin's DNS call to prevent an in-cage self-DoS) and #60 (keep the
+  resolved private IP out of the agent-facing denial message).
+
 ### Testing
 - **multirepo readiness gate probes registered git trust, not buffered
   logs.** The `cda35df` gate waited for the entrypoint's `kernel-sandbox:`

@@ -34,6 +34,7 @@ import os
 import socket
 import sys
 import time
+from typing import NamedTuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
@@ -159,7 +160,31 @@ def decide_connect(host: str) -> tjor_policy.Verdict:
 _IP_GUARD = os.environ.get("TJOR_IP_GUARD", "on").lower() not in ("off", "0", "false")
 _IP_TTL_SECONDS = 10.0  # trust window per host; bounds pinned-address staleness, not a TOCTOU
 _IP_CACHE_MAX = 1024
-_ip_cache: dict[str, tuple[float, bool, str, frozenset[str]]] = {}
+
+
+class _CacheEntry(NamedTuple):
+    """One resolved-address-guard cache row. Named (not a bare tuple) so a
+    later field can be added without every positional index silently shifting —
+    the pin path (#41) reads `.addresses` and a miscounted index would defeat
+    the guard rather than error."""
+    ts: float                 # time.monotonic() when validated
+    ok: bool                  # did every resolved address pass the guard
+    why: str                  # denial reason (or "" / exemption tag)
+    addresses: frozenset[str] # the validated addresses (empty unless ok)
+
+
+_ip_cache: dict[str, _CacheEntry] = {}
+
+
+def _is_ip_literal(host: str) -> bool:
+    """True if `host` is a bare IP literal (v4/v6, optional %zone id). Such a
+    host IS already the address the guard judges — there is nothing to resolve
+    (the guard judges it directly) and nothing to pin (#41)."""
+    try:
+        ipaddress.ip_address(host.split("%")[0])  # strip any zone id
+        return True
+    except ValueError:
+        return False
 
 # Explicit non-public ranges rather than trusting ipaddress.is_global alone:
 # its CGNAT/mapped-address handling varies by Python version, and the guard
@@ -261,13 +286,12 @@ def _validated_addresses(host: str) -> tuple[bool, str, frozenset[str]]:
         return True, "kube-exempt", frozenset()
     now = time.monotonic()
     hit = _ip_cache.get(host)
-    if hit and now - hit[0] < _IP_TTL_SECONDS:
-        return hit[1], hit[2], hit[3]
+    if hit and now - hit.ts < _IP_TTL_SECONDS:
+        return hit.ok, hit.why, hit.addresses
 
-    try:
-        ipaddress.ip_address(host.split("%")[0])
+    if _is_ip_literal(host):
         addresses = {host}  # IP literal (possibly zone-suffixed): judge directly
-    except ValueError:
+    else:
         try:
             addresses = _resolver(host)
         except OSError:
@@ -282,7 +306,7 @@ def _validated_addresses(host: str) -> tuple[bool, str, frozenset[str]]:
     validated = frozenset(addresses) if ok else frozenset()
     if len(_ip_cache) >= _IP_CACHE_MAX:
         _ip_cache.clear()
-    _ip_cache[host] = (now, ok, why, validated)
+    _ip_cache[host] = _CacheEntry(now, ok, why, validated)
     return ok, why, validated
 
 
@@ -461,11 +485,8 @@ class TjorPolicy:
             # exemptions as the verdict path.
             if (GATEWAY_HOST and canon == GATEWAY_HOST) or (KUBE_API_HOST and canon == KUBE_API_HOST):
                 return
-            try:
-                ipaddress.ip_address(canon.split("%")[0])
+            if _is_ip_literal(canon):
                 return  # an IP literal IS the judged address — nothing to pin
-            except ValueError:
-                pass
             ok, why, validated = _validated_addresses(canon)
             if not ok:
                 _log_denial(canon, f"ip-guard-pin:{why}")
