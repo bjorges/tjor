@@ -3,6 +3,26 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+### Security
+- **Egress connections are pinned to the address the SSRF guard validated
+  (#41).** The resolved-address guard judged a hostname at CONNECT/request
+  time, then mitmproxy re-resolved it when opening the upstream socket — two
+  separate resolutions, so a low-TTL record flipping between them could point
+  `connect()` at a private/loopback/link-local address the guard never saw (a
+  DNS-rebinding TOCTOU that turns the dual-homed proxy into a bridge into the
+  internal network). The guard's 10 s verdict cache widened the window rather
+  than bounding it. A new `server_connect` hook now validates (cache-aware,
+  reusing the exact addresses that passed) and pins the connection to a
+  validated address, so no second resolution exists to attack; a host that
+  fails validation at connect time has the connection killed and the denial
+  recorded. Exempt hosts (gateway, kube API), IP literals, and
+  `TJOR_IP_GUARD=off` stay unpinned; TLS server-name verification still uses
+  the hostname, never the pinned IP. Regression-tested against the real
+  mitmproxy hook (the `tjor conformance` topology runs the guard off by
+  design, so the rebinding case lives in the guard suite).
+
 ## [0.17.3] — 2026-09-19 — Security: kube_api_host validated pin
 
 The kube broker's `kube_api_host` override becomes a validated pin: it is

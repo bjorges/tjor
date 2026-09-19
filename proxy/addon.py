@@ -15,9 +15,16 @@ loopback, or link-local address would let the (dual-homed) proxy be used as
 a bridge into the internal network or VM metadata (SSRF). The guard denies
 any host that resolves to a non-global address. An UNRESOLVABLE host passes
 the guard: no connection can result, so nothing can flow — while denying it
-would break policy-level tests against non-existent domains. Residual
-TOCTOU (re-resolution at connect time) is documented in the change's
-design.md. Disable only for intranet use via TJOR_IP_GUARD=off.
+would break policy-level tests against non-existent domains.
+
+Resolve-and-pin (#41): the CONNECT/request-stage verdicts and mitmproxy's
+own upstream connect used to be two separate resolutions, so a low-TTL
+record flipping between them could point connect() at an address the guard
+never saw (a rebinding TOCTOU). The server_connect hook closes it: it
+validates (cache-aware) and pins the connection to an address that passed,
+so the address connected to is provably the address judged — no second
+resolution exists to attack. Exempt hosts (gateway, kube API) and IP
+literals stay unpinned. Disable only for intranet use via TJOR_IP_GUARD=off.
 """
 
 from __future__ import annotations
@@ -150,9 +157,9 @@ def decide_connect(host: str) -> tjor_policy.Verdict:
 # --------------------------------------------------- resolved-address guard
 
 _IP_GUARD = os.environ.get("TJOR_IP_GUARD", "on").lower() not in ("off", "0", "false")
-_IP_TTL_SECONDS = 10.0  # trust window per host; re-resolution TOCTOU is bounded by this
+_IP_TTL_SECONDS = 10.0  # trust window per host; bounds pinned-address staleness, not a TOCTOU
 _IP_CACHE_MAX = 1024
-_ip_cache: dict[str, tuple[float, bool, str]] = {}
+_ip_cache: dict[str, tuple[float, bool, str, frozenset[str]]] = {}
 
 # Explicit non-public ranges rather than trusting ipaddress.is_global alone:
 # its CGNAT/mapped-address handling varies by Python version, and the guard
@@ -234,24 +241,28 @@ def _system_resolver(host: str) -> set[str]:
 _resolver = _system_resolver  # injectable for tests
 
 
-def resolved_addresses_ok(host: str) -> tuple[bool, str]:
-    """True unless the host resolves to any non-public address."""
+def _validated_addresses(host: str) -> tuple[bool, str, frozenset[str]]:
+    """Shared validation: (ok, why, addresses judged). The verdict hooks use
+    ok/why; the server_connect pin uses the addresses — exactly the set that
+    passed the guard, so the connection provably goes where the guard looked
+    (#41). Exemptions and unresolvable hosts carry an empty set (nothing to
+    pin); a failed validation does too (nothing may be connected)."""
     host = tjor_policy._canon_host(host)
     # Gateway (D4): the configured LiteLLM gateway is an INTENTIONAL internal
     # endpoint that resolves to a private docker IP. Exempt exactly it (and only
     # when a gateway is configured) from the SSRF/DNS-rebind guard — a single,
     # config-scoped host, not a blanket TJOR_IP_GUARD=off.
     if GATEWAY_HOST and host == GATEWAY_HOST:
-        return True, "gateway-exempt"
+        return True, "gateway-exempt", frozenset()
     # Kube broker (#45): same single-host, config-scoped exemption for the
     # cluster API server — a private-endpoint control plane must be reachable
     # without disabling the guard for every other allowed host.
     if KUBE_API_HOST and host == KUBE_API_HOST:
-        return True, "kube-exempt"
+        return True, "kube-exempt", frozenset()
     now = time.monotonic()
     hit = _ip_cache.get(host)
     if hit and now - hit[0] < _IP_TTL_SECONDS:
-        return hit[1], hit[2]
+        return hit[1], hit[2], hit[3]
 
     try:
         ipaddress.ip_address(host.split("%")[0])
@@ -260,7 +271,7 @@ def resolved_addresses_ok(host: str) -> tuple[bool, str]:
         try:
             addresses = _resolver(host)
         except OSError:
-            return True, "unresolvable"
+            return True, "unresolvable", frozenset()
 
     ok, why = True, ""
     for raw in addresses:
@@ -268,10 +279,31 @@ def resolved_addresses_ok(host: str) -> tuple[bool, str]:
         if not ok:
             break
 
+    validated = frozenset(addresses) if ok else frozenset()
     if len(_ip_cache) >= _IP_CACHE_MAX:
         _ip_cache.clear()
-    _ip_cache[host] = (now, ok, why)
+    _ip_cache[host] = (now, ok, why, validated)
+    return ok, why, validated
+
+
+def resolved_addresses_ok(host: str) -> tuple[bool, str]:
+    """True unless the host resolves to any non-public address."""
+    ok, why, _ = _validated_addresses(host)
     return ok, why
+
+
+def _pick_pinned(addresses: frozenset[str]) -> str | None:
+    """Deterministic pin choice from a validated set: prefer IPv4 (the
+    proxy's container network reality), then lexicographic — resolver order
+    is not stable and the pinned address must be reproducible."""
+    if not addresses:
+        return None
+
+    def key(raw: str):
+        is_v6 = isinstance(ipaddress.ip_address(raw.split("%")[0]), ipaddress.IPv6Address)
+        return (is_v6, raw)
+
+    return min(addresses, key=key)
 
 
 # ------------------------------------------------------- verdict computation
@@ -412,6 +444,44 @@ def _apply_gateway(flow) -> None:
 # ------------------------------------------------------------ mitmproxy glue
 
 class TjorPolicy:
+    def server_connect(self, data) -> None:
+        # Resolve-and-pin (#41): validate the destination HERE — the hook that
+        # decides where the upstream socket actually goes — and pin the address
+        # so no second resolution exists between judgment and connect. TLS is
+        # unaffected: mitmproxy derives upstream SNI/verification from the
+        # client's SNI (the hostname); this hook never touches server.sni.
+        # Fail-closed: validation failure or ANY error kills the connection.
+        if not _IP_GUARD:
+            return
+        try:
+            host, port = data.server.address
+            canon = tjor_policy._canon_host(host)
+            # Deliberate internal endpoints keep live docker DNS (their IPs
+            # change on container restart): never pinned, same scoped
+            # exemptions as the verdict path.
+            if (GATEWAY_HOST and canon == GATEWAY_HOST) or (KUBE_API_HOST and canon == KUBE_API_HOST):
+                return
+            try:
+                ipaddress.ip_address(canon.split("%")[0])
+                return  # an IP literal IS the judged address — nothing to pin
+            except ValueError:
+                pass
+            ok, why, validated = _validated_addresses(canon)
+            if not ok:
+                _log_denial(canon, f"ip-guard-pin:{why}")
+                data.server.error = f"tjor ip-guard: {why}"
+                return
+            pinned = _pick_pinned(validated)
+            if pinned is None:
+                # Unresolvable (guard's documented pass): stay unpinned —
+                # mitmproxy's own resolution fails and nothing flows.
+                return
+            data.server.address = (pinned, port)
+        except Exception as exc:  # noqa: BLE001 — never pass through unpinned
+            print(f"tjor: ip-guard pin error — killing connection: {exc!r}",
+                  file=sys.stderr, flush=True)
+            data.server.error = "tjor ip-guard: pin failure (fail-closed)"
+
     def http_connect(self, flow) -> None:
         from mitmproxy import http
 

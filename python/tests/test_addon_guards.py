@@ -454,3 +454,143 @@ class TestGateway:
         f = _GwFlow("tjor-gateway", {"authorization": "Bearer placeholder"})
         addon._apply_gateway(f)
         assert "authorization" not in f.request.headers   # fail-closed strip
+
+
+class TestPinSelection:
+    """Deterministic pin choice from a validated address set (#41): resolver
+    order is unstable, so the pinned address must be reproducible."""
+
+    def test_prefers_ipv4_over_ipv6(self):
+        addon = load_addon()
+        picked = addon._pick_pinned(frozenset({"2606:2800:220::1", "93.184.216.34"}))
+        assert picked == "93.184.216.34"
+
+    def test_ipv6_only_set_pins_ipv6(self):
+        addon = load_addon()
+        picked = addon._pick_pinned(frozenset({"2606:2800:220::1", "2606:2800:220::2"}))
+        assert picked == "2606:2800:220::1"  # lexicographic within a version
+
+    def test_multiple_ipv4_lexicographic(self):
+        addon = load_addon()
+        picked = addon._pick_pinned(frozenset({"93.184.216.34", "93.184.216.5", "1.2.3.4"}))
+        assert picked == "1.2.3.4"
+
+    def test_single_address(self):
+        addon = load_addon()
+        assert addon._pick_pinned(frozenset({"140.82.121.3"})) == "140.82.121.3"
+
+    def test_empty_set_is_none(self):
+        addon = load_addon()
+        assert addon._pick_pinned(frozenset()) is None
+
+
+class TestServerConnectPin:
+    """The resolve-and-pin server_connect hook (#41), driven through the real
+    mitmproxy ServerConnectionHookData the proxy passes it."""
+
+    def _hookdata(self, host, port=443):
+        pytest.importorskip("mitmproxy")
+        from mitmproxy import connection
+        from mitmproxy.proxy import server_hooks
+
+        server = connection.Server(address=(host, port))
+        client = connection.Client(peername=("10.0.0.2", 5555), sockname=("10.0.0.1", 8080))
+        return server_hooks.ServerConnectionHookData(server=server, client=client)
+
+    def _addon(self):
+        addon = load_addon()
+        addon._IP_GUARD = True
+        return addon
+
+    def test_rebinding_flip_between_check_and_connect_cannot_redirect(self, capsys):
+        # The #41 TOCTOU: public at verdict time, private at connect time.
+        addon = self._addon()
+        addon.DENIAL_LOG = ""  # denial goes to the (unset) log; we assert on address/error
+        seq = iter([{"93.184.216.34"}, {"10.0.0.5"}])
+
+        def flipping(host):
+            try:
+                return next(seq)
+            except StopIteration:
+                return {"10.0.0.5"}
+
+        # First resolution (verdict path) sees public and caches the validated
+        # set. allowed.test is policy-allowed, so the verdict reaches the guard.
+        addon._resolver = flipping
+        assert addon.connect_verdict("allowed.test").allowed
+        # Now the pin hook runs; even though DNS has since flipped to private,
+        # the pin must land on the validated public address — never 10.0.0.5.
+        data = self._hookdata("allowed.test")
+        addon.TjorPolicy().server_connect(data)
+        assert data.server.error is None
+        assert data.server.address == ("93.184.216.34", 443)
+
+    def test_private_at_connect_kills_and_logs(self, tmp_path):
+        addon = self._addon()
+        log = tmp_path / "denials.log"
+        addon.DENIAL_LOG = str(log)
+        addon._resolver = lambda host: {"10.0.0.5"}
+        data = self._hookdata("sneaky.test")
+        addon.TjorPolicy().server_connect(data)
+        assert data.server.error and "ip-guard" in data.server.error
+        assert data.server.address == ("sneaky.test", 443)  # never rewritten to the private IP
+        assert "ip-guard-pin" in log.read_text()
+
+    def test_pin_rewrites_address_preserves_port_and_leaves_sni(self):
+        addon = self._addon()
+        addon._resolver = lambda host: {"140.82.121.3"}
+        data = self._hookdata("allowed.test", port=8443)
+        assert data.server.sni is None
+        addon.TjorPolicy().server_connect(data)
+        assert data.server.address == ("140.82.121.3", 8443)
+        assert data.server.sni is None  # the addon never touches SNI
+
+    def test_guard_off_does_not_pin(self):
+        addon = self._addon()
+        addon._IP_GUARD = False
+        addon._resolver = lambda host: {"10.0.0.5"}
+        data = self._hookdata("allowed.test")
+        addon.TjorPolicy().server_connect(data)
+        assert data.server.error is None
+        assert data.server.address == ("allowed.test", 443)
+
+    def test_gateway_and_kube_exempt_hosts_not_pinned(self):
+        addon = self._addon()
+        addon._resolver = lambda host: {"172.20.0.5"}
+        addon.GATEWAY_HOST = "tjor-gateway"
+        addon.KUBE_API_HOST = "api.private-cluster.internal"
+        for host in ("tjor-gateway", "api.private-cluster.internal"):
+            data = self._hookdata(host)
+            addon.TjorPolicy().server_connect(data)
+            assert data.server.error is None
+            assert data.server.address == (host, 443)  # unpinned, live docker DNS
+
+    def test_ip_literal_destination_not_pinned(self):
+        addon = self._addon()
+        addon._resolver = lambda host: (_ for _ in ()).throw(AssertionError("must not resolve literals"))
+        data = self._hookdata("140.82.121.3")
+        addon.TjorPolicy().server_connect(data)
+        assert data.server.error is None
+        assert data.server.address == ("140.82.121.3", 443)
+
+    def test_unresolvable_host_left_unpinned(self):
+        addon = self._addon()
+        addon._resolver = lambda host: (_ for _ in ()).throw(OSError("NXDOMAIN"))
+        data = self._hookdata("nonexistent.test")
+        addon.TjorPolicy().server_connect(data)
+        assert data.server.error is None
+        assert data.server.address == ("nonexistent.test", 443)  # mitmproxy's own resolve fails later
+
+    def test_resolver_exception_fails_closed(self):
+        addon = self._addon()
+
+        def boom(host):
+            raise RuntimeError("resolver blew up")
+
+        addon._resolver = boom
+        # _validated_addresses catches OSError only; a RuntimeError propagates
+        # into the hook, whose fail-closed wrapper must kill the connection.
+        data = self._hookdata("allowed.test")
+        addon.TjorPolicy().server_connect(data)
+        assert data.server.error and "fail-closed" in data.server.error
+        assert data.server.address == ("allowed.test", 443)
