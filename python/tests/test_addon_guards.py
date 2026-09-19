@@ -269,6 +269,22 @@ class TestKubeMultiInjection:
         addon._apply_broker(f)
         assert f.request.headers["authorization"] == "Bearer agent-own"
 
+    def test_apply_strips_placeholder_when_credential_unavailable(self):
+        # Fail-closed (#57 review, Finding B): toward a CLUSTER origin whose
+        # credential is momentarily unavailable, the placeholder must be
+        # STRIPPED (not forwarded) — matching the pat path's contract.
+        addon = self.make()
+        addon.KUBE_BROKER.authorization = lambda h, p: None  # covered, but no cred
+        f = self._flow("api.prod", 6443, auth="Bearer tjor-broker-placeholder")
+        addon._apply_broker(f)
+        assert "authorization" not in f.request.headers  # stripped, upstream will reject
+
+    def test_covers_distinguishes_cluster_origin_from_host(self):
+        addon = self.make()
+        assert addon.KUBE_BROKER.covers("api.prod", 6443) is True
+        assert addon.KUBE_BROKER.covers("api.prod", 443) is False   # wrong port
+        assert addon.KUBE_BROKER.covers("elsewhere.test", 6443) is False
+
     def test_apply_does_not_leak_across_ports(self):
         addon = self.make()
         f = self._flow("api.prod", 443, auth="Bearer agent-own")  # not the cluster port

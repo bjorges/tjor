@@ -121,10 +121,18 @@ class TestKubeMultiBroker:
         with pytest.raises(tb.BrokerError):
             tb.KubeMultiBroker({"source": "kube", "clusters": [{"token": "t"}]})  # no origin
 
+    def test_covers_matches_exact_origin(self):
+        b = tb.KubeMultiBroker(self.CFG)
+        assert b.covers("api.prod", 6443) is True
+        assert b.covers("API.PROD", 6443) is True       # canonicalized host
+        assert b.covers("api.prod", 443) is False        # wrong port (#49)
+        assert b.covers("elsewhere.test", 6443) is False
+
     def test_teardown_forgets(self):
         b = tb.KubeMultiBroker(self.CFG)
         assert b.teardown() is True
         assert b.authorization("api.prod", 6443) is None
+        assert b.covers("api.prod", 6443) is False
 
 
 class TestWriteKubeBrokerJson:

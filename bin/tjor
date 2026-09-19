@@ -531,10 +531,17 @@ PY
                 done
                 [[ "${ttl}" =~ ^[0-9]+[smh]$ ]] \
                     || { warn "broker source=kube: invalid kube_duration '${ttl}' (e.g. 3600s, 30m, 1h) — broker disabled"; return 0; }
-                # A list entry's context name must itself be flag-safe (it is
-                # passed to kubectl as `--context <ctx>`).
-                [[ -z "${ctx}" || "${ctx}" != -* ]] \
-                    || { warn "broker source=kube: invalid context name '${ctx}' (must not start with '-') — broker disabled"; return 0; }
+                # A list entry's context name must be flag-safe (it is passed to
+                # kubectl as `--context <ctx>`) AND comma-free: context names are
+                # serialized comma-joined into TJOR_KUBE_CONTEXTS and re-split by
+                # the entrypoint, so a comma would desync the context↔server
+                # pairing and point a context at the wrong cluster's server.
+                if [[ -n "${ctx}" ]]; then
+                    [[ "${ctx}" != -* ]] \
+                        || { warn "broker source=kube: invalid context name '${ctx}' (must not start with '-') — broker disabled"; return 0; }
+                    [[ "${ctx}" != *,* ]] \
+                        || { warn "broker source=kube: invalid context name '${ctx}' (must not contain a comma) — broker disabled"; return 0; }
+                fi
                 # Determine the server for this entry and validate any api_host
                 # pin against the context it is minted against (#58, per entry).
                 if [[ -n "${pin}" ]]; then
@@ -570,6 +577,17 @@ PY
             # PASS 2 — mint each validated cluster. A mint failure still disables
             # the WHOLE broker (all-or-nothing); the tokens already minted are
             # simply discarded (broker.json is never written or exported).
+            #
+            # ACCEPTED RESIDUAL RISK (#58): for the FLAT/back-compat entry (empty
+            # context), the active context is read for validation in pass 1 and
+            # again, implicitly, by `kubectl create token` here — two reads. A
+            # `kubectl config use-context` racing between them could mint against
+            # a context different from the one validated. This is a HOST-SIDE
+            # race the operator controls at launch, not an agent-reachable
+            # surface (the cage is not up yet). List entries mint with an
+            # explicit `--context`, which NARROWS this window; the flat path
+            # keeps the pre-#57 behavior. Bounded and accepted, documented so it
+            # stays a conscious choice.
             local _i
             for _i in "${!k_origins[@]}"; do
                 if [[ -n "${k_ctxs[_i]}" ]]; then
@@ -595,7 +613,10 @@ sys.path.insert(0, os.path.join(os.environ["TJOR_ROOT"], "python"))
 import tjor_broker
 out, origins = sys.argv[1], sys.argv[2:]
 tokens = sys.stdin.read().splitlines()
-tjor_broker.write_kube_broker_json(out, zip(origins, tokens))
+# strict=True: origins (argv) and tokens (stdin lines) are built in parallel by
+# the launcher, so a length mismatch is a bug — fail loudly, never silently
+# pair the wrong token to an origin.
+tjor_broker.write_kube_broker_json(out, zip(origins, tokens, strict=True))
 ' "${dir}/broker.json" ${k_origins[@]+"${k_origins[@]}"} \
                 || { warn "broker source=kube: failed to write broker.json — broker disabled"; return 0; }
             local IFS=,

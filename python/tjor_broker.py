@@ -224,10 +224,13 @@ class KubeMultiBroker:
     def __init__(self, config: dict):
         # Local imports: keep this module's top-level dependency surface clean;
         # these siblings are pure (no third-party deps) and always ship beside
-        # the broker in the proxy image and on the test path.
+        # the broker in the proxy image and on the test path. Bind the host
+        # canonicalizer once here (not per authorization() call) so lookups add
+        # no import cost and both build and lookup canonicalize identically.
         import tjor_identity
         import tjor_policy
 
+        self._canon = tjor_policy._canon_host
         self._by_origin: dict[tuple[str, int], str] = {}
         clusters = config.get("clusters") or []
         for c in clusters:
@@ -238,19 +241,28 @@ class KubeMultiBroker:
             if len(pairs) != 1 or pairs[0][1] is None:
                 raise BrokerError(f"kube cluster origin must be one host:port: {origin!r}")
             host, port = pairs[0]
-            key = (tjor_policy._canon_host(host), int(port))
+            key = (self._canon(host), int(port))
             if key in self._by_origin:
                 raise BrokerError(f"duplicate kube cluster origin: {origin!r}")
             self._by_origin[key] = token
         if not self._by_origin:
             raise BrokerError("kube broker configured with no clusters")
 
+    def _key(self, host: str, port: int) -> tuple[str, int]:
+        return (self._canon(host), int(port))
+
+    def covers(self, host: str, port: int) -> bool:
+        """Whether ``host:port`` is a configured cluster origin — the kube
+        analogue of ``broker_covers`` for the pat path. Lets the injector strip
+        a placeholder toward a cluster even if the token is momentarily
+        unavailable (fail-closed), distinct from a non-cluster host it leaves
+        untouched."""
+        return self._key(host, port) in self._by_origin
+
     def authorization(self, host: str, port: int) -> str | None:
         """The Bearer value to inject toward ``host:port``, or None
         (fail-closed) when that origin is not a configured cluster."""
-        import tjor_policy
-
-        token = self._by_origin.get((tjor_policy._canon_host(host), int(port)))
+        token = self._by_origin.get(self._key(host, port))
         return f"Bearer {token}" if token is not None else None
 
     def teardown(self) -> bool:

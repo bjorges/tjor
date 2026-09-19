@@ -5,6 +5,32 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Security
+- **Multi-cluster review follow-ups (#57).** From a three-lens review that
+  approved v0.18.0 with no critical/high findings, two independently
+  cross-confirmed Medium items and several robustness gaps are closed:
+  - **Context names are rejected if they contain a comma.** `TJOR_KUBE_CONTEXTS`
+    is comma-joined and re-split by the entrypoint, so a comma in a context
+    name could desync the context↔server pairing — making `kubectl config
+    use-context prod` silently target another cluster's (correctly
+    authenticated) API server. No credential leak (the proxy's token map is
+    keyed by real origin), but it undermined per-cluster precision.
+  - **The kube injector now fails closed like the pat path.** Toward a
+    configured cluster origin whose credential is momentarily unavailable,
+    `_apply_broker` strips the agent's placeholder `Authorization` rather than
+    forwarding it (via a new `KubeMultiBroker.covers()`), matching the
+    documented "placeholder is stripped, never forwarded" contract.
+  - **Kube broker teardown is wired.** `TjorPolicy.done()` now calls
+    `KUBE_BROKER.teardown()` (it was implemented and tested but never invoked),
+    satisfying the credential-broker spec's teardown requirement for the kube
+    source.
+  - Added tests for the duplicate-context-name and comma-in-context rejection
+    branches; restored the #58 active-context TOCTOU accepted-risk note for the
+    flat/back-compat path (dropped in the multi-cluster rewrite); `zip(strict=True)`
+    on the origin/token pairing; and removed the per-call re-import in
+    `KubeMultiBroker`. The deferred resolver (#59) and denial-message-IP (#60)
+    items now carry inline code breadcrumbs.
+
 ### Fixed
 - **kube_symlink_test.sh updated for the multi-cluster env vars.** The
   entrypoint's kube placeholder-config regression test (the only coverage of

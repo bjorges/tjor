@@ -326,6 +326,42 @@ TOML
 PATH="${MOCKBIN}:${PATH}" run_prepare 2>/dev/null
 [[ -z "${TJOR_BROKER_ENABLED:-}" ]] && ok "fail-closed: a list entry without 'context' is refused" || bad "list entry without context was accepted"
 
+# === 15. Refused: two entries with the SAME context name (#57 review) =======
+# Distinct from the duplicate-origin case: two different contexts could name
+# the same kubeconfig context, which would collide in the agent's kubeconfig.
+write_user_cfg <<'TOML'
+[broker]
+source = "kube"
+
+[[broker.kube_clusters]]
+context = "prod"
+kube_sa = "ci-runner"
+
+[[broker.kube_clusters]]
+context = "prod"
+kube_sa = "other-sa"
+TOML
+rm -f "${WORK}/create_token_argv"
+PATH="${MOCKBIN}:${PATH}" run_prepare 2>/dev/null
+[[ -z "${TJOR_BROKER_ENABLED:-}" ]] && ok "duplicate context name refused (a context can name only one cluster)" || bad "duplicate context name was accepted"
+[[ ! -e "${WORK}/create_token_argv" ]] && ok "no token minted when a duplicate context is detected (validate-first)" || bad "a token was minted before the duplicate-context refusal"
+
+# === 16. Refused: a context name containing a comma (#57 review, Finding A) ==
+# TJOR_KUBE_CONTEXTS is comma-joined and re-split by the entrypoint, so a comma
+# in a context name would desync the context↔server pairing.
+write_user_cfg <<'TOML'
+[broker]
+source = "kube"
+
+[[broker.kube_clusters]]
+context = "prod,staging"
+kube_sa = "ci-runner"
+TOML
+rm -f "${WORK}/create_token_argv"
+PATH="${MOCKBIN}:${PATH}" run_prepare 2>/dev/null
+[[ -z "${TJOR_BROKER_ENABLED:-}" ]] && ok "comma in a context name refused (no context↔server desync)" || bad "comma-bearing context name was accepted"
+[[ ! -e "${WORK}/create_token_argv" ]] && ok "no token minted for a comma-bearing context (validate-first)" || bad "a token was minted for a comma-bearing context"
+
 echo "----"
 echo "kube wiring: ${PASS} passed, ${FAIL} failed"
 [[ "${FAIL}" -eq 0 ]]

@@ -252,7 +252,12 @@ def _embedded_ipv4(addr: ipaddress.IPv6Address) -> list[ipaddress.IPv4Address]:
 def _address_public(raw: str) -> tuple[bool, str]:
     """Version-independent publicness check for one address literal.
     IPv4-embedding IPv6 forms (mapped, NAT64, 6to4, Teredo) are unwrapped
-    and every embedded address judged alongside the literal itself."""
+    and every embedded address judged alongside the literal itself.
+
+    Note (#60): the returned reason names the specific offending address; it
+    reaches the agent via the denial verdict. Tracked as a follow-up to keep
+    the concrete private IP out of the agent-facing message while the operator
+    denial log keeps it."""
     try:
         addr = ipaddress.ip_address(raw.split("%")[0])  # strip any zone id
     except ValueError:
@@ -458,14 +463,20 @@ def _apply_broker(flow) -> None:
     host, port = flow.request.host, flow.request.port
     if KUBE_BROKER is not None:
         # kube: a destination is exactly a configured cluster origin (#49/#57).
-        # Toward one, overwrite the placeholder with that cluster's real Bearer
-        # token; toward anything else, leave the request untouched.
-        auth = broker_authorization(host, port)
-        if auth is None:
+        # Toward a non-cluster host, leave the request untouched. Toward a
+        # cluster origin, the placeholder is STRIPPED and replaced with that
+        # cluster's real Bearer token — and if no credential is available
+        # (KUBE_BROKER.authorization returned None unexpectedly), the
+        # placeholder is still stripped so the upstream rejects rather than the
+        # agent's placeholder being forwarded. This matches the pat path's
+        # documented fail-closed contract.
+        if not KUBE_BROKER.covers(host, port):
             return
+        auth = broker_authorization(host, port)
         if "authorization" in flow.request.headers:
             del flow.request.headers["authorization"]
-        flow.request.headers["authorization"] = auth
+        if auth is not None:
+            flow.request.headers["authorization"] = auth
         return
     if BROKER is None or not tjor_identity.broker_covers(BROKER_HOSTS, host, port):
         return
@@ -582,6 +593,18 @@ class TjorPolicy:
                           file=sys.stderr, flush=True)
             except Exception as exc:  # noqa: BLE001
                 print(f"tjor: broker revoke on shutdown failed (token auto-expires): {exc!r}",
+                      file=sys.stderr, flush=True)
+        # Kube broker (#57): forget the per-cluster SA tokens too (the
+        # credential-broker spec's teardown requirement applies here as well;
+        # the tokens are short-TTL and non-revocable, so this drops them from
+        # memory rather than calling an API).
+        if KUBE_BROKER is not None:
+            try:
+                KUBE_BROKER.teardown()
+                print("tjor: kube broker tokens forgotten on shutdown (short-TTL, auto-expire)",
+                      file=sys.stderr, flush=True)
+            except Exception as exc:  # noqa: BLE001
+                print(f"tjor: kube broker teardown failed (tokens auto-expire): {exc!r}",
                       file=sys.stderr, flush=True)
 
 
