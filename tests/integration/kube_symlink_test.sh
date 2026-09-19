@@ -29,16 +29,19 @@ printf '%s\n' "${SENTINEL_CONTENT}" > "${HOMEDIR}/sentinel"
 # Plant the hostile symlink: ~/.kube/config.tmp -> ~/sentinel (container path).
 ln -s /home/agent/sentinel "${HOMEDIR}/.kube/config.tmp"
 
-# Run the real entrypoint with the kube broker "active" (server set) so it
-# renders the placeholder kubeconfig, writing through .tmp. TJOR_AGENT_UID is
-# the host uid (as the real launcher passes), so the entrypoint aligns the agent
-# to it — the files it writes stay host-owned, readable here and removable in
-# cleanup (without it, native-Linux CI writes 0600 files as a foreign uid that
-# the runner can neither read nor rm).
+# Run the real entrypoint with the kube broker "active" (a cluster set) so it
+# renders the multi-context placeholder kubeconfig (#57), writing through .tmp.
+# One cluster suffices to exercise the symlink-follow path: TJOR_KUBE_CONTEXTS
+# and TJOR_KUBE_SERVERS are the parallel comma-lists the launcher exports (here
+# a single entry). TJOR_AGENT_UID is the host uid (as the real launcher passes),
+# so the entrypoint aligns the agent to it — the files it writes stay host-owned,
+# readable here and removable in cleanup (without it, native-Linux CI writes
+# 0600 files as a foreign uid that the runner can neither read nor rm).
 docker run --rm \
     -e TJOR_HARNESS=opencode \
     -e TJOR_BROKER_ENABLED=1 \
-    -e TJOR_KUBE_SERVER=https://api.test.example:6443 \
+    -e TJOR_KUBE_CONTEXTS=tjor \
+    -e TJOR_KUBE_SERVERS=https://api.test.example:6443 \
     -e TJOR_AGENT_UID="$(id -u)" \
     -v "${HOMEDIR}:/home/agent" \
     "${IMAGE}" true >/dev/null 2>&1 || true

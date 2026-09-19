@@ -3,6 +3,18 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+### Fixed
+- **kube_symlink_test.sh updated for the multi-cluster env vars.** The
+  entrypoint's kube placeholder-config regression test (the only coverage of
+  the real entrypoint render, docker-gated so it runs in CI only) still set
+  the pre-#57 `TJOR_KUBE_SERVER`, so after the multi-cluster change the render
+  branch was skipped and the test failed (v0.18.0 CI). It now sets the
+  parallel `TJOR_KUBE_CONTEXTS`/`TJOR_KUBE_SERVERS` the launcher exports. The
+  shipped v0.18.0 entrypoint and images are correct — `publish-images` was
+  green — so this is a test-only fix, no re-release needed.
+
 ## [0.18.0] — 2026-09-19 — Multi-cluster kube broker
 
 One caged session can now reach several Kubernetes clusters at once, switching
