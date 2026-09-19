@@ -48,8 +48,12 @@ repositories = []
 kube_sa = ""                             # ServiceAccount to mint a token for
 kube_namespace = "default"               # its namespace
 kube_duration = "1h"                     # token TTL (Go duration; no refresh)
-# API server: derived from your current kubeconfig context by default. Set to
-# override (a full https://host:port URL, or a bare host assumed https).
+# API server: derived from your current kubeconfig context by default. Setting
+# this PINS the expected cluster (a full https://host:port URL, or a bare host
+# assumed https) — it does not SELECT one: the token is always minted against
+# your ACTIVE context, so at launch the pin is validated against that context's
+# server and a mismatch disables the broker (#58). True cluster selection /
+# multi-cluster sessions are tracked in #57.
 kube_api_host = ""
 
 [gateway]

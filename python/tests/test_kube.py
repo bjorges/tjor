@@ -66,6 +66,49 @@ class TestApiOrigin:
             tjor_kube.api_origin(bad)
 
 
+class TestSameServer:
+    """Canonical server-identity equality (#58): the `kube_api_host` pin is
+    validated against the active context's server with this, so equivalent
+    spellings must agree and any real identity difference must not."""
+
+    @pytest.mark.parametrize(
+        "a,b",
+        [
+            # bare host[:port] override vs the kubeconfig's full https URL
+            ("api.k8s.example.com:6443", "https://api.k8s.example.com:6443"),
+            # implicit vs explicit https default port
+            ("https://api.k8s.example.com", "https://api.k8s.example.com:443"),
+            ("api.k8s.example.com", "https://api.k8s.example.com:443"),
+            # hostnames compare case-insensitively (urlparse lowercases)
+            ("https://API.K8S.Example.COM:6443", "https://api.k8s.example.com:6443"),
+            ("https://[2001:db8::1]:6443", "[2001:db8::1]:6443"),
+            ("  https://api.k8s.example.com:6443  ", "api.k8s.example.com:6443"),
+        ],
+    )
+    def test_equivalent_spellings_are_the_same_server(self, a, b):
+        assert tjor_kube.same_server(a, b)
+
+    @pytest.mark.parametrize(
+        "a,b",
+        [
+            ("https://api-a.example.com:6443", "https://api-b.example.com:6443"),
+            ("https://api.example.com:6443", "https://api.example.com:6444"),
+            ("https://api.example.com", "https://api.example.com:6443"),
+            # same host:port, different scheme — still not the same server
+            ("http://api.example.com:6443", "https://api.example.com:6443"),
+        ],
+    )
+    def test_different_identity_is_a_mismatch(self, a, b):
+        assert not tjor_kube.same_server(a, b)
+
+    @pytest.mark.parametrize("bad", ["", "   ", "https://", "https://:6443"])
+    def test_invalid_input_raises(self, bad):
+        with pytest.raises(ValueError):
+            tjor_kube.same_server(bad, "https://api.example.com:6443")
+        with pytest.raises(ValueError):
+            tjor_kube.same_server("https://api.example.com:6443", bad)
+
+
 class TestNormalizeServer:
     def test_adds_https_when_missing(self):
         assert tjor_kube.normalize_server("api:6443") == "https://api:6443"
@@ -131,6 +174,14 @@ class TestCli:
         tjor_kube._main(["tjor_kube.py", "config", "https://api.example.com:6443", "/ca.pem"])
         doc = json.loads(capsys.readouterr().out)
         assert doc["users"][0]["user"]["token"] == tjor_kube.PLACEHOLDER_TOKEN
+
+    def test_same_command_exit_codes(self):
+        with pytest.raises(SystemExit) as exc:
+            tjor_kube._main(["tjor_kube.py", "same", "api.example.com:6443", "https://api.example.com:6443"])
+        assert exc.value.code == 0
+        with pytest.raises(SystemExit) as exc:
+            tjor_kube._main(["tjor_kube.py", "same", "https://api-a:6443", "https://api-b:6443"])
+        assert exc.value.code == 1
 
     def test_unknown_command_exits(self):
         with pytest.raises(SystemExit):

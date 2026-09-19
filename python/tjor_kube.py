@@ -6,7 +6,7 @@ The launcher mints a short-TTL Kubernetes ServiceAccount token host-side with
 injected as the bearer token toward the cluster API server host ONLY. The
 agent holds only a placeholder; the real token never enters the cage.
 
-These are the two PURE transforms that path needs, kept here (not inline in the
+These are the PURE transforms that path needs, kept here (not inline in the
 launcher/entrypoint) so they are unit-tested against the real code that runs:
 
   * `api_host(server)` — the host of a kubeconfig cluster server URL: the
@@ -15,6 +15,10 @@ launcher/entrypoint) so they are unit-tested against the real code that runs:
   * `api_origin(server)` — the exact `host:port` origin (#49): the broker's
     injection scope, so the SA token never reaches a same-hostname service on
     a different port. Explicit port, else the scheme default (443/80).
+  * `same_server(a, b)` — whether two server values name the same API server
+    (#58): canonical (scheme, host, effective-port) equality, so an explicit
+    `kube_api_host` pin is validated against the active context's server
+    without false mismatches over spelling.
   * `kubeconfig(server, ca_path, token)` — a minimal in-cage kubeconfig that
     points at the REAL API server but carries only a PLACEHOLDER bearer token;
     `kubectl` sends `Authorization: Bearer <placeholder>` and the proxy
@@ -57,17 +61,32 @@ def api_host(server):
     return host
 
 
+def _server_identity(server):
+    """Canonical ``(scheme, host, effective port)`` of a server URL — the one
+    identity a server is judged by (#58). urlparse lowercases the hostname;
+    a missing port takes the scheme's default (443 https, 80 http)."""
+    parsed = urllib.parse.urlparse(normalize_server(server))
+    host = parsed.hostname
+    if not host:
+        raise ValueError(f"no host in API server URL: {server!r}")
+    return parsed.scheme, host, parsed.port or (80 if parsed.scheme == "http" else 443)
+
+
 def api_origin(server):
     """Exact ``host:port`` origin of a kubeconfig cluster server URL (#49) —
     the kube broker's injection scope. Uses the URL's explicit port, else the
     scheme's default (443 https, 80 http); an IPv6 host is bracketed so the
     port suffix parses unambiguously."""
-    parsed = urllib.parse.urlparse(normalize_server(server))
-    host = parsed.hostname
-    if not host:
-        raise ValueError(f"no host in API server URL: {server!r}")
-    port = parsed.port or (80 if parsed.scheme == "http" else 443)
+    _, host, port = _server_identity(server)
     return (f"[{host}]:{port}") if ":" in host else f"{host}:{port}"
+
+
+def same_server(a, b):
+    """True iff ``a`` and ``b`` name the same API server (#58): equal
+    canonical identity, so a bare ``host:port`` `kube_api_host` pin and the
+    kubeconfig's full URL compare equal, while a different host, port, or
+    scheme does not."""
+    return _server_identity(a) == _server_identity(b)
 
 
 def kubeconfig(server, ca_path, token=PLACEHOLDER_TOKEN):
@@ -94,13 +113,15 @@ def kubeconfig(server, ca_path, token=PLACEHOLDER_TOKEN):
 
 def _main(argv):
     if len(argv) < 2:
-        sys.exit("usage: tjor_kube.py {host|origin|url|config} ...")
+        sys.exit("usage: tjor_kube.py {host|origin|url|same|config} ...")
     cmd = argv[1]
     try:
         if cmd == "host":  # host <server>
             print(api_host(argv[2]))
         elif cmd == "origin":  # origin <server>  -> host:port injection scope (#49)
             print(api_origin(argv[2]))
+        elif cmd == "same":  # same <a> <b>  -> exit 0 iff the same API server (#58)
+            sys.exit(0 if same_server(argv[2], argv[3]) else 1)
         elif cmd == "url":  # url <server>  -> canonical https URL
             print(normalize_server(argv[2]))
         elif cmd == "config":  # config <server> <ca_path> [token]

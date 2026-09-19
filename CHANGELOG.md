@@ -5,6 +5,21 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Security
+- **`kube_api_host` is now a validated pin of the expected cluster (#58).**
+  The override never selected the cluster a token was minted for — `kubectl
+  create token` always targets the active kubectl context — while injection
+  scoping, the egress hint, and the SSRF-guard exemption followed the
+  configured string, so a stale or mistyped override silently produced a
+  session whose real token and whose allowlisted host referred to two
+  different clusters. At launch, an explicit override is now compared
+  canonically (scheme, host, effective port) against the active context's
+  server *before any token is minted*; a mismatch — or an active context
+  whose server cannot be read — disables the broker loudly, naming both
+  identities and the remedies. Equivalent spellings (bare `host:port` vs the
+  kubeconfig's full URL) still validate as the same server. Cluster
+  *selection* remains the active context; multi-cluster semantics are #57.
+
 ### Testing
 - **multirepo test gates on entrypoint readiness before git assertions.**
   A container reports "running" from PID 1, but the entrypoint registers

@@ -470,7 +470,13 @@ prepare_broker() {
             [[ "${ttl}" =~ ^[0-9]+[smh]$ ]] \
                 || { warn "broker source=kube: invalid kube_duration '${ttl}' (e.g. 3600s, 30m, 1h) — broker disabled"; return 0; }
             # API server: pinned override, else derived from the active context.
-            server="$(cfg broker.kube_api_host --default '')"
+            # An explicit override is a validated PIN of the expected cluster
+            # (#58), not a selector — minting always targets the ACTIVE
+            # context, so a mismatching override would scope injection to one
+            # cluster while the token belongs to another. Validated below,
+            # before any token is minted.
+            local pinned
+            server="$(cfg broker.kube_api_host --default '')"; pinned="${server}"
             if [[ -z "${server}" ]]; then
                 server="$(kube_server_url)" \
                     || { warn "broker source=kube: could not read the API server from your kubeconfig ('kubectl config view --minify') — set broker.kube_api_host or fix your context. Broker disabled."; return 0; }
@@ -480,6 +486,13 @@ prepare_broker() {
                 && api="$(python3 "${TJOR_ROOT}/python/tjor_kube.py" host "${server}" 2>/dev/null)" \
                 && origin="$(python3 "${TJOR_ROOT}/python/tjor_kube.py" origin "${server}" 2>/dev/null)" \
                 || { warn "broker source=kube: could not parse an API host from the server URL — broker disabled"; return 0; }
+            if [[ -n "${pinned}" ]]; then
+                local active
+                active="$(kube_server_url)" \
+                    || { warn "broker source=kube: kube_api_host is set but the active context's server could not be read ('kubectl config view --minify'), so the override cannot be validated against the cluster the token would be minted for — fix your context or unset broker.kube_api_host. Broker disabled."; return 0; }
+                python3 "${TJOR_ROOT}/python/tjor_kube.py" same "${server}" "${active}" 2>/dev/null \
+                    || { warn "broker source=kube: kube_api_host ('${pinned}') does not name the active context's server ('${active}') — the token would be minted for the ACTIVE cluster while injection and allowlisting are scoped to the configured one. Switch clusters ('kubectl config use-context …') or fix/remove broker.kube_api_host. Broker disabled."; return 0; }
+            fi
             local token
             token="$(kubectl create token "${sa}" --namespace "${ns}" --duration "${ttl}" 2>/dev/null)" \
                 || { warn "broker source=kube: 'kubectl create token ${sa} -n ${ns}' failed — your kubectl identity needs 'create' on the SA's serviceaccounts/token subresource, and the SA must exist. Broker disabled."; return 0; }

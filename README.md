@@ -139,7 +139,9 @@ source = "kube"
 kube_sa = "agent-readonly"     # a ServiceAccount you've bound to a Role
 kube_namespace = "dev"
 kube_duration = "1h"           # token TTL; no in-cage refresh
-# kube_api_host = "https://…"  # optional; else derived from your current context
+# kube_api_host = "https://…"  # optional PIN of the expected cluster; must match
+                               # your current context (validated at launch) —
+                               # it does not select the cluster tokens are minted for
 ```
 
 Then allow the API server host in the egress policy — tjor prints the exact

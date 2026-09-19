@@ -26,7 +26,7 @@ cat >"${MOCKBIN}/kubectl" <<EOF
 #!/usr/bin/env bash
 for a in "\$@"; do :; done
 case " \$* " in
-    *" config view "*) printf '%s' "${SERVER_URL}" ;;
+    *" config view "*) [[ -n "\${MOCK_NO_CONFIG_VIEW:-}" ]] && exit 1; printf '%s' "${SERVER_URL}" ;;
     *" create token "*) printf '%s' "\$*" > "${WORK}/create_token_argv"; printf '%s' "${MINTED_TOKEN}" ;;
     *) echo "mock kubectl: unhandled: \$*" >&2; exit 2 ;;
 esac
@@ -84,18 +84,51 @@ KCFG="$(python3 "${ROOT}/python/tjor_kube.py" config "${TJOR_KUBE_SERVER}" /etc/
 if grep -q "${MINTED_TOKEN}" <<<"${KCFG}"; then bad "placeholder kubeconfig leaked the real token"; else ok "placeholder kubeconfig holds no real token"; fi
 grep -q 'tjor-broker-placeholder' <<<"${KCFG}" && ok "placeholder kubeconfig carries the placeholder token" || bad "placeholder token missing"
 
-# === 2. API host override (no kubeconfig derivation) ======================
+# === 2. API host override pinning the active cluster (#58) ================
+# The override is a validated PIN: an equivalent spelling of the active
+# context's server (bare host:port vs the kubeconfig's full https URL) must
+# validate as the same server and behave exactly like the happy path.
+write_user_cfg <<'TOML'
+[broker]
+source = "kube"
+kube_sa = "ci-runner"
+kube_api_host = "api.test.example:6443"
+TOML
+PATH="${MOCKBIN}:${PATH}" run_prepare
+[[ "${TJOR_BROKER_ENABLED:-}" == "1" ]] && ok "equivalent-spelling kube_api_host validates as the same server (#58)" || bad "equivalent-spelling override disabled the broker"
+[[ "${TJOR_BROKER_HOSTS:-}" == "api.test.example:6443" && "${TJOR_KUBE_SERVER:-}" == "${SERVER_URL}" ]] \
+    && ok "override honored: injection scoped to the exact origin, unchanged from the happy path" || bad "override wiring wrong (hosts='${TJOR_BROKER_HOSTS:-}', server='${TJOR_KUBE_SERVER:-}')"
+
+# === 3. Fail-closed: kube_api_host names a DIFFERENT cluster (#58) =========
+# The token is always minted against the ACTIVE context, so a mismatching
+# override must disable the broker BEFORE minting — no token for the wrong
+# cluster may ever be requested — and the warning must name both servers.
 write_user_cfg <<'TOML'
 [broker]
 source = "kube"
 kube_sa = "ci-runner"
 kube_api_host = "https://pinned.example.com:6443"
 TOML
-PATH="${MOCKBIN}:${PATH}" run_prepare
-[[ "${TJOR_BROKER_HOSTS:-}" == "pinned.example.com:6443" && "${TJOR_KUBE_SERVER:-}" == "https://pinned.example.com:6443" ]] \
-    && ok "kube_api_host override wins over kubeconfig" || bad "override not honored (hosts='${TJOR_BROKER_HOSTS:-}', server='${TJOR_KUBE_SERVER:-}')"
+rm -f "${WORK}/create_token_argv"
+PATH="${MOCKBIN}:${PATH}" run_prepare 2>"${WORK}/mismatch_warn"
+[[ -z "${TJOR_BROKER_ENABLED:-}" ]] && ok "fail-closed: mismatched kube_api_host disables the broker (#58)" || bad "mismatched kube_api_host did NOT disable the broker"
+[[ ! -e "${WORK}/create_token_argv" ]] && ok "no token minted for the wrong cluster" || bad "a token was minted despite the mismatch"
+[[ -z "${TJOR_KUBE_API_HOST:-}" ]] && ok "no ip_guard exemption exported on mismatch (#45)" || bad "TJOR_KUBE_API_HOST leaked on mismatch: '${TJOR_KUBE_API_HOST:-}'"
+if grep -q "pinned.example.com" "${WORK}/mismatch_warn" && grep -q "api.test.example" "${WORK}/mismatch_warn"; then
+    ok "mismatch warning names both the override and the active context's server"
+else
+    bad "mismatch warning does not name both servers: $(cat "${WORK}/mismatch_warn")"
+fi
 
-# === 3. Fail-closed: empty kube_sa ========================================
+# === 4. Fail-closed: kube_api_host set but active context unreadable (#58) =
+# With the override set and `kubectl config view` failing, the pin cannot be
+# validated against the cluster the token would be minted for — fail closed.
+rm -f "${WORK}/create_token_argv"
+MOCK_NO_CONFIG_VIEW=1 PATH="${MOCKBIN}:${PATH}" run_prepare 2>/dev/null
+[[ -z "${TJOR_BROKER_ENABLED:-}" ]] && ok "fail-closed: unvalidatable kube_api_host disables the broker (#58)" || bad "unvalidatable kube_api_host did NOT disable the broker"
+[[ ! -e "${WORK}/create_token_argv" ]] && ok "no token minted when the pin cannot be validated" || bad "a token was minted with an unvalidated pin"
+
+# === 5. Fail-closed: empty kube_sa ========================================
 write_user_cfg <<'TOML'
 [broker]
 source = "kube"
@@ -104,7 +137,7 @@ PATH="${MOCKBIN}:${PATH}" run_prepare 2>/dev/null
 [[ -z "${TJOR_BROKER_ENABLED:-}" ]] && ok "fail-closed: empty kube_sa disables the broker" || bad "empty kube_sa did NOT disable the broker"
 [[ -z "${TJOR_KUBE_API_HOST:-}" ]] && ok "no kube broker -> no ip_guard exemption host exported (#45)" || bad "TJOR_KUBE_API_HOST leaked without an active kube broker: '${TJOR_KUBE_API_HOST:-}'"
 
-# === 4. Fail-closed: kubectl absent =======================================
+# === 6. Fail-closed: kubectl absent =======================================
 write_user_cfg <<'TOML'
 [broker]
 source = "kube"
@@ -114,7 +147,7 @@ TOML
 PATH="${WORK}/empty" run_prepare 2>/dev/null || true
 [[ -z "${TJOR_BROKER_ENABLED:-}" ]] && ok "fail-closed: missing kubectl disables the broker" || bad "missing kubectl did NOT disable the broker"
 
-# === 5. Fail-closed: argument-injection-shaped kube_sa (leading dash) =====
+# === 7. Fail-closed: argument-injection-shaped kube_sa (leading dash) =====
 write_user_cfg <<'TOML'
 [broker]
 source = "kube"
@@ -123,7 +156,7 @@ TOML
 PATH="${MOCKBIN}:${PATH}" run_prepare 2>/dev/null || true
 [[ -z "${TJOR_BROKER_ENABLED:-}" ]] && ok "fail-closed: flag-shaped kube_sa (leading '-') refused" || bad "flag-shaped kube_sa was accepted (arg injection)"
 
-# === 6. Fail-closed: bogus kube_duration ==================================
+# === 8. Fail-closed: bogus kube_duration ==================================
 write_user_cfg <<'TOML'
 [broker]
 source = "kube"
