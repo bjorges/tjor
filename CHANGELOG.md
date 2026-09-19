@@ -3,7 +3,13 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.18.4] — 2026-09-19 — Egress-guard DNS availability hardening
+
+Closes the v0.18.2 re-review High: the bounded-resolution fix bounded each call
+but not the shared resolver pool, so slow-DNS load could durably deny the guard
+(fail-closed). Resolution now coalesces per host, caps concurrent lookups with
+fail-fast, and briefly negative-caches timeouts. Bundles the #60 structured-
+reason robustness and the #57 api_host comma check from the same review.
 
 ### Security
 - **Egress guard stays available under slow-DNS load (#59 re-review).** A
