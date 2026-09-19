@@ -3,7 +3,13 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.18.1] — 2026-09-19 — Multi-cluster review follow-ups
+
+Robustness and spec-conformance follow-ups from a three-lens review of the
+v0.18.0 multi-cluster kube broker (no critical/high findings): reject commas in
+context names (they could desync the context↔server pairing), fail closed in
+the kube injector like the pat path, wire kube broker teardown, and cover the
+previously-untested rejection branches. Plus the v0.18.0 CI test-only fix.
 
 ### Security
 - **Multi-cluster review follow-ups (#57).** From a three-lens review that
