@@ -3,6 +3,20 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+### Security
+- **Egress guard denials no longer disclose the resolved address to the agent
+  (#60).** A guard denial's reason (e.g. `ip-guard:non-global address 10.0.0.5`)
+  was returned to the agent in the 403 body and `x-tjor-rule` header (and the
+  resolve-and-pin connection-kill error), handing back the concrete internal
+  address the hostname resolved to. The agent-facing reason is now generalized
+  to its class (`ip-guard:non-global-address`, `ip-guard:unparseable-address`)
+  at the response sites, while the operator denial log (`tjor denials`) keeps
+  the full detail unchanged. Literal-free reasons (policy blocks, default-deny,
+  resolution timeout, exemptions) are shown to the agent unchanged. Low/Info,
+  defense-in-depth — the agent resolved the name itself.
+
 ## [0.18.2] — 2026-09-19 — Bounded egress-guard DNS resolution
 
 Closes #59: the egress guard resolved hostnames synchronously on mitmproxy's

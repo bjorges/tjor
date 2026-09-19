@@ -273,10 +273,11 @@ def _address_public(raw: str) -> tuple[bool, str]:
     IPv4-embedding IPv6 forms (mapped, NAT64, 6to4, Teredo) are unwrapped
     and every embedded address judged alongside the literal itself.
 
-    Note (#60): the returned reason names the specific offending address; it
-    reaches the agent via the denial verdict. Tracked as a follow-up to keep
-    the concrete private IP out of the agent-facing message while the operator
-    denial log keeps it."""
+    Note (#60): the returned reason names the specific offending address. That
+    detail is kept for the OPERATOR (denial log / stderr), but the AGENT-facing
+    denial is generalized by `_agent_reason`/`_agent_rule` at the response
+    sites, so a guard denial never hands the agent the concrete internal
+    address it resolved to."""
     try:
         addr = ipaddress.ip_address(raw.split("%")[0])  # strip any zone id
     except ValueError:
@@ -531,6 +532,30 @@ def _apply_gateway(flow) -> None:
         flow.request.headers["authorization"] = f"Bearer {GATEWAY_KEY}"
 
 
+# ------------------------------------------------------- agent-facing reasons
+
+def _agent_reason(why: str) -> str:
+    """The literal-free form of a guard reason for the AGENT (#60). The
+    operator denial log keeps the full reason (including the specific resolved
+    address), but a guard denial returned to the agent should state only the
+    denial CLASS, not the concrete internal address it resolved to (or the raw
+    input it echoed). Only these specifics-bearing guard reasons are
+    generalized; every other reason is already literal-free and passes through
+    unchanged (and policy blocks / default-deny describe the agent's own
+    request, so they stay informative)."""
+    if why.startswith("non-global address"):
+        return "non-global-address"
+    if why.startswith("unparseable address"):
+        return "unparseable-address"
+    return why
+
+
+def _agent_rule(rule: str) -> str:
+    """`_agent_reason` applied to a full `ip-guard:<why>` verdict rule."""
+    prefix = "ip-guard:"
+    return prefix + _agent_reason(rule[len(prefix):]) if rule.startswith(prefix) else rule
+
+
 # ------------------------------------------------------------ mitmproxy glue
 
 class TjorPolicy:
@@ -555,8 +580,8 @@ class TjorPolicy:
                 return  # an IP literal IS the judged address — nothing to pin
             ok, why, validated = _validated_addresses(canon)
             if not ok:
-                _log_denial(canon, f"ip-guard-pin:{why}")
-                data.server.error = f"tjor ip-guard: {why}"
+                _log_denial(canon, f"ip-guard-pin:{why}")  # operator log keeps the address
+                data.server.error = f"tjor ip-guard: {_agent_reason(why)}"  # agent gets the class only (#60)
                 return
             pinned = _pick_pinned(validated)
             if pinned is None:
@@ -574,11 +599,12 @@ class TjorPolicy:
 
         verdict = connect_verdict(flow.request.host)
         if not verdict.allowed:
-            _log_denial(flow.request.host, verdict.rule)
+            _log_denial(flow.request.host, verdict.rule)  # operator log keeps the full reason
+            agent_rule = _agent_rule(verdict.rule)         # agent gets the class only (#60)
             flow.response = http.Response.make(
                 403,
-                f"tjor egress policy: DENY CONNECT ({verdict.rule})\n".encode(),
-                {"x-tjor-policy": "deny", "x-tjor-rule": verdict.rule},
+                f"tjor egress policy: DENY CONNECT ({agent_rule})\n".encode(),
+                {"x-tjor-policy": "deny", "x-tjor-rule": agent_rule},
             )
 
     def request(self, flow) -> None:
@@ -590,18 +616,19 @@ class TjorPolicy:
             _apply_broker(flow)
             _apply_gateway(flow)
         if not verdict.allowed:
-            _log_denial(flow.request.host, verdict.rule)
+            _log_denial(flow.request.host, verdict.rule)  # operator log keeps the full reason
+            agent_rule = _agent_rule(verdict.rule)         # agent gets the class only (#60)
             flow.response = http.Response.make(
                 403,
                 (
-                    f"tjor egress policy: DENY ({verdict.rule}"
+                    f"tjor egress policy: DENY ({agent_rule}"
                     + (f": {verdict.pattern}" if verdict.pattern else "")
                     + ")\n"
                 ).encode(),
                 {
                     "content-type": "text/plain",
                     "x-tjor-policy": "deny",
-                    "x-tjor-rule": verdict.rule,
+                    "x-tjor-rule": agent_rule,
                 },
             )
 

@@ -433,6 +433,59 @@ class TestAddressGuard:
         assert addon.resolved_addresses_ok("allowed.test")[0]
 
 
+class TestAgentFacingReason:
+    """Guard denials do not disclose the resolved address to the agent (#60):
+    the operator log keeps the full reason; the agent gets only the class."""
+
+    def test_agent_reason_generalizes_specifics(self):
+        addon = load_addon()
+        assert addon._agent_reason("non-global address 10.0.0.5") == "non-global-address"
+        assert addon._agent_reason("non-global address fd00::1 (embeds 10.0.0.5)") == "non-global-address"
+        assert addon._agent_reason("unparseable address 'weird'") == "unparseable-address"
+
+    def test_agent_reason_passes_through_literal_free(self):
+        addon = load_addon()
+        for why in ("resolve-timeout", "unresolvable", "gateway-exempt", "kube-exempt"):
+            assert addon._agent_reason(why) == why
+
+    def test_agent_rule_handles_ip_guard_prefix_and_others(self):
+        addon = load_addon()
+        assert addon._agent_rule("ip-guard:non-global address 10.0.0.5") == "ip-guard:non-global-address"
+        assert addon._agent_rule("ip-guard:resolve-timeout") == "ip-guard:resolve-timeout"
+        # non-guard rules (policy blocks / default-deny) are the agent's own
+        # request and pass through unchanged
+        assert addon._agent_rule("default-deny") == "default-deny"
+        assert addon._agent_rule("block:host") == "block:host"
+
+    def test_no_ip_literal_reaches_the_agent(self):
+        addon = load_addon()
+        rule = "ip-guard:non-global address 10.0.0.5"
+        assert "10.0.0.5" not in addon._agent_rule(rule)  # the whole point
+
+    def test_end_to_end_403_omits_ip_but_log_keeps_it(self, tmp_path):
+        # A non-global resolution: the agent 403 body + x-tjor-rule header carry
+        # no IP literal, while the operator denial log still records it.
+        pytest.importorskip("mitmproxy")
+        import types
+        from mitmproxy.http import Headers
+        addon = load_addon()
+        log = tmp_path / "denials.log"
+        addon.DENIAL_LOG = str(log)
+        addon._resolver = lambda host: {"10.0.0.5"}  # allowed.test resolves private
+        pol = addon.TjorPolicy()
+        flow = types.SimpleNamespace(
+            request=types.SimpleNamespace(host="allowed.test",
+                                          pretty_url="https://allowed.test/x",
+                                          headers=Headers()),
+            response=None)
+        pol.request(flow)
+        body = flow.response.content.decode()
+        assert "10.0.0.5" not in body                                  # agent body redacted
+        assert "non-global-address" in body
+        assert "10.0.0.5" not in flow.response.headers["x-tjor-rule"]  # agent header redacted
+        assert "10.0.0.5" in log.read_text()                           # operator log keeps it
+
+
 class TestBoundedResolution:
     """The resolver call is time-bounded so a hung DNS answer cannot stall the
     event loop (#59). Fail closed on timeout; fast-unresolvable unchanged."""
