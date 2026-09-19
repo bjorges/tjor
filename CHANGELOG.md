@@ -3,7 +3,11 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.18.6] — 2026-09-20 — Bounded proxy resolver + saturation signal
+
+Closes the disclosed v0.18.4 residual (#61): bound the proxy's OS DNS resolver
+so a hung lookup recovers fast (provably, not by assumption), and surface an
+operator signal when the resolver cap saturates. No security-boundary change.
 
 ### Security
 - **The proxy's OS DNS resolver is bounded, and cap saturation is observable
