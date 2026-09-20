@@ -71,3 +71,35 @@ if ! grep -q 'RES_OPTIONS' "${ROOT_DIR}/proxy/entrypoint.sh"; then
     exit 1
 fi
 echo "doc-consistency: proxy resolver bound (RES_OPTIONS) wired in the entrypoint"
+
+# Image build context (charter L10): .dockerignore is allowlist-style (deny *,
+# then re-include each COPY source). A file added to a Dockerfile COPY but NOT
+# to the allowlist is silently dropped from the build context — the v0.18.7
+# proxy build broke exactly this way (python/tjor_secrets.py was in the COPY but
+# not the allowlist). It is invisible locally (no Docker daemon here) and only
+# fails in CI. Same drift class as above: a COPY source and its allowlist entry
+# separating. Assert every COPY source across the image Dockerfiles is
+# allowlisted, so the build context can never silently miss one.
+dockerignore="${ROOT_DIR}/.dockerignore"
+ctx_fail=0
+for df in "${ROOT_DIR}"/images/*/Dockerfile; do
+    while read -r _kw rest; do
+        # COPY <src>... <dest>: sources are every arg but the last (dest);
+        # skip flags (--chown/--from/...). None used today, but be robust.
+        # shellcheck disable=SC2086
+        set -- ${rest}
+        n=$#; i=0
+        for arg in "$@"; do
+            i=$((i + 1))
+            [[ "${i}" -eq "${n}" ]] && continue     # destination
+            [[ "${arg}" == --* ]] && continue        # a COPY flag
+            src="${arg%/}"                            # normalize dir trailing slash
+            if ! grep -qxF "!${src}" "${dockerignore}"; then
+                echo "doc-consistency: FAILED — ${df#"${ROOT_DIR}"/} COPYs '${src}' but .dockerignore does not allowlist it (add '!${src}')" >&2
+                ctx_fail=1
+            fi
+        done
+    done < <(grep '^COPY ' "${df}")
+done
+[[ "${ctx_fail}" -eq 0 ]] || exit 1
+echo "doc-consistency: image Dockerfile COPY sources are all allowlisted in .dockerignore"

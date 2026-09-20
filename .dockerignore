@@ -6,6 +6,7 @@
 !python/tjor_identity.py
 !python/tjor_broker.py
 !python/tjor_kube.py
+!python/tjor_secrets.py
 !images/conformance/echo.py
 !proxy/addon.py
 !proxy/entrypoint.sh
