@@ -65,12 +65,49 @@ class TestNoFalsePositives:
         assert s.contains_secret("") is False
 
 
+class TestTotality:
+    """redact()/contains_secret() must NEVER raise — they run on the deny path
+    before enforcement, so a throw would fail a policy denial OPEN (#6 review)."""
+
+    def test_redact_total_on_pathological_pem_opener(self):
+        # A multi-KB attacker-controlled BEGIN-PRIVATE-KEY opener with NO closer:
+        # the lazy DOTALL PEM regex could otherwise recurse. Must return, not raise.
+        payload = "-----BEGIN PRIVATE KEY-----\n" + ("A" * 200_000)
+        out = s.redact(payload)          # the assertion is simply: no exception
+        assert isinstance(out, str)
+        assert s.contains_secret(payload) in (True, False)  # also must not raise
+
+    def test_redact_total_on_mixed_giant_input(self):
+        payload = ("x" * 100_000) + " AKIAABCDEFGHIJKLMNOP " + ("y" * 100_000)
+        out = s.redact(payload)
+        assert "AKIAABCDEFGHIJKLMNOP" not in out  # the well-formed secret still redacts
+
+
+class TestBoundaries:
+    """Off-by-one length boundaries on the anchored shapes (@homer-python)."""
+
+    def test_github_classic_min_length(self):
+        assert s.contains_secret("ghp_" + "a" * 36) is True   # 36 = minimum
+        assert s.contains_secret("ghp_" + "a" * 35) is False  # one short
+
+    def test_aws_key_exact_length(self):
+        assert s.contains_secret("AKIA" + "A" * 16) is True
+        assert s.contains_secret("AKIA" + "A" * 15) is False  # 15 body chars: no match
+        # 17 trailing chars: the \b keeps the 16-char shape from matching a longer run
+        assert s.redact("AKIA" + "A" * 17) == "AKIA" + "A" * 17
+
+    def test_ghu_variant_matches(self):
+        # The docstring lists ghp_/gho_/ghu_/ghs_/ghr_; verify ghu_ actually hits.
+        assert s.contains_secret("ghu_" + "a" * 36) is True
+
+
 class TestCli:
     def test_redact_filter(self, capsys, monkeypatch):
+        # argv excludes the program name (sibling convention, cf. tjor_policy).
         monkeypatch.setattr("sys.stdin", __import__("io").StringIO("x AKIAABCDEFGHIJKLMNOP y"))
-        assert s._main(["tjor_secrets.py", "redact"]) == 0
+        assert s._main(["redact"]) == 0
         assert "[redacted:aws-access-key-id]" in capsys.readouterr().out
 
     def test_usage_without_subcommand(self):
         with pytest.raises(SystemExit):
-            s._main(["tjor_secrets.py"])
+            s._main([])

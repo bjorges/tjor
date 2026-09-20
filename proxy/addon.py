@@ -131,25 +131,29 @@ def _safe_ascii(s: str, limit: int = 253) -> str:
 
 def _log_denial(host: str, rule: str) -> None:
     """Append a denied egress to the session denial log (#23) so `tjor
-    denials` can surface it. Best-effort — never let logging break a request."""
+    denials` can surface it. Best-effort and TOTAL — it MUST never raise: it runs
+    inside the deny-enforcing hooks (http_connect/request) BEFORE the 403 is set,
+    and an exception escaping a mitmproxy hook is logged but does NOT re-run the
+    hook body — so a throw here would skip the 403 and forward the request,
+    failing an already-decided denial OPEN. Every failure is swallowed."""
     global _denial_log_count
     if not DENIAL_LOG or _denial_log_count >= _DENIAL_LOG_MAX:
         return
     _denial_log_count += 1
-    # `host` is attacker-influenced (the destination the agent tried to reach)
-    # and this file is later printed by `tjor denials`. Redact any discovered
-    # secret first (#6 — a secret quoted from repo content/tool output must not
-    # be persisted in the clear), then strip terminal-control bytes so the file
-    # is escape-safe (`tjor denials` sanitizes again at display, defense in
-    # depth). redact() is fail-safe and total; logging never breaks on it.
-    safe_host = _safe_ascii(tjor_secrets.redact(host))
     try:
+        # `host` is attacker-influenced (the destination the agent tried to
+        # reach) and this file is later printed by `tjor denials`. Redact any
+        # discovered secret first (#6 — a secret quoted from repo content/tool
+        # output must not be persisted in the clear; redact() is total), then
+        # strip terminal-control bytes so the file is escape-safe (`tjor denials`
+        # sanitizes again at display, defense in depth).
+        safe_host = _safe_ascii(tjor_secrets.redact(host))
         with open(DENIAL_LOG, "a") as fh:
             fh.write(f"{safe_host}\t{rule}\t{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n")
             if _denial_log_count >= _DENIAL_LOG_MAX:
                 fh.write("...(denial log capped for this session; further denials not recorded)\n")
-    except OSError:
-        pass
+    except Exception:  # noqa: BLE001 — logging is best-effort; NEVER propagate
+        pass            # into a deny hook (would fail the denial OPEN).
 
 
 def _log_saturation(host: str) -> None:
@@ -712,25 +716,43 @@ class TjorPolicy:
     def http_connect(self, flow) -> None:
         from mitmproxy import http
 
-        verdict = connect_verdict(flow.request.host)
-        if not verdict.allowed:
-            _log_denial(flow.request.host, verdict.rule)  # operator log keeps the full reason
-            agent_rule = _agent_rule(verdict.rule)         # agent gets the class only (#60)
+        # Fail-closed guard (module invariant: an addon exception must never let
+        # mitmproxy pass a request through unfiltered). Verdict computation is
+        # already fail-closed; this additionally guards the deny-ENFORCEMENT body
+        # — a throw between here and setting flow.response (e.g. inside
+        # _log_denial) would otherwise skip the 403 and forward the request, as a
+        # mitmproxy hook exception is logged but does not re-run the hook.
+        try:
+            verdict = connect_verdict(flow.request.host)
+            if not verdict.allowed:
+                _log_denial(flow.request.host, verdict.rule)  # operator log keeps the full reason
+                agent_rule = _agent_rule(verdict.rule)         # agent gets the class only (#60)
+                flow.response = http.Response.make(
+                    403,
+                    f"tjor egress policy: DENY CONNECT ({agent_rule})\n".encode(),
+                    {"x-tjor-policy": "deny", "x-tjor-rule": agent_rule},
+                )
+        except Exception as exc:  # noqa: BLE001 — never forward on an addon error
+            print(f"tjor: http_connect hook error — failing closed: {exc!r}",
+                  file=sys.stderr, flush=True)
             flow.response = http.Response.make(
-                403,
-                f"tjor egress policy: DENY CONNECT ({agent_rule})\n".encode(),
-                {"x-tjor-policy": "deny", "x-tjor-rule": agent_rule},
-            )
+                403, b"tjor egress policy: DENY CONNECT (fail-closed)\n",
+                {"x-tjor-policy": "deny", "x-tjor-rule": "fail-closed:hook-error"})
 
     def request(self, flow) -> None:
         from mitmproxy import http
 
-        verdict = request_verdict(flow.request.pretty_url, flow.request.host)
-        if verdict.allowed:
-            _apply_identity(flow)
-            _apply_broker(flow)
-            _apply_gateway(flow)
-        if not verdict.allowed:
+        # Fail-closed guard, same invariant as http_connect. Covers both the
+        # deny-enforcement body AND the allowed-path credential injection: a
+        # throw in _apply_broker/_apply_gateway must deny, never forward the
+        # request without the intended handling.
+        try:
+            verdict = request_verdict(flow.request.pretty_url, flow.request.host)
+            if verdict.allowed:
+                _apply_identity(flow)
+                _apply_broker(flow)
+                _apply_gateway(flow)
+                return
             _log_denial(flow.request.host, verdict.rule)  # operator log keeps the full reason
             agent_rule = _agent_rule(verdict.rule)         # agent gets the class only (#60)
             flow.response = http.Response.make(
@@ -746,6 +768,13 @@ class TjorPolicy:
                     "x-tjor-rule": agent_rule,
                 },
             )
+        except Exception as exc:  # noqa: BLE001 — never forward on an addon error
+            print(f"tjor: request hook error — failing closed: {exc!r}",
+                  file=sys.stderr, flush=True)
+            flow.response = http.Response.make(
+                403, b"tjor egress policy: DENY (fail-closed)\n",
+                {"content-type": "text/plain", "x-tjor-policy": "deny",
+                 "x-tjor-rule": "fail-closed:hook-error"})
 
     def done(self) -> None:
         # Best-effort revocation on proxy shutdown (tjor down / gc gives the

@@ -756,6 +756,65 @@ class TestSafeAscii:
         assert "default-deny" in contents             # rule column intact
 
 
+class TestDenyHooksFailClosed:
+    """The #6-review Critical: _log_denial runs INSIDE the deny hooks before the
+    403 is set, and a mitmproxy hook exception is logged but does not re-run the
+    hook — so a throw there must NOT skip enforcement. The hooks now fail closed."""
+
+    def _flow(self, host="blocked.test"):
+        import types
+        from mitmproxy.http import Headers
+        return types.SimpleNamespace(
+            request=types.SimpleNamespace(host=host,
+                                          pretty_url=f"https://{host}/x",
+                                          headers=Headers()),
+            response=None)
+
+    def test_log_denial_is_total_even_if_redact_throws(self, tmp_path, monkeypatch):
+        # redact() is total, but _log_denial must swallow ANY failure regardless.
+        # (monkeypatch, not direct assignment: tjor_secrets is a shared module.)
+        addon = load_addon()
+        addon.DENIAL_LOG = str(tmp_path / "denials.log")
+        addon._denial_log_count = 0
+        monkeypatch.setattr(addon.tjor_secrets, "redact",
+                            lambda s: (_ for _ in ()).throw(RecursionError("boom")))
+        addon._log_denial("blocked.test", "default-deny")  # must NOT raise
+
+    def test_request_denies_even_if_log_denial_throws(self):
+        # The bypass regression: a denied request whose _log_denial throws must
+        # STILL get a 403 — never forwarded to its real destination. blocked.test
+        # is default-denied at the request stage by the fixture policy.
+        pytest.importorskip("mitmproxy")
+        addon = load_addon()
+        addon._log_denial = lambda *a, **k: (_ for _ in ()).throw(RecursionError("boom"))
+        flow = self._flow()
+        addon.TjorPolicy().request(flow)
+        assert flow.response is not None and flow.response.status_code == 403
+        assert flow.response.headers["x-tjor-rule"] == "fail-closed:hook-error"
+
+    def test_http_connect_denies_even_if_log_denial_throws(self):
+        # The fixture allows CONNECT to allowed.test but the IP guard denies it
+        # when it resolves to a private address — a real connect-stage deny.
+        pytest.importorskip("mitmproxy")
+        addon = load_addon()
+        addon._resolver = lambda host: {"10.0.0.5"}  # allowed host resolves private -> deny
+        addon._log_denial = lambda *a, **k: (_ for _ in ()).throw(RecursionError("boom"))
+        flow = self._flow("allowed.test")
+        addon.TjorPolicy().http_connect(flow)
+        assert flow.response is not None and flow.response.status_code == 403
+        assert flow.response.headers["x-tjor-rule"] == "fail-closed:hook-error"
+
+    def test_normal_denial_still_sets_rule_and_403(self):
+        # The guard must not change the happy-path deny (rule preserved, 403 set).
+        pytest.importorskip("mitmproxy")
+        addon = load_addon()
+        addon._resolver = lambda host: {"10.0.0.5"}
+        flow = self._flow("allowed.test")
+        addon.TjorPolicy().http_connect(flow)
+        assert flow.response.status_code == 403
+        assert flow.response.headers["x-tjor-rule"] != "fail-closed:hook-error"
+
+
 class _GwReq:
     def __init__(self, host, headers=None):
         self.host = host

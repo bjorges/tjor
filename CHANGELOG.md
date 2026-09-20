@@ -3,6 +3,34 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+Closes a Critical review finding in the v0.18.7 wiring: an exception in the
+denial-log call could fail a policy denial OPEN. The deny-enforcing hooks now
+fail closed like the rest of the addon, and the detector is total by
+construction. No boundary change.
+
+### Security
+- **The deny-enforcing hooks now fail closed; the denial log can no longer fail a
+  denial open (#6 review, Critical).** `_log_denial` (added in v0.18.7) runs
+  inside `http_connect` and `request` *before* the 403 is set, and a mitmproxy
+  hook exception is logged but does not re-run the hook body — so a throw in
+  `_log_denial` would skip the 403 and forward an already-denied request to its
+  real destination. `TJOR_DENIAL_LOG` is set by default, so this was live. Both
+  hooks now wrap their body in a fail-closed guard (matching `server_connect` and
+  the module's stated invariant: an addon exception must never let a request pass
+  unfiltered) — any exception yields a 403 (`x-tjor-rule: fail-closed:hook-error`).
+  In defense in depth, `_log_denial` is now total (swallows every failure, not
+  just `OSError`), and the detector's `redact()`/`contains_secret()` are total by
+  construction (a per-pattern guard, so a pathological attacker-controlled input —
+  e.g. a multi-KB `BEGIN PRIVATE KEY` opener with no closer that could recurse in
+  the regex engine — can never make them raise).
+
+### Fixed
+- Detector polish (review nits): the GitHub-token comment now lists the `ghu_`
+  variant the regex already matched; `tjor_secrets._main` follows the sibling
+  `sys.argv[1:]` convention; added off-by-one boundary tests for the token shapes.
+
 ## [0.18.8] — 2026-09-20 — Fail closed on unresolvable (DNS-rebind gap)
 
 Closes a Critical review finding: v0.18.6's resolver bound re-widened the #41

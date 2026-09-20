@@ -26,7 +26,8 @@ _PLACEHOLDER = "[redacted:{kind}]"
 _PATTERNS: list[tuple[str, re.Pattern]] = [
     # AWS access key id (long-term AKIA / temporary ASIA) — 16 upper-alnum.
     ("aws-access-key-id", re.compile(r"\b(?:AKIA|ASIA)[0-9A-Z]{16}\b")),
-    # GitHub tokens: ghp_/gho_/ghs_/ghr_ (classic, 36+) and github_pat_ (fine-grained).
+    # GitHub tokens: ghp_/gho_/ghu_/ghs_/ghr_ (classic, 36+) and github_pat_
+    # (fine-grained). The [pousr] class covers all five one-letter variants.
     ("github-token", re.compile(r"\bgh[pousr]_[A-Za-z0-9]{36,255}\b")),
     ("github-pat", re.compile(r"\bgithub_pat_[A-Za-z0-9_]{22,255}\b")),
     # Slack tokens: xoxb-/xoxp-/xoxa-/xoxr-/xoxs- …
@@ -42,26 +43,47 @@ _PATTERNS: list[tuple[str, re.Pattern]] = [
 
 def redact(text: str) -> str:
     """Return ``text`` with every known secret shape replaced by
-    ``[redacted:<kind>]``. Non-secret content is returned unchanged."""
+    ``[redacted:<kind>]``. Non-secret content is returned unchanged.
+
+    TOTAL by construction: a per-pattern guard means no input can make this
+    raise — not even a pathological, attacker-controlled one (e.g. a multi-KB
+    ``-----BEGIN PRIVATE KEY-----`` opener with no closer, which could otherwise
+    recurse in the regex engine). Callers on the deny path depend on this: this
+    runs from ``_log_denial`` BEFORE the 403 is set, so a throw here would fail a
+    policy denial OPEN. A pattern that chokes is skipped; the rest still run."""
     if not text:
         return text
     for kind, pat in _PATTERNS:
-        text = pat.sub(_PLACEHOLDER.format(kind=kind), text)
+        try:
+            text = pat.sub(_PLACEHOLDER.format(kind=kind), text)
+        except Exception:  # noqa: BLE001 — redaction must never raise (see above)
+            continue
     return text
 
 
 def contains_secret(text: str) -> bool:
-    """True iff ``text`` contains at least one known secret shape."""
-    return bool(text) and any(pat.search(text) for _, pat in _PATTERNS)
+    """True iff ``text`` contains at least one known secret shape. Total, for the
+    same reason as ``redact``: a pattern that chokes on pathological input is
+    skipped rather than propagated."""
+    if not text:
+        return False
+    for _, pat in _PATTERNS:
+        try:
+            if pat.search(text):
+                return True
+        except Exception:  # noqa: BLE001 — never raise on pathological input
+            continue
+    return False
 
 
 def _main(argv: list[str]) -> int:
-    # `redact` filter: stdin -> stdout, for shell/manual use.
-    if len(argv) >= 2 and argv[1] == "redact":
+    # `redact` filter: stdin -> stdout, for shell/manual use. argv excludes the
+    # program name (sibling convention, cf. tjor_policy._main / sys.argv[1:]).
+    if argv[:1] == ["redact"]:
         sys.stdout.write(redact(sys.stdin.read()))
         return 0
     sys.exit("usage: tjor_secrets.py redact   (redacts stdin -> stdout)")
 
 
 if __name__ == "__main__":
-    sys.exit(_main(sys.argv))
+    raise SystemExit(_main(sys.argv[1:]))
