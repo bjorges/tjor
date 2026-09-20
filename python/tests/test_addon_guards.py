@@ -709,6 +709,21 @@ class TestSafeAscii:
         assert "\x1b" not in err            # no raw escape reaches stderr
         assert "example.com" in err          # the printable part still shown
 
+    def test_denial_log_redacts_discovered_secret(self, tmp_path):
+        # #6 proof: a secret quoted into an attacker-influenced denial value must
+        # not be persisted in the clear. _log_denial redacts before it writes.
+        addon = load_addon()
+        log = tmp_path / "denials.log"
+        addon.DENIAL_LOG = str(log)
+        addon._denial_log_count = 0
+        token = "ghp_" + "a" * 36
+        addon._log_denial(f"exfil.test/?leak={token}", "default-deny")
+        contents = log.read_text()
+        assert token not in contents                 # the secret never hits disk
+        assert "[redacted:github-token]" in contents  # replaced in place
+        assert "exfil.test" in contents               # the rest of the line survives
+        assert "default-deny" in contents             # rule column intact
+
 
 class _GwReq:
     def __init__(self, host, headers=None):

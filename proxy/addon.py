@@ -46,6 +46,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import tjor_broker
 import tjor_identity
 import tjor_policy
+import tjor_secrets
 
 POLICY_PATH = os.environ.get("TJOR_POLICY_FILE", "/policy/policy.toml")
 
@@ -134,10 +135,12 @@ def _log_denial(host: str, rule: str) -> None:
         return
     _denial_log_count += 1
     # `host` is attacker-influenced (the destination the agent tried to reach)
-    # and this file is later printed by `tjor denials`; keep the file itself
-    # free of terminal-control bytes (`tjor denials` sanitizes again at display,
-    # defense in depth).
-    safe_host = _safe_ascii(host)
+    # and this file is later printed by `tjor denials`. Redact any discovered
+    # secret first (#6 — a secret quoted from repo content/tool output must not
+    # be persisted in the clear), then strip terminal-control bytes so the file
+    # is escape-safe (`tjor denials` sanitizes again at display, defense in
+    # depth). redact() is fail-safe and total; logging never breaks on it.
+    safe_host = _safe_ascii(tjor_secrets.redact(host))
     try:
         with open(DENIAL_LOG, "a") as fh:
             fh.write(f"{safe_host}\t{rule}\t{time.strftime('%Y-%m-%dT%H:%M:%SZ', time.gmtime())}\n")

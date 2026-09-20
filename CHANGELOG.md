@@ -3,6 +3,39 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+Establishes the mechanism for discovered-secret scrubbing (#6) design-first: an
+ADR fixes the risk framing and the false-positive stance, a small reusable
+detector redacts known secret shapes, and it is wired into one low-risk,
+tjor-owned sink (the denial log) as proof. The high-yield boundaries are mapped
+and deferred to tickets. Additive; no security-boundary change.
+
+### Added
+- **Discovered-secret scrubbing, design-first (#6).** A distinct risk from the
+  broker/gateway (which protect platform-issued secrets): an *already-existing*
+  secret the agent reads from repo content or tool output, quotes, and then
+  persists. `docs/decisions/0010-secret-scrubbing.md` records the risk model, the
+  three boundaries (tjor-persisted logs/output, the egress inference stream, the
+  harness's own memory files), why only the first is wired now, and the
+  conservative known-shape detection stance (no entropy). A new stdlib-only
+  detector, `python/tjor_secrets.py`, exposes `redact(text)` /
+  `contains_secret(text)` — matching provably-secret shapes (AWS/Google keys,
+  GitHub/Slack tokens, PEM private-key blocks) and leaving UUIDs, git SHAs,
+  base64, and prose untouched — plus a `redact` stdin→stdout CLI. It ships in the
+  proxy image.
+
+### Security
+- **The session denial log redacts discovered secrets (#6, proof wiring).**
+  `_log_denial` now passes the attacker-influenced content it records through
+  `tjor_secrets.redact()` before writing, so a secret quoted into a denied value
+  is stored as `[redacted:<kind>]` rather than in the clear. Redaction is
+  fail-safe and never breaks logging. A denied hostname rarely carries a secret,
+  so this fires seldom in practice — it is the single low-risk, tjor-owned sink
+  chosen to prove the detector end-to-end; the high-yield sinks — egress bodies
+  (#62) and the harness's own memory files (#63) — are deferred to tickets,
+  deliberately. No boundary change.
+
 ## [0.18.6] — 2026-09-20 — Bounded proxy resolver + saturation signal
 
 Closes the disclosed v0.18.4 residual (#61): bound the proxy's OS DNS resolver

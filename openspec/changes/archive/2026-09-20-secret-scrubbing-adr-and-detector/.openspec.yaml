@@ -1,0 +1,8 @@
+schema: spec-driven
+created: 2026-09-20
+# Design-first increment (issue #6, "no mechanism chosen yet"): the durable
+# decision record is an ADR (docs/decisions/), and the deliverable is a reusable
+# detector + a proof wiring — no boundary/capability is committed to a spec yet
+# (that follows once a real boundary is chosen). No spec-level behavior contract
+# to add now; skip_specs mirrors how the doc-lint/tooling changes were handled.
+skip_specs: true
