@@ -3,7 +3,7 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.18.11] — 2026-09-20 — Observe workload-log read volume (#50)
 
 Closes the last open item on #50 (exfiltration-conscious log access): the
 observability increment. Adds a per-session `pods/log` read-volume counter,
