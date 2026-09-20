@@ -1,0 +1,9 @@
+schema: spec-driven
+created: 2026-09-20
+# Pure tooling + docs: runtime-stamped conformance output, a tracked
+# conformance-runtime matrix, a doc-lint invariant, and honest documentation of
+# the runtimes we cannot verify here (Docker Desktop, WSL — no CI test setup /
+# licensing). No runtime/product behavior or capability change — the conformance
+# suite already owns and tests the boundaries; this records WHERE it was verified.
+# Mirrors #38 (boundary matrix). So there is no spec delta.
+skip_specs: true

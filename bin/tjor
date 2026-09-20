@@ -342,6 +342,32 @@ report_tiers() {
     echo "tjor: hardening add-on: kernel sandbox (Landlock, mode $(cfg landlock.mode --default auto)) — probed in-cage at start, status on the 'kernel-sandbox:' log line" >&2
 }
 
+# Best-effort container-runtime classification for the conformance attestation
+# (#13): linux-engine | colima | docker-desktop | wsl2 | unknown. It NEVER
+# mislabels — an unrecognized engine is reported as `unknown`, so a confident
+# wrong label can't creep into an attestation. Signals in order: WSL (a host
+# kernel fact, independent of the docker backend), then the docker context name,
+# then `docker info` fields; a plain reachable daemon on a Linux host with no
+# Desktop/Colima/WSL marker is the native engine.
+detect_runtime() {
+    if [[ -n "${WSL_DISTRO_NAME:-}" ]] || grep -qiE 'microsoft|wsl' /proc/version 2>/dev/null; then
+        echo "wsl2"; return
+    fi
+    case "$(docker context show 2>/dev/null || true)" in
+        colima*)        echo "colima"; return ;;
+        desktop-linux)  echo "docker-desktop"; return ;;
+    esac
+    local os name
+    os="$(docker info --format '{{.OperatingSystem}}' 2>/dev/null || true)"
+    name="$(docker info --format '{{.Name}}' 2>/dev/null || true)"
+    case "${os}" in *"Docker Desktop"*) echo "docker-desktop"; return ;; esac
+    case "${name}" in colima*) echo "colima"; return ;; esac
+    if [[ -n "${os}" && "$(uname -s 2>/dev/null)" == "Linux" ]]; then
+        echo "linux-engine"; return
+    fi
+    echo "unknown"
+}
+
 # ----------------------------------------------------------------- sessions
 # Write broker.json created 0o600 from the start (os.open with the mode) so
 # the secret never exists briefly world-readable.
@@ -1834,10 +1860,28 @@ cmd_conformance() {
     build_conformance
     ensure_topology
     "${COMPOSE[@]}" -f "${TJOR_ROOT}/compose.yaml" up -d echo >/dev/null 2>&1
-    local rc=0
-    "${COMPOSE[@]}" -f "${TJOR_ROOT}/compose.yaml" run --rm conformance || rc=$?
-    if ((rc == 0)); then echo "tjor: conformance PASSED — the boundary holds" >&2
-    else loud "conformance FAILED (rc=${rc}) — the boundary does NOT hold"; fi
+    local rc=0 out
+    # Show the probe output live AND capture it, so the attestation can carry the
+    # ACTUAL probe count from the suite's summary (never hardcoded — it grows
+    # with every hardening increment). pipefail makes $? the run's status (tee
+    # succeeds); the brace-group `|| rc=$?` keeps set -e from aborting first.
+    out="$(mktemp "${HOME}/.tjor/tmp/conf-out.XXXXXX")"
+    { "${COMPOSE[@]}" -f "${TJOR_ROOT}/compose.yaml" run --rm conformance 2>&1 | tee "${out}"; } || rc=$?
+    local runtime probes result
+    runtime="$(detect_runtime)"
+    probes="$(sed -n 's/.*conformance: [0-9][0-9]*\/\([0-9][0-9]*\) probes passed.*/\1/p' "${out}" | tail -1)"
+    [[ -n "${probes}" ]] || probes="?"
+    rm -f "${out}"
+    if ((rc == 0)); then
+        result="PASS"
+        echo "tjor: conformance PASSED — the boundary holds [runtime=${runtime}]" >&2
+    else
+        result="FAIL"
+        loud "conformance FAILED (rc=${rc}) — the boundary does NOT hold [runtime=${runtime}]"
+    fi
+    # Copy-pasteable, checkable attestation for docs/conformance-matrix.md (#13):
+    # paste this line into the matrix row for a runtime CI can't reach.
+    echo "tjor: conformance-attestation: result=${result} runtime=${runtime} probes=${probes} date=$(date +%Y-%m-%d)" >&2
     return "${rc}"
 }
 

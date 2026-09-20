@@ -3,6 +3,29 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+Closes the last open item on #13 (the adversarial conformance suite): runtime
+coverage. Automates and tracks what we can, honestly documents what we can't —
+no exotic CI runners. Tooling + docs; no boundary or product change.
+
+### Added
+- **Conformance runtime matrix + runtime-stamped attestation (#13).** The
+  adversarial suite was already green in CI on the Linux engine and locally on
+  Colima; the open item was coverage across the other supported runtimes.
+  `tjor conformance` now detects the active engine (`linux-engine` / `colima` /
+  `docker-desktop` / `wsl2` / `unknown` — conservative, never mislabels) and
+  prints a copy-pasteable attestation line (`result=… runtime=… probes=N
+  date=…`, the probe count taken from the suite's own summary, never hardcoded).
+  A new `docs/conformance-matrix.md` tracks each supported runtime × how its
+  coverage is established — CI-automated (Linux engine), maintainer-attested
+  (Colima), or **not verified here, with the reason** (Docker Desktop can't run
+  on hosted runners; WSL needs a Windows runner we've chosen not to add). A
+  `doc_consistency.sh` invariant keeps it honest (matrix present, README
+  references it, every runtime named, and the CI-automated claim is real), and a
+  daemon-free unit test covers the detector's classification. No new CI runners;
+  no probe, boundary, policy, or product change.
+
 ## [0.18.12] — 2026-09-20 — Review polish (shared _safe_log + #50 consistency)
 
 Non-blocking review polish (v0.18.10/v0.18.11 review). Maintainability and

@@ -22,7 +22,8 @@ anything missing. (No brew? Clone the repo and run `./bin/tjor`.)
 ```console
 $ tjor doctor                    # host preflight + active policy + guarantee tiers
 $ tjor conformance               # adversarial suite: proves the boundary holds on YOUR runtime
-                                 #   (guarantees enumerated in docs/boundary-matrix.md)
+                                 #   (guarantees in docs/boundary-matrix.md; runtime
+                                 #    coverage tracked in docs/conformance-matrix.md)
 $ cd ~/your/project
 $ tjor run                       # caged opencode session in this repo
 ```

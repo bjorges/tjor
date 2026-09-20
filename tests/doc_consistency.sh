@@ -103,3 +103,32 @@ for df in "${ROOT_DIR}"/images/*/Dockerfile; do
 done
 [[ "${ctx_fail}" -eq 0 ]] || exit 1
 echo "doc-consistency: image Dockerfile COPY sources are all allowlisted in .dockerignore"
+
+# Conformance runtime matrix (#13): the coverage claim must stay honest. The
+# matrix must exist, the README must point at it, it must name every supported
+# runtime (so a newly-supported one can't be silently dropped), and its
+# CI-automated claim must be real — the CI workflow must actually run
+# `bin/tjor conformance`. Same drift class as above: a doc's claim and the
+# thing it claims separating.
+CONF_MATRIX="${ROOT_DIR}/docs/conformance-matrix.md"
+CI_WORKFLOW="${ROOT_DIR}/.github/workflows/ci.yml"
+if [[ ! -f "${CONF_MATRIX}" ]]; then
+    echo "doc-consistency: FAILED — docs/conformance-matrix.md is missing (#13 runtime coverage)" >&2
+    exit 1
+fi
+if ! grep -q 'docs/conformance-matrix.md' "${README}"; then
+    echo "doc-consistency: FAILED — README does not reference docs/conformance-matrix.md (#13)" >&2
+    exit 1
+fi
+for runtime in linux-engine colima docker-desktop wsl2; do
+    if ! grep -q "${runtime}" "${CONF_MATRIX}"; then
+        echo "doc-consistency: FAILED — conformance matrix does not list the '${runtime}' runtime (#13)" >&2
+        exit 1
+    fi
+done
+# The matrix claims linux-engine is CI-automated; that must be true.
+if ! grep -Eq 'bin/tjor conformance|\./bin/tjor conformance' "${CI_WORKFLOW}"; then
+    echo "doc-consistency: FAILED — conformance matrix claims CI-automation but CI does not run 'bin/tjor conformance' (#13)" >&2
+    exit 1
+fi
+echo "doc-consistency: conformance runtime matrix present, referenced, and its CI-automated claim is real"
