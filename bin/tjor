@@ -357,9 +357,10 @@ detect_runtime() {
         colima*)        echo "colima"; return ;;
         desktop-linux)  echo "docker-desktop"; return ;;
     esac
-    local os name
-    os="$(docker info --format '{{.OperatingSystem}}' 2>/dev/null || true)"
-    name="$(docker info --format '{{.Name}}' 2>/dev/null || true)"
+    # One `docker info` call for both fields (OS strings/names never contain '|').
+    local info os name
+    info="$(docker info --format '{{.OperatingSystem}}|{{.Name}}' 2>/dev/null || true)"
+    os="${info%%|*}"; name="${info#*|}"
     case "${os}" in *"Docker Desktop"*) echo "docker-desktop"; return ;; esac
     case "${name}" in colima*) echo "colima"; return ;; esac
     if [[ -n "${os}" && "$(uname -s 2>/dev/null)" == "Linux" ]]; then

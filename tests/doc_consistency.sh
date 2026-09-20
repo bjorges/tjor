@@ -121,8 +121,10 @@ if ! grep -q 'docs/conformance-matrix.md' "${README}"; then
     exit 1
 fi
 for runtime in linux-engine colima docker-desktop wsl2; do
-    if ! grep -q "${runtime}" "${CONF_MATRIX}"; then
-        echo "doc-consistency: FAILED — conformance matrix does not list the '${runtime}' runtime (#13)" >&2
+    # Anchor to the backticked table-cell form (`runtime`), not a bare substring,
+    # so a prose mention can't satisfy the "has a matrix row" check.
+    if ! grep -qF "\`${runtime}\`" "${CONF_MATRIX}"; then
+        echo "doc-consistency: FAILED — conformance matrix has no row for the '${runtime}' runtime (#13)" >&2
         exit 1
     fi
 done

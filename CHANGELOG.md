@@ -3,6 +3,18 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+Two cosmetic, non-blocking nits from the v0.18.13 review. Tidy-up only; no
+behavior change.
+
+### Changed
+- **#13 polish (review nits):** the `doc_consistency.sh` runtime-matrix check now
+  anchors on the backticked table-cell form (`` `runtime` ``) instead of a bare
+  substring, so a prose mention can't satisfy the "has a matrix row" check; and
+  `detect_runtime` reads `OperatingSystem` and `Name` in a single `docker info`
+  call instead of two. No functional change.
+
 ## [0.18.13] — 2026-09-20 — Conformance runtime matrix (#13)
 
 Closes the last open item on #13 (the adversarial conformance suite): runtime
