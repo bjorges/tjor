@@ -3,7 +3,7 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.18.9] — 2026-09-20 — Deny hooks fail closed (denial-log bypass)
 
 Closes a Critical review finding in the v0.18.7 wiring: an exception in the
 denial-log call could fail a policy denial OPEN. The deny-enforcing hooks now
