@@ -3,7 +3,7 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.18.12] — 2026-09-20 — Review polish (shared _safe_log + #50 consistency)
 
 Non-blocking review polish (v0.18.10/v0.18.11 review). Maintainability and
 consistency only; no behavior or boundary change.
