@@ -854,6 +854,89 @@ class TestNegativeCacheWindow:
         assert addon._ip_cache["h.test"].ts == 10.0
 
 
+class TestLogVolume:
+    """Workload-log read-volume counter (#50): observability only. Counts
+    pods/log bytes on a configured cluster API host, streaming-aware, never
+    altering the body, fail-safe."""
+
+    KUBE = "api.cluster.internal"
+
+    def _addon(self, tmp_path):
+        addon = load_addon()
+        addon.KUBE_API_HOSTS = frozenset({self.KUBE})
+        addon.LOG_VOLUME_LOG = str(tmp_path / "logvolume.log")
+        addon._log_volume_count = 0
+        return addon
+
+    def _flow(self, host, path, status=200):
+        import types
+        return types.SimpleNamespace(
+            request=types.SimpleNamespace(host=host, path=path),
+            response=types.SimpleNamespace(status_code=status, stream=None))
+
+    def test_matches_pods_log_only_on_kube_host(self):
+        addon = load_addon()
+        addon.KUBE_API_HOSTS = frozenset({self.KUBE})
+        assert addon._pods_log_pod(self.KUBE, "/api/v1/namespaces/ns/pods/web-7/log") == "web-7"
+        assert addon._pods_log_pod(self.KUBE, "/api/v1/namespaces/ns/pods/web-7/log?follow=true&container=c") == "web-7"
+        assert addon._pods_log_pod(self.KUBE, "/api/v1/namespaces/ns/pods/web-7/status") is None
+        assert addon._pods_log_pod(self.KUBE, "/api/v1/nodes") is None
+        assert addon._pods_log_pod("other.host", "/api/v1/namespaces/ns/pods/web-7/log") is None  # non-kube host
+
+    def test_counts_and_returns_body_unchanged(self, tmp_path):
+        addon = self._addon(tmp_path)
+        flow = self._flow(self.KUBE, "/api/v1/namespaces/ns/pods/mypod/log")
+        addon.TjorPolicy().responseheaders(flow)
+        assert callable(flow.response.stream)  # passthrough installed
+        # Drive the stream: chunks returned identical, tallied on the way.
+        assert flow.response.stream(b"hello ") == b"hello "
+        assert flow.response.stream(b"world") == b"world"
+        assert flow.response.stream(b"") == b""   # end-of-stream flush
+        assert (tmp_path / "logvolume.log").read_text() == "mypod\t11\n"
+
+    def test_streamed_multichunk_fully_counted(self, tmp_path):
+        addon = self._addon(tmp_path)
+        flow = self._flow(self.KUBE, "/api/v1/namespaces/ns/pods/streamer/log?follow=true")
+        addon.TjorPolicy().responseheaders(flow)
+        for chunk in (b"a" * 1000, b"b" * 2000, b"c" * 500):
+            assert flow.response.stream(chunk) == chunk
+        flow.response.stream(b"")
+        assert (tmp_path / "logvolume.log").read_text() == "streamer\t3500\n"
+
+    def test_non_log_and_non_kube_not_counted(self, tmp_path):
+        addon = self._addon(tmp_path)
+        for host, path in ((self.KUBE, "/api/v1/nodes"),
+                           ("other.host", "/api/v1/namespaces/ns/pods/p/log")):
+            flow = self._flow(host, path)
+            addon.TjorPolicy().responseheaders(flow)
+            assert flow.response.stream is None  # no passthrough installed
+        assert not (tmp_path / "logvolume.log").exists() or (tmp_path / "logvolume.log").read_text() == ""
+
+    def test_non_2xx_log_read_not_counted(self, tmp_path):
+        addon = self._addon(tmp_path)
+        flow = self._flow(self.KUBE, "/api/v1/namespaces/ns/pods/denied/log", status=403)
+        addon.TjorPolicy().responseheaders(flow)
+        assert flow.response.stream is None  # a 403 read no log content
+
+    def test_counting_is_failsafe(self, tmp_path, monkeypatch):
+        # If the sink throws, the stream passthrough must still return the chunk
+        # unchanged and never raise — observability can't corrupt a response.
+        addon = self._addon(tmp_path)
+        monkeypatch.setattr(addon, "_log_log_volume",
+                            lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
+        flow = self._flow(self.KUBE, "/api/v1/namespaces/ns/pods/p/log")
+        addon.TjorPolicy().responseheaders(flow)
+        assert flow.response.stream(b"data") == b"data"
+        assert flow.response.stream(b"") == b""  # flush throws internally, swallowed
+
+    def test_zero_byte_read_records_nothing(self, tmp_path):
+        addon = self._addon(tmp_path)
+        flow = self._flow(self.KUBE, "/api/v1/namespaces/ns/pods/empty/log")
+        addon.TjorPolicy().responseheaders(flow)
+        assert flow.response.stream(b"") == b""
+        assert not (tmp_path / "logvolume.log").exists() or (tmp_path / "logvolume.log").read_text() == ""
+
+
 class _GwReq:
     def __init__(self, host, headers=None):
         self.host = host

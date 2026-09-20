@@ -38,6 +38,7 @@ from __future__ import annotations
 import concurrent.futures
 import ipaddress
 import os
+import re
 import socket
 import sys
 import time
@@ -113,6 +114,14 @@ _denial_log_count = 0
 # log unbounded (the sibling identity-forgery logger is likewise bounded).
 _DENIAL_LOG_MAX = 1000
 
+# Workload-log read volume (#50): observability-only per-session byte counter for
+# `pods/log` reads on a cluster API host, surfaced in the `tjor down` recap. No
+# enforcement — the read is never altered, blocked, delayed, or rate-limited.
+# Wired like the denial log (bind-mounted, bounded, fail-safe).
+LOG_VOLUME_LOG = os.environ.get("TJOR_LOG_VOLUME_LOG", "")
+_log_volume_count = 0
+_LOG_VOLUME_MAX = 1000
+
 # Resolver-capacity saturation signal (#61): when the concurrent-distinct-
 # resolution cap is hit, surface a rate-limited operator line to stderr (visible
 # via `docker logs`) so a sustained many-slow-host condition is observable
@@ -154,6 +163,40 @@ def _log_denial(host: str, rule: str) -> None:
                 fh.write("...(denial log capped for this session; further denials not recorded)\n")
     except Exception:  # noqa: BLE001 — logging is best-effort; NEVER propagate
         pass            # into a deny hook (would fail the denial OPEN).
+
+
+# The Kubernetes workload-log endpoint (#50). The pod segment is captured; a
+# trailing query (`?follow=true&container=…`) or end-of-path both terminate it.
+_KUBE_LOG_PATH = re.compile(r"^/api/v1/namespaces/[^/]+/pods/([^/]+)/log(?:$|[/?])")
+
+
+def _pods_log_pod(host: str, path: str) -> "str | None":
+    """The pod name if (host, path) is a `pods/log` read on a CONFIGURED cluster
+    API host, else None. Scopes the #50 volume counter strictly to kube log reads
+    — nothing is installed or counted for any other traffic."""
+    if not KUBE_API_HOSTS or host not in KUBE_API_HOSTS:
+        return None
+    m = _KUBE_LOG_PATH.match(path or "")
+    return m.group(1) if m else None
+
+
+def _log_log_volume(pod: str, nbytes: int) -> None:
+    """Record workload-log read volume for the session (#50). Best-effort and
+    TOTAL — observability must NEVER break, alter, or delay a request: every
+    failure is swallowed. Appends `pod\\tbytes` to the bounded, bind-mounted
+    counter file the `tjor down` recap aggregates. `pod` is agent-influenced, so
+    it is escape-sanitized here (the recap sanitizes again at display)."""
+    global _log_volume_count
+    if not LOG_VOLUME_LOG or nbytes <= 0 or _log_volume_count >= _LOG_VOLUME_MAX:
+        return
+    _log_volume_count += 1
+    try:
+        with open(LOG_VOLUME_LOG, "a") as fh:
+            fh.write(f"{_safe_ascii(pod)}\t{nbytes}\n")
+            if _log_volume_count >= _LOG_VOLUME_MAX:
+                fh.write("...(log-volume counter capped for this session)\n")
+    except Exception:  # noqa: BLE001 — best-effort; never propagate into a hook
+        pass
 
 
 def _log_saturation(host: str) -> None:
@@ -796,6 +839,40 @@ class TjorPolicy:
                       file=sys.stderr, flush=True)
             except Exception:  # noqa: BLE001 — logging must not undo the fail-closed
                 pass
+
+    def responseheaders(self, flow) -> None:
+        # #50 observability: count `pods/log` read volume WITHOUT touching the
+        # body. A stream passthrough tallies chunk sizes (so follow=true / large
+        # streamed bodies are counted too — flow.response.content would not be
+        # materialized for them) and returns each chunk UNMODIFIED; the per-pod
+        # total is flushed on the end-of-stream sentinel. Observation only — the
+        # response is never altered, blocked, or delayed. Fully fail-safe: any
+        # error is swallowed and the chunk is always returned unchanged, so a
+        # counting failure can never corrupt a response.
+        try:
+            pod = _pods_log_pod(flow.request.host, flow.request.path)
+            if pod is None:
+                return
+            # Only real, successful log reads carry log content; a non-2xx (e.g.
+            # an RBAC 403 from the API server) read no logs and is not counted.
+            if not (200 <= flow.response.status_code < 300):
+                return
+            tally = {"n": 0}
+
+            def _count(chunk: bytes) -> bytes:
+                try:
+                    if chunk:
+                        tally["n"] += len(chunk)
+                    else:                       # end-of-stream sentinel (b"")
+                        _log_log_volume(pod, tally["n"])
+                except Exception:  # noqa: BLE001 — never corrupt the body on error
+                    pass
+                return chunk
+
+            flow.response.stream = _count
+        except Exception as exc:  # noqa: BLE001 — observability must never break a response
+            print(f"tjor: log-volume hook error (ignored): {exc!r}",
+                  file=sys.stderr, flush=True)
 
     def done(self) -> None:
         # Best-effort revocation on proxy shutdown (tjor down / gc gives the

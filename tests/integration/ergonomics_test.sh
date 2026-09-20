@@ -76,14 +76,22 @@ check "denied egress is recorded and surfaced by tjor denials" bash -c \
 
 echo "== denial recap at teardown (#42)"
 DOWN_LOG="${USERCFG}/down-recap.out"
+# Seed the workload-log volume counter (#50) so teardown surfaces its recap too;
+# the addon writes this file the same way (per-pod pod<TAB>bytes lines).
+printf 'pod-alpha\t3145728\npod-beta\t1048576\n' > "${HOME}/.tjor/sessions/${SID}/logvolume.log"
 ( cd "${REPO}" && "${T}" down >"${DOWN_LOG}" 2>&1 || true )
 check "down prints the denial recap (count + host)" bash -c \
     "grep -q 'denied egress attempt' '${DOWN_LOG}' && grep -q 'blocked-example-xyz.test' '${DOWN_LOG}'"
 check "recap names the review/widen commands" grep -q 'tjor policy add' "${DOWN_LOG}"
+check "down prints the workload-log volume recap (#50: total + distinct pods)" bash -c \
+    "grep -q 'read 4.0 MB of workload logs across 2 pod(s)' '${DOWN_LOG}'"
 : > "${HOME}/.tjor/sessions/${SID}/denials.log"
+: > "${HOME}/.tjor/sessions/${SID}/logvolume.log"
 ( cd "${REPO}" && "${T}" down >"${DOWN_LOG}.quiet" 2>&1 || true )
 check "clean session tears down without a recap" bash -c \
     "! grep -q 'denied egress attempt' '${DOWN_LOG}.quiet'"
+check "clean session tears down without a log-volume recap" bash -c \
+    "! grep -q 'workload logs' '${DOWN_LOG}.quiet'"
 
 echo
 echo "ergonomics: ${PASS} passed, ${FAIL} failed"

@@ -236,6 +236,7 @@ ensure_topology() { # expects TJOR_PROJECT, TJOR_SESSION_DIR exported
     build_proxy
     ensure_session_ca
     touch "${TJOR_SESSION_DIR}/denials.log"   # pre-create (bind source must exist); accumulates across the session
+    touch "${TJOR_SESSION_DIR}/logvolume.log" # #50 workload-log read-volume counter (bind source must exist)
     verify_bind_source "${TJOR_SESSION_DIR}"
     [[ -n "${TJOR_WORKSPACE:-}" && -d "${TJOR_WORKSPACE:-}" ]] && verify_bind_source "${TJOR_WORKSPACE}"
 
@@ -1333,6 +1334,46 @@ if total:
     top = ", ".join(f"{sanitize(h)} ({n})" for h, n in hosts.most_common(5))
     print(f"tjor: this session had {total} denied egress attempt(s) across {len(hosts)} host(s) — top: {top}")
     print("tjor: review with 'tjor denials'; allow what you need with: tjor policy add <host>")
+PY
+    fi
+    # Workload-log read-volume recap (#50): teardown surfaces how much pods/log
+    # content the session pulled in — the observability signal the exfiltration-
+    # conscious profile checklist leans on. Observation only; quiet when none was
+    # read. Pod identifiers are agent-influenced -> render via the same sanitizer.
+    if [[ -s "${TJOR_SESSION_DIR}/logvolume.log" ]]; then
+        python3 - "${TJOR_SESSION_DIR}/logvolume.log" <<'PY' >&2 || true
+import sys
+
+# Only aggregate counts are shown (no pod identifiers), so nothing
+# agent-influenced reaches the terminal — no sanitizer needed here.
+pods = set()
+total = 0
+with open(sys.argv[1], "rb") as fh:
+    for raw in fh.read().decode("utf-8", "surrogateescape").splitlines():
+        parts = raw.split("\t")
+        if len(parts) != 2:
+            continue  # the cap notice, or a malformed line
+        try:
+            total += int(parts[1])
+        except ValueError:
+            continue
+        pods.add(parts[0])
+
+
+def human(n):
+    unit = "B"
+    val = float(n)
+    for u in ("KB", "MB", "GB"):
+        if val < 1024:
+            break
+        val /= 1024
+        unit = u
+    return f"{val:.1f} {unit}" if unit != "B" else f"{int(val)} B"
+
+
+if pods and total:
+    print(f"tjor: this session read {human(total)} of workload logs across "
+          f"{len(pods)} pod(s) — review what left the session with 'tjor denials'")
 PY
     fi
 }

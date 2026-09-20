@@ -3,6 +3,28 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+Closes the last open item on #50 (exfiltration-conscious log access): the
+observability increment. Adds a per-session `pods/log` read-volume counter,
+surfaced at teardown, so a real volume threshold becomes choosable later.
+Observation only — no enforcement, no config surface, no boundary change.
+
+### Added
+- **Workload-log read volume is observable per session (#50).** For read-only
+  Kubernetes investigation profiles that grant `pods/log`, the proxy now tallies
+  how many bytes of workload-log content a session reads — per pod, streaming-aware
+  (so `follow=true`/large reads are counted) — via a `flow.response.stream`
+  passthrough that never alters, blocks, or delays the response. `tjor down`
+  surfaces it in the denial recap: `this session read N MB of workload logs across
+  M pod(s)` (aggregate figures only, quiet when none). This is the observability
+  half of the existing "Log access is a documented, conscious trade-off"
+  requirement — it produces the data that makes a real threshold choosable.
+  **Deliberately no enforcement** (threshold/deny/rate-limit): that decision stays
+  deferred until real volumes exist, per the #50 design. Counting is best-effort
+  and fail-safe — it can never break, alter, or fail-open a request. Wired like
+  the denial log (a bind-mounted, bounded, session-owned counter file).
+
 ## [0.18.10] — 2026-09-20 — Review follow-ups (negative-cache + log ordering)
 
 Two low-priority, non-blocking review items (v0.18.9 review): an availability
