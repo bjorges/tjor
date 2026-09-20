@@ -3,7 +3,7 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.18.14] — 2026-09-20 — Review nits (anchored matrix lint + single docker info)
 
 Two cosmetic, non-blocking nits from the v0.18.13 review. Tidy-up only; no
 behavior change.
