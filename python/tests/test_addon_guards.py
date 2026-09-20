@@ -643,12 +643,13 @@ class TestPoolAvailability:
         finally:
             stuck.cancel()
 
-    def test_negative_cache_window_not_extended_by_reentry(self):
-        # A second timeout for a host that already has a fresh negative-cache
-        # entry must NOT refresh the timestamp (which would extend the window
-        # past _RESOLVE_NEGATIVE_TTL). Simulate by pre-seeding a negative entry
-        # with an OLD timestamp, expiring it just enough to re-resolve, and
-        # asserting the re-written entry keeps the older ts rather than `now`.
+    def test_negative_cache_expired_entry_gets_fresh_window(self):
+        # review v0.18.9 item 1: a re-timeout for a host whose negative entry has
+        # already EXPIRED must start a FRESH window (fresh ts), not re-inherit the
+        # stale timestamp — otherwise a persistently-failing host stays perpetually
+        # expired and re-resolves on every request, silently defeating the DoS
+        # guard. (Within a LIVE window, coalesced waiters still preserve the ts so
+        # the window isn't extended — see TestNegativeCacheWindow.)
         import concurrent.futures, time as _t
         addon = load_addon()
         addon._RESOLVE_TIMEOUT = 0.2
@@ -658,10 +659,12 @@ class TestPoolAvailability:
         stuck = concurrent.futures.Future()
         addon._inflight = {"slow.test": stuck}   # still hung -> this attempt also times out
         try:
+            before = _t.monotonic()
             ok, why, _ = addon._validated_addresses("slow.test")
             assert not ok and why == "resolve-timeout"
-            # ts preserved (not bumped to ~now) -> window not extended
-            assert addon._ip_cache["slow.test"].ts == old_ts
+            # ts refreshed to ~now (not stuck at the stale old_ts) -> the entry
+            # suppresses re-resolution again for a fresh window.
+            assert addon._ip_cache["slow.test"].ts >= before
         finally:
             stuck.cancel()
 
@@ -813,6 +816,42 @@ class TestDenyHooksFailClosed:
         addon.TjorPolicy().http_connect(flow)
         assert flow.response.status_code == 403
         assert flow.response.headers["x-tjor-rule"] != "fail-closed:hook-error"
+
+    def test_response_set_even_if_stderr_logging_fails(self, monkeypatch):
+        # review v0.18.9 item 2: the fail-closed 403 is assigned BEFORE the
+        # diagnostic log, so a failure in stderr I/O can't leave it un-denied.
+        pytest.importorskip("mitmproxy")
+        addon = load_addon()
+        addon._log_denial = lambda *a, **k: (_ for _ in ()).throw(RuntimeError("body boom"))
+        monkeypatch.setattr("builtins.print",
+                            lambda *a, **k: (_ for _ in ()).throw(OSError("stderr boom")))
+        flow = self._flow()  # blocked.test -> request-stage deny
+        addon.TjorPolicy().request(flow)  # must not raise
+        assert flow.response is not None and flow.response.status_code == 403
+
+
+class TestNegativeCacheWindow:
+    """review v0.18.9 item 1: timestamp preservation must not leave a
+    persistently-failing host perpetually expired (which would silently defeat
+    the negative-cache DoS guard for it)."""
+
+    def test_fresh_window_after_expiry(self):
+        addon = load_addon()
+        addon._RESOLVE_NEGATIVE_TTL = 5.0
+        addon._negative_cache("h.test", "unresolvable", 0.0)
+        assert addon._ip_cache["h.test"].ts == 0.0
+        # Re-cache AFTER the window expired -> a FRESH timestamp, not stuck at 0.
+        addon._negative_cache("h.test", "unresolvable", 100.0)
+        assert addon._ip_cache["h.test"].ts == 100.0
+
+    def test_coalesced_within_window_preserves_timestamp(self):
+        # A near-simultaneous coalesced failure keeps the original window start,
+        # so waiters can't push the window past the TTL (@homer edge case).
+        addon = load_addon()
+        addon._RESOLVE_NEGATIVE_TTL = 5.0
+        addon._negative_cache("h.test", "resolve-timeout", 10.0)
+        addon._negative_cache("h.test", "resolve-timeout", 10.5)
+        assert addon._ip_cache["h.test"].ts == 10.0
 
 
 class _GwReq:

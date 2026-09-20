@@ -3,6 +3,32 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+Two low-priority, non-blocking review items (v0.18.9 review): an availability
+weakness in the resolver negative-cache, and defense-in-depth ordering in the
+fail-closed handlers. No security-boundary change; no Critical/High outstanding.
+
+### Fixed
+- **Negative-cache no longer gets stuck for a persistently-failing host
+  (availability).** `_negative_cache` preserved a transient-failure entry's
+  timestamp to stop coalesced waiters from extending the window — but it kept
+  re-inheriting the original timestamp even after the window had expired, so a
+  persistently black-holed/timing-out host stayed perpetually expired and
+  re-resolved on every request, silently weakening (not defeating) the
+  resolver-pool DoS guard for that host. The timestamp is now preserved only
+  while the prior entry is still within its window; once expired, a fresh window
+  starts. Not a security bypass — fail-closed behavior is unchanged.
+
+### Security
+- **Fail-closed handlers set the deny action before logging (defense in depth).**
+  The exception handlers in `server_connect`, `http_connect`, and `request`
+  logged a diagnostic to stderr *before* assigning the fail-closed response/error.
+  If stderr I/O itself failed (an operational condition, not attacker-triggerable
+  over the network), the fail-closed action would be skipped. Each handler now
+  sets the response/error first and logs afterward inside a nested guard, so a
+  logging failure can never undo the fail-closed outcome.
+
 ## [0.18.9] — 2026-09-20 — Deny hooks fail closed (denial-log bypass)
 
 Closes a Critical review finding in the v0.18.7 wiring: an exception in the

@@ -460,12 +460,18 @@ def _cache_put(host: str, entry: "_CacheEntry") -> None:
 
 def _negative_cache(host: str, why: str, now: float) -> None:
     """Negative-cache a transient-failure deny (resolve-timeout / unresolvable)
-    for the short window. Preserve an EXISTING transient entry's timestamp so
-    coalesced waiters each failing can't push the window past
-    _RESOLVE_NEGATIVE_TTL (@homer edge case; only reachable under concurrency,
-    but cheap to make correct regardless)."""
+    for the short window. Preserve an existing transient entry's timestamp ONLY
+    while it is still within its window: that stops coalesced waiters each failing
+    from pushing the window past _RESOLVE_NEGATIVE_TTL (@homer edge case;
+    reachable when several waiters get past the cache-hit check before any writes
+    the entry). Once the window has EXPIRED, start a fresh one — otherwise a
+    persistently-failing host keeps re-inheriting its original timestamp, stays
+    perpetually expired, and re-resolves on every request, silently defeating the
+    negative-cache DoS guard for that host (review v0.18.9)."""
     prev = _ip_cache.get(host)
-    ts = prev.ts if (prev is not None and prev.why in _TRANSIENT_DENY_WHYS) else now
+    reuse = (prev is not None and prev.why in _TRANSIENT_DENY_WHYS
+             and now - prev.ts < _RESOLVE_NEGATIVE_TTL)
+    ts = prev.ts if reuse else now
     _cache_put(host, _CacheEntry(ts, False, why, frozenset()))
 
 
@@ -709,9 +715,14 @@ class TjorPolicy:
                 return
             data.server.address = (pinned, port)
         except Exception as exc:  # noqa: BLE001 — never pass through unpinned
-            print(f"tjor: ip-guard pin error — killing connection: {exc!r}",
-                  file=sys.stderr, flush=True)
+            # Set the fail-closed action FIRST, then log — so a failure in stderr
+            # I/O can never leave the connection un-killed (review v0.18.9).
             data.server.error = "tjor ip-guard: pin failure (fail-closed)"
+            try:
+                print(f"tjor: ip-guard pin error — killing connection: {exc!r}",
+                      file=sys.stderr, flush=True)
+            except Exception:  # noqa: BLE001 — logging must not undo the fail-closed
+                pass
 
     def http_connect(self, flow) -> None:
         from mitmproxy import http
@@ -733,11 +744,16 @@ class TjorPolicy:
                     {"x-tjor-policy": "deny", "x-tjor-rule": agent_rule},
                 )
         except Exception as exc:  # noqa: BLE001 — never forward on an addon error
-            print(f"tjor: http_connect hook error — failing closed: {exc!r}",
-                  file=sys.stderr, flush=True)
+            # Set the fail-closed 403 FIRST, then log — a failure in stderr I/O
+            # must never leave the request un-denied (review v0.18.9).
             flow.response = http.Response.make(
                 403, b"tjor egress policy: DENY CONNECT (fail-closed)\n",
                 {"x-tjor-policy": "deny", "x-tjor-rule": "fail-closed:hook-error"})
+            try:
+                print(f"tjor: http_connect hook error — failing closed: {exc!r}",
+                      file=sys.stderr, flush=True)
+            except Exception:  # noqa: BLE001 — logging must not undo the fail-closed
+                pass
 
     def request(self, flow) -> None:
         from mitmproxy import http
@@ -769,12 +785,17 @@ class TjorPolicy:
                 },
             )
         except Exception as exc:  # noqa: BLE001 — never forward on an addon error
-            print(f"tjor: request hook error — failing closed: {exc!r}",
-                  file=sys.stderr, flush=True)
+            # Set the fail-closed 403 FIRST, then log — a failure in stderr I/O
+            # must never leave the request un-denied (review v0.18.9).
             flow.response = http.Response.make(
                 403, b"tjor egress policy: DENY (fail-closed)\n",
                 {"content-type": "text/plain", "x-tjor-policy": "deny",
                  "x-tjor-rule": "fail-closed:hook-error"})
+            try:
+                print(f"tjor: request hook error — failing closed: {exc!r}",
+                      file=sys.stderr, flush=True)
+            except Exception:  # noqa: BLE001 — logging must not undo the fail-closed
+                pass
 
     def done(self) -> None:
         # Best-effort revocation on proxy shutdown (tjor down / gc gives the
