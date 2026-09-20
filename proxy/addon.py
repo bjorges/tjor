@@ -13,13 +13,15 @@ Resolved-address guard: an allowed hostname says nothing about where it
 resolves. A DNS-rebound or hijacked allowed domain pointing at a private,
 loopback, or link-local address would let the (dual-homed) proxy be used as
 a bridge into the internal network or VM metadata (SSRF). The guard denies
-any host that resolves to a non-global address. An UNRESOLVABLE host passes
-the guard: no connection can result, so nothing can flow — while denying it
-would break policy-level tests against non-existent domains. Resolution is
-time-bounded (#59): a lookup that hangs past _RESOLVE_TIMEOUT fails CLOSED
-(denied / connection killed, uncached) so an adversarial agent cannot stall
-the event loop with slow DNS — distinct from a fast unresolvable, which still
-passes.
+any host that resolves to a non-global address. An UNRESOLVABLE host also fails
+CLOSED: the guard has no address to validate or pin, so permitting it would
+leave the connection unpinned and let mitmproxy resolve it independently — the
+#41 rebind vector (a black-holed allowed host under the #61 RES_OPTIONS bound
+reaches this path in ~2s rather than a genuine NXDOMAIN). Resolution is
+time-bounded (#59): a lookup that hangs past _RESOLVE_TIMEOUT also fails CLOSED
+so an adversarial agent cannot stall the event loop with slow DNS. Both
+transient failures are negative-cached briefly so a genuine hiccup recovers and
+a black-holed host does not re-consume a resolver worker each request.
 
 Resolve-and-pin (#41): the CONNECT/request-stage verdicts and mitmproxy's
 own upstream connect used to be two separate resolutions, so a low-TTL
@@ -214,9 +216,9 @@ _IP_CACHE_MAX = 1024
 #   * a CAP on concurrent distinct resolutions: beyond it a new host fails
 #     closed FAST ("resolve-capacity") instead of queueing a per-call-timeout
 #     backlog, so the loop stays responsive and load doesn't accumulate.
-#   * a brief NEGATIVE-CACHE of timeouts: a timed-out host is denied from cache
-#     for _RESOLVE_NEGATIVE_TTL so repeat hits don't re-consume capacity; it
-#     expires so the host recovers once DNS does.
+#   * a brief NEGATIVE-CACHE of transient failures: a timed-out OR unresolvable
+#     host is denied from cache for _RESOLVE_NEGATIVE_TTL so repeat hits don't
+#     re-consume capacity; it expires so the host recovers once DNS does.
 # Residual (documented, fail-closed): many DISTINCT genuinely-hung hosts can
 # still saturate the cap; excess fails closed fast, and capacity returns as the
 # hung workers hit the OS resolver's own timeout (no proxy restart needed).
@@ -236,9 +238,18 @@ _RESOLVE_TIMEOUT = _env_pos("TJOR_RESOLVE_TIMEOUT", 5.0, float)
 _RESOLVE_WORKERS = int(_env_pos("TJOR_RESOLVE_WORKERS", 8, int))
 _RESOLVE_MAX_INFLIGHT = int(_env_pos("TJOR_RESOLVE_MAX_INFLIGHT", _RESOLVE_WORKERS, int))
 _RESOLVE_NEGATIVE_TTL = _env_pos("TJOR_RESOLVE_NEGATIVE_TTL", 5.0, float)
-# The `why` token for a bounded-out resolution — one shared constant so the
-# cache-write site and the negative-TTL selection can never desync via a typo.
+# The `why` tokens for the two TRANSIENT resolution failures — shared constants
+# so the cache-write sites and the negative-TTL selection can never desync via a
+# typo. Both fail CLOSED and are negative-cached for the short window (a genuine
+# transient DNS hiccup recovers quickly; an adversarial one can't be exploited):
+#   * resolve-timeout — the lookup hung past _RESOLVE_TIMEOUT (#59).
+#   * unresolvable    — getaddrinfo raised (NXDOMAIN, or the OS resolver gave up,
+#     e.g. a black-hole under the #61 RES_OPTIONS bound). Denied because the
+#     guard has NO address to pin, so permitting it would leave the connection
+#     unpinned and let mitmproxy resolve independently — the #41 rebind vector.
 _RESOLVE_TIMEOUT_WHY = "resolve-timeout"
+_UNRESOLVABLE_WHY = "unresolvable"
+_TRANSIENT_DENY_WHYS = frozenset({_RESOLVE_TIMEOUT_WHY, _UNRESOLVABLE_WHY})
 _resolve_pool = concurrent.futures.ThreadPoolExecutor(
     max_workers=_RESOLVE_WORKERS, thread_name_prefix="tjor-resolve")
 _inflight: dict[str, concurrent.futures.Future] = {}  # host -> its in-flight resolution
@@ -376,11 +387,11 @@ def _validated_addresses(host: str) -> tuple[bool, str, frozenset[str]]:
     now = time.monotonic()
     hit = _ip_cache.get(host)
     if hit:
-        # A resolve-timeout is negative-cached only for the short window;
-        # everything else (public, or a non-global denial) keeps the positive
-        # TTL. So a transient stall clears quickly while repeat hits within the
-        # window don't re-consume a worker.
-        ttl = _RESOLVE_NEGATIVE_TTL if hit.why == _RESOLVE_TIMEOUT_WHY else _IP_TTL_SECONDS
+        # A transient failure (resolve-timeout / unresolvable) is negative-cached
+        # only for the short window; everything else (public, or a non-global
+        # denial) keeps the positive TTL. So a transient stall or hiccup clears
+        # quickly while repeat hits within the window don't re-consume a worker.
+        ttl = _RESOLVE_NEGATIVE_TTL if hit.why in _TRANSIENT_DENY_WHYS else _IP_TTL_SECONDS
         if now - hit.ts < ttl:
             return hit.ok, hit.why, hit.addresses
 
@@ -408,16 +419,19 @@ def _validated_addresses(host: str) -> tuple[bool, str, frozenset[str]]:
         try:
             addresses = fut.result(timeout=_RESOLVE_TIMEOUT)
         except concurrent.futures.TimeoutError:
-            # Keep the ORIGINAL timeout's timestamp if one is already cached, so
-            # coalesced waiters each timing out can't push the negative-cache
-            # window past _RESOLVE_NEGATIVE_TTL (@homer edge case; only reachable
-            # under concurrency, but cheap to make correct regardless).
-            prev = _ip_cache.get(host)
-            ts = prev.ts if (prev is not None and prev.why == _RESOLVE_TIMEOUT_WHY) else now
-            _cache_put(host, _CacheEntry(ts, False, _RESOLVE_TIMEOUT_WHY, frozenset()))
+            _negative_cache(host, _RESOLVE_TIMEOUT_WHY, now)
             return False, _RESOLVE_TIMEOUT_WHY, frozenset()
         except OSError:
-            return True, "unresolvable", frozenset()  # fast NXDOMAIN: permitted, uncached
+            # getaddrinfo raised: NXDOMAIN, or the OS resolver gave up (a
+            # black-hole under the #61 RES_OPTIONS bound now returns fast here
+            # instead of hitting the addon timeout above). Fail CLOSED: the guard
+            # has no address to validate or pin, and permitting it would leave
+            # server_connect unpinned so mitmproxy would resolve independently —
+            # exactly the #41 DNS-rebind vector. Negative-cache like a timeout so
+            # a black-holed allowed host doesn't re-consume a worker each request
+            # and a genuine hiccup still recovers within the short window.
+            _negative_cache(host, _UNRESOLVABLE_WHY, now)
+            return False, _UNRESOLVABLE_WHY, frozenset()
 
     ok, why = True, ""
     for raw in addresses:
@@ -438,6 +452,17 @@ def _cache_put(host: str, entry: "_CacheEntry") -> None:
     if len(_ip_cache) >= _IP_CACHE_MAX:
         _ip_cache.clear()
     _ip_cache[host] = entry
+
+
+def _negative_cache(host: str, why: str, now: float) -> None:
+    """Negative-cache a transient-failure deny (resolve-timeout / unresolvable)
+    for the short window. Preserve an EXISTING transient entry's timestamp so
+    coalesced waiters each failing can't push the window past
+    _RESOLVE_NEGATIVE_TTL (@homer edge case; only reachable under concurrency,
+    but cheap to make correct regardless)."""
+    prev = _ip_cache.get(host)
+    ts = prev.ts if (prev is not None and prev.why in _TRANSIENT_DENY_WHYS) else now
+    _cache_put(host, _CacheEntry(ts, False, why, frozenset()))
 
 
 def resolved_addresses_ok(host: str) -> tuple[bool, str]:
@@ -670,8 +695,13 @@ class TjorPolicy:
                 return
             pinned = _pick_pinned(validated)
             if pinned is None:
-                # Unresolvable (guard's documented pass): stay unpinned —
-                # mitmproxy's own resolution fails and nothing flows.
+                # Defensive: ok=True with nothing to pin should be unreachable
+                # now (unresolvable fails closed in _validated_addresses). Never
+                # leave the connection unpinned — that is exactly what let
+                # mitmproxy resolve independently and reopened the #41 rebind
+                # vector. Fail closed.
+                _log_denial(canon, "ip-guard-pin:no-address")
+                data.server.error = "tjor ip-guard: no validated address (fail-closed)"
                 return
             data.server.address = (pinned, port)
         except Exception as exc:  # noqa: BLE001 — never pass through unpinned

@@ -308,13 +308,18 @@ class TestAddressGuard:
     def bad(host):
         raise OSError("NXDOMAIN")
 
-    def test_unresolvable_passes_guard(self):
+    def test_unresolvable_fails_closed(self):
+        # #6-review remediation: an unresolvable host is DENIED, not permitted.
+        # The guard has no address to validate or pin, and permitting it would
+        # leave server_connect unpinned so mitmproxy resolves independently — the
+        # #41 rebind vector. (Was permitted pre-fix; a black-holed allowed host
+        # under the #61 RES_OPTIONS bound reaches this path in ~2s.)
         addon = load_addon()
         addon._resolver = self.bad
         ok, why = addon.resolved_addresses_ok("allowed.test")
-        assert ok and why == "unresolvable"
-        # ...so the policy verdict stands (upstream connect fails on its own)
-        assert addon.connect_verdict("allowed.test").allowed
+        assert not ok and why == "unresolvable"
+        # ...so the policy verdict is now a fail-closed ip-guard deny
+        assert not addon.connect_verdict("allowed.test").allowed
 
     def test_loopback_link_local_metadata_denied(self):
         addon = load_addon()
@@ -499,7 +504,9 @@ class TestAgentFacingReason:
 
 class TestBoundedResolution:
     """The resolver call is time-bounded so a hung DNS answer cannot stall the
-    event loop (#59). Fail closed on timeout; fast-unresolvable unchanged."""
+    event loop (#59). Both transient failures fail CLOSED: a hang (resolve-timeout)
+    and an unresolvable/black-hole (OSError). The security result no longer
+    depends on WHICH timeout fires first (#6-review remediation)."""
 
     def _hanging_addon(self, gate, monkeypatch=None):
         addon = load_addon()
@@ -569,13 +576,37 @@ class TestBoundedResolution:
         ok2, why2, _ = addon._validated_addresses("flaky.test")
         assert ok2 and why2 == ""
 
-    def test_fast_unresolvable_unchanged(self):
+    def test_fast_unresolvable_fails_closed(self):
+        # #6-review: a fast OSError (a black-hole giving up quickly under the #61
+        # RES_OPTIONS bound, or a genuine NXDOMAIN) now DENIES — the same
+        # fail-closed result as a hang, so the outcome no longer depends on
+        # whether the OS resolver or the addon timeout fires first.
         addon = load_addon()
         def boom(host):
             raise OSError("NXDOMAIN")  # fast failure, not a hang
         addon._resolver = boom
         ok, why = addon.resolved_addresses_ok("nonexistent.test")
-        assert ok and why == "unresolvable"  # permitted (nothing can connect), not a timeout
+        assert not ok and why == "unresolvable"
+
+    def test_unresolvable_negative_cached_then_recovers(self):
+        # Mirrors the timeout negative-cache: a black-holed allowed host is denied
+        # from cache for the short window (so it doesn't re-consume a worker each
+        # request — the pool-pressure angle #61 cared about), and recovers on a
+        # fresh resolution once the window expires and DNS comes back.
+        addon = load_addon()
+        addon._RESOLVE_NEGATIVE_TTL = 60.0
+        addon._resolver = lambda host: (_ for _ in ()).throw(OSError("EAI_AGAIN"))
+        ok, why, _ = addon._validated_addresses("blackhole.test")
+        assert not ok and why == "unresolvable"
+        # Within the window: served from cache, resolver must NOT be called again.
+        addon._resolver = lambda host: (_ for _ in ()).throw(AssertionError("must not re-resolve within the negative window"))
+        ok_w, why_w, _ = addon._validated_addresses("blackhole.test")
+        assert not ok_w and why_w == "unresolvable"
+        # Window expired + DNS recovered -> re-evaluated fresh and permitted.
+        addon._RESOLVE_NEGATIVE_TTL = -1.0
+        addon._resolver = lambda host: {"140.82.121.3"}
+        ok2, why2, _ = addon._validated_addresses("blackhole.test")
+        assert ok2 and why2 == ""
 
 
 class TestPoolAvailability:
@@ -937,13 +968,16 @@ class TestServerConnectPin:
         assert data.server.error is None
         assert data.server.address == ("140.82.121.3", 443)
 
-    def test_unresolvable_host_left_unpinned(self):
+    def test_unresolvable_host_fails_closed_at_pin(self):
+        # #6-review remediation: an unresolvable host must NOT be left unpinned —
+        # that let mitmproxy do its own unguarded resolution (the #41 rebind
+        # vector). The pin hook now kills the connection instead.
         addon = self._addon()
         addon._resolver = lambda host: (_ for _ in ()).throw(OSError("NXDOMAIN"))
         data = self._hookdata("nonexistent.test")
         addon.TjorPolicy().server_connect(data)
-        assert data.server.error is None
-        assert data.server.address == ("nonexistent.test", 443)  # mitmproxy's own resolve fails later
+        assert data.server.error and "ip-guard" in data.server.error
+        assert data.server.address == ("nonexistent.test", 443)  # never rewritten; connection killed
 
     def test_resolver_exception_fails_closed(self):
         addon = self._addon()

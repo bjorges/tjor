@@ -3,6 +3,35 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+Closes a Critical review finding: v0.18.6's resolver bound re-widened the #41
+DNS-rebind vector for an already-allowlisted host. The egress guard now fails
+closed on an unresolvable host instead of leaving the connection unpinned. No
+change to any other boundary.
+
+### Security
+- **An unresolvable host now fails closed, closing a re-widened DNS-rebind gap
+  (#41 regression from #61; review-driven).** The IP guard permitted an
+  unresolvable host and left the connection *unpinned*, so mitmproxy performed
+  its own independent, unguarded DNS resolution at connect time — the exact
+  resolve-and-pin TOCTOU #41 was built to close. That carve-out was reachable
+  only on a genuine fast failure until v0.18.6 bounded the OS resolver
+  (`RES_OPTIONS`, #61): a black-holed *allowlisted* host now gives up in ~2s
+  (below the addon's 5s guard timeout) and fell into the permit-unpinned branch,
+  letting a malicious nameserver silence the guard's lookups and then answer only
+  mitmproxy's later, unguarded query with an internal IP. `_validated_addresses`
+  now treats an unresolvable host exactly like a resolve-timeout — deny and
+  briefly negative-cache — so the guard never permits a connection it cannot pin,
+  and the security outcome no longer depends on *which* timeout fires first. The
+  negative-cache also stops a black-holed allowlisted host re-consuming a
+  resolver worker on every request. `server_connect` no longer has an unpinned
+  path: if it ever has no validated address, it kills the connection. A host that
+  genuinely does not resolve is now denied with an ip-guard reason rather than
+  failing at mitmproxy's own connect — functionally identical (nothing connects),
+  and fail-closed. A unit regression proves a fast `OSError` (a black-hole giving
+  up quickly) fails closed and is negative-cached.
+
 ## [0.18.7] — 2026-09-20 — Discovered-secret scrubbing (design-first)
 
 Establishes the mechanism for discovered-secret scrubbing (#6) design-first: an
@@ -35,6 +64,15 @@ and deferred to tickets. Additive; no security-boundary change.
   chosen to prove the detector end-to-end; the high-yield sinks — egress bodies
   (#62) and the harness's own memory files (#63) — are deferred to tickets,
   deliberately. No boundary change.
+
+### Fixed
+- **Proxy image build context: allowlist the new detector.** The detector was
+  added to the proxy Dockerfile COPY but not to the allowlist-style
+  `.dockerignore` (`deny *`, re-include each COPY source), so the build context
+  dropped it and every image build failed — invisible without a local Docker
+  daemon. `.dockerignore` now re-includes `python/tjor_secrets.py`, and
+  `tests/doc_consistency.sh` asserts every image-Dockerfile COPY source is
+  allowlisted, so this class of build break is caught locally going forward.
 
 ## [0.18.6] — 2026-09-20 — Bounded proxy resolver + saturation signal
 
