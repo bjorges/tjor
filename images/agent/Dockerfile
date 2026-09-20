@@ -9,13 +9,16 @@ FROM ${BASE_IMAGE}
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl git openssh-client jq ripgrep less procps \
         gosu python3 unzip \
-        bubblewrap \
     && rm -rf /var/lib/apt/lists/*
-# bubblewrap (#10): cplt auto-detects `bwrap` and uses it, adding UNIX-socket
-# connect(2) enforcement to the kernel-sandbox tier (silences the per-session
-# "Bubblewrap unavailable / UNIX sockets NOT restricted" warning). apt repo
-# signing covers it — same trust tier as the packages above, no sha256 gate
-# (unlike the release-tarball tools below, which bypass apt).
+# NOTE (#10): bubblewrap is deliberately NOT installed. cplt would auto-detect
+# and use it, but bwrap needs an unprivileged user namespace, which Docker's
+# default seccomp profile blocks under this container's `cap_drop: [ALL]` /
+# no-new-privileges posture (verified in the 2026-09-13 add-landlock-tier design:
+# "bubblewrap needs user namespaces ... dead end in-cage on any runtime").
+# Shipping it would add a non-functional binary and a false "UNIX sockets
+# restricted" signal — the v0.18.15 attempt was reverted for exactly this.
+# The socket-connect(2) gap on kernels below Landlock ABI v9 is an accepted,
+# documented limitation of the deliberate zero-capability posture.
 
 # git >= 2.46 is a hard floor (#53, spec: session-launch): the entrypoint
 # registers 'safe.directory <root>/*' prefix-trust entries, which an older

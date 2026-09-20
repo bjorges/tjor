@@ -65,7 +65,6 @@ jobs:
           docker run --rm --entrypoint bash -e WANT_KUBECTL="${want_kubectl}" tjor-agent-${{ matrix.harness }}:local -c '
             [ "$(su agent -c "id -u")" != "0" ] || { echo "agent is root"; exit 1; }
             command -v ${{ matrix.binary }} >/dev/null || { echo "${{ matrix.binary }} missing"; exit 1; }
-            command -v bwrap >/dev/null || { echo "bubblewrap missing (#10: cplt UNIX-socket enforcement)"; exit 1; }
             test -f /opt/tjor/instructions/AGENTS.md || { echo "neutral instruction cargo missing"; exit 1; }
             # kube broker (#26): pinned kubectl + the tjor_kube.py the entrypoint renders with
             command -v kubectl >/dev/null || { echo "kubectl missing"; exit 1; }

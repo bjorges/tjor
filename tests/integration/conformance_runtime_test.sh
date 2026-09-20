@@ -20,10 +20,9 @@ docker() {
     case "${1:-} ${2:-}" in
         "context show")  printf '%s\n' "${MOCK_CTX}" ;;
         "info --format")
+            # detect_runtime issues a single combined `docker info` call.
             case "${3:-}" in
                 '{{.OperatingSystem}}|{{.Name}}') printf '%s|%s\n' "${MOCK_OS}" "${MOCK_NAME}" ;;
-                '{{.OperatingSystem}}') printf '%s\n' "${MOCK_OS}" ;;
-                '{{.Name}}')            printf '%s\n' "${MOCK_NAME}" ;;
                 *) return 0 ;;
             esac ;;
         *) return 0 ;;

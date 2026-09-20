@@ -3,13 +3,47 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [0.18.15] — 2026-09-20 — Hardening: bubblewrap + agent pids limit (#10)
+## [0.18.16] — 2026-09-20 — Correct the bubblewrap claim (revert) + review nits
 
-Two hardening increments from #10 (the umbrella stays open for future passes).
-Image + compose hardening; no boundary, policy, or product change.
+Reverts v0.18.15's bubblewrap increment — its enforcement claim was wrong (see
+below) — keeps the sound `pids_limit`, and folds in two non-blocking review nits.
 
 ### Security
-- **Bubblewrap in the agent image (#10).** `bubblewrap` joins the agent
+- **Reverted the v0.18.15 bubblewrap change; corrected the false claim (#10,
+  review).** v0.18.15 claimed shipping `bubblewrap` gave the agent active
+  UNIX-socket `connect(2)` enforcement. That is **wrong**: `bwrap` needs an
+  unprivileged user namespace, which Docker's default seccomp profile blocks
+  under the agent's deliberate `cap_drop: [ALL]` / no-new-privileges posture — so
+  `cplt` cannot use it. The project's own `2026-09-13` add-landlock-tier design
+  had already established this ("bubblewrap needs user namespaces … dead end
+  in-cage on any runtime"); the v0.18.15 proposal missed it, and its
+  `command -v bwrap` CI check only proved the binary was on PATH, never that it
+  functioned. Not an active exposure (no live sockets — no docker socket, D-Bus,
+  or forwarded SSH agent), but the claim was unverified and false. This removes
+  `bubblewrap` from the image and the CI check, and records the socket-connect(2)
+  gap on kernels below Landlock ABI v9 as an **accepted, documented limitation**
+  of the zero-capability posture (a Dockerfile note prevents re-adding it). The
+  `pids_limit` from v0.18.15 is unaffected and stays.
+
+### Fixed
+- **The agent `pids_limit` doc-consistency check is scoped to the `agent:` block**
+  (was a file-wide grep that would false-pass if `pids_limit` moved to another
+  service — v0.18.15 review, Medium).
+- **Removed dead mock cases** in `conformance_runtime_test.sh` — the two
+  single-field `docker info` format mocks left over after v0.18.14 combined the
+  call (v0.18.14 review, cosmetic).
+
+## [0.18.15] — 2026-09-20 — Hardening: bubblewrap + agent pids limit (#10)
+
+Two hardening increments from #10. **Correction:** the bubblewrap half was
+reverted in v0.18.16 — it does not function under the agent's `cap_drop: [ALL]`
+posture (bwrap can't create a user namespace), so it added no enforcement. The
+`pids_limit` half below is correct and stands.
+
+### Security
+- **Bubblewrap in the agent image (#10).** *(Reverted in v0.18.16 — the claim
+  below is incorrect; bwrap is a dead-end under `cap_drop: [ALL]`, see that
+  entry.)* `bubblewrap` joins the agent
   Dockerfile's apt-get install (apt repo signing covers it — same trust tier as
   the other apt packages; no sha256 gate). `cplt` auto-detects `bwrap` at runtime
   with no tjor-side flag, so the kernel-sandbox tier gains UNIX-socket
