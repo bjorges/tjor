@@ -3,7 +3,7 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.18.7] — 2026-09-20 — Discovered-secret scrubbing (design-first)
 
 Establishes the mechanism for discovered-secret scrubbing (#6) design-first: an
 ADR fixes the risk framing and the false-positive stance, a small reusable
