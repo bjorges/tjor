@@ -3,7 +3,7 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.18.8] — 2026-09-20 — Fail closed on unresolvable (DNS-rebind gap)
 
 Closes a Critical review finding: v0.18.6's resolver bound re-widened the #41
 DNS-rebind vector for an already-allowlisted host. The egress guard now fails
