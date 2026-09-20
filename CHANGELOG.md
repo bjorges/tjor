@@ -3,7 +3,7 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.18.15] — 2026-09-20 — Hardening: bubblewrap + agent pids limit (#10)
 
 Two hardening increments from #10 (the umbrella stays open for future passes).
 Image + compose hardening; no boundary, policy, or product change.
