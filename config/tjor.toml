@@ -118,6 +118,11 @@ proxy_mem = "1g"
 dns_mem = "256m"
 conformance_mem = "512m"
 gateway_mem = "2g"          # LiteLLM gateway sidecar (D4), when enabled
+# Process-count cap on the agent container (#10 hardening): a DoS/fork-bomb
+# ceiling. Generous by default so real multi-process work (parallel builds,
+# test runners) is unaffected — any finite cap stops a runaway. Raise it if a
+# legitimate workload needs more.
+agent_pids = 4096
 
 [dns]
 # Extra DNS zones to forward beyond those derived from the policy allow-list.

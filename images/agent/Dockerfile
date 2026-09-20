@@ -9,7 +9,13 @@ FROM ${BASE_IMAGE}
 RUN apt-get update && apt-get install -y --no-install-recommends \
         ca-certificates curl git openssh-client jq ripgrep less procps \
         gosu python3 unzip \
+        bubblewrap \
     && rm -rf /var/lib/apt/lists/*
+# bubblewrap (#10): cplt auto-detects `bwrap` and uses it, adding UNIX-socket
+# connect(2) enforcement to the kernel-sandbox tier (silences the per-session
+# "Bubblewrap unavailable / UNIX sockets NOT restricted" warning). apt repo
+# signing covers it — same trust tier as the packages above, no sha256 gate
+# (unlike the release-tarball tools below, which bypass apt).
 
 # git >= 2.46 is a hard floor (#53, spec: session-launch): the entrypoint
 # registers 'safe.directory <root>/*' prefix-trust entries, which an older

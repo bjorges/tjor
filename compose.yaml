@@ -129,6 +129,7 @@ services:
     image: ${TJOR_AGENT_IMAGE:-tjor-agent-opencode:local}
     networks: [internal]
     mem_limit: ${TJOR_AGENT_MEM:-4g}
+    pids_limit: ${TJOR_AGENT_PIDS:-4096}   # #10: fork-bomb/DoS ceiling on the untrusted harness
     security_opt: ["no-new-privileges:true"]
     cap_drop: [ALL]
     cap_add: [SETUID, SETGID, CHOWN, DAC_OVERRIDE]   # entrypoint setup (writes into agent-owned home), then gosu drop

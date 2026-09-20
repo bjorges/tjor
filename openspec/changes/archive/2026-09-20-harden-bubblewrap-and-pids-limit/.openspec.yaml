@@ -1,0 +1,9 @@
+schema: spec-driven
+created: 2026-09-20
+# Image + compose hardening, no tjor-side spec behavior change: ship the
+# bubblewrap package (cplt auto-detects and uses it — the UNIX-socket enforcement
+# is cplt's mechanism, not a tjor-owned guarantee tjor probes/reports), and add a
+# compose `pids_limit` on the agent service (same class as the existing, unspecced
+# `mem_limit`). Both are gated by the existing regression + conformance suites,
+# per #10's own rule. No new capability or requirement -> no spec delta.
+skip_specs: true

@@ -134,3 +134,14 @@ if ! grep -Eq 'bin/tjor conformance|\./bin/tjor conformance' "${CI_WORKFLOW}"; t
     exit 1
 fi
 echo "doc-consistency: conformance runtime matrix present, referenced, and its CI-automated claim is real"
+
+# Agent process-count cap (#10 hardening): the agent service must carry a
+# pids_limit so the fork-bomb/DoS ceiling can't be silently dropped in a
+# compose edit (its safety — the default being high enough — is regression-gated
+# by the live-session CI jobs, not here). Same drift class: a guard and its
+# wiring separating.
+if ! grep -qE '^[[:space:]]*pids_limit:' "${ROOT_DIR}/compose.yaml"; then
+    echo "doc-consistency: FAILED — compose.yaml agent service has no pids_limit (#10 fork-bomb ceiling)" >&2
+    exit 1
+fi
+echo "doc-consistency: agent pids_limit wired in compose"

@@ -3,6 +3,28 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+Two hardening increments from #10 (the umbrella stays open for future passes).
+Image + compose hardening; no boundary, policy, or product change.
+
+### Security
+- **Bubblewrap in the agent image (#10).** `bubblewrap` joins the agent
+  Dockerfile's apt-get install (apt repo signing covers it — same trust tier as
+  the other apt packages; no sha256 gate). `cplt` auto-detects `bwrap` at runtime
+  with no tjor-side flag, so the kernel-sandbox tier gains UNIX-socket
+  `connect(2)` enforcement where the kernel needs it, and the alarming
+  per-session "Bubblewrap unavailable / UNIX sockets NOT restricted" warning
+  stops. Defense-in-depth, not an active fix: the agent container mounts no
+  docker socket, runs no D-Bus bus, and gets no forwarded `SSH_AUTH_SOCK`, so the
+  sockets that warning named were never live exposures. The tier stays strictly
+  additive. CI's agent-image contract now asserts `bwrap` is present.
+- **A process-count ceiling on the agent container (#10).** The agent service
+  gains `pids_limit` (default 4096, env-tunable via `[limits] agent_pids` /
+  `TJOR_AGENT_PIDS`, mirroring the `mem_limit` knob), bounding a runaway or
+  fork-bomb in the untrusted harness on the process axis. Generous by default so
+  real multi-process work is unaffected; a doc-consistency lint keeps it wired.
+
 ## [0.18.14] — 2026-09-20 — Review nits (anchored matrix lint + single docker info)
 
 Two cosmetic, non-blocking nits from the v0.18.13 review. Tidy-up only; no
