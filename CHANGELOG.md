@@ -3,6 +3,25 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+Non-blocking review polish (v0.18.10/v0.18.11 review). Maintainability and
+consistency only; no behavior or boundary change.
+
+### Changed
+- **Shared `_safe_log()` helper for the fail-closed handlers (rule-of-three).**
+  The `try: print(...) except: pass` guard that keeps a stderr-logging failure
+  from undoing a fail-closed action was duplicated across `server_connect`,
+  `http_connect`, `request`, and the log-volume hook; it is now a single
+  `_safe_log()` helper. Behavior identical.
+- **Consistency + polish on the #50 counter:** the pod name is now run through
+  `tjor_secrets.redact()` before `_safe_ascii`, identical to the denial log (a
+  DNS-label pod name can't match a secret shape, so this is defense-in-depth /
+  consistency, not a new channel); `_log_log_volume` renamed to
+  `_record_log_volume` (naming stutter); the `tjor down` size formatter gained
+  `TB`/`PB` units. Added a test for the hook's outer-exception path (previously
+  only the inner counting-failure path was covered).
+
 ## [0.18.11] — 2026-09-20 — Observe workload-log read volume (#50)
 
 Closes the last open item on #50 (exfiltration-conscious log access): the

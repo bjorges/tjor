@@ -138,6 +138,16 @@ def _safe_ascii(s: str, limit: int = 253) -> str:
     return "".join(c if 0x20 < ord(c) < 0x7F else "?" for c in s)[:limit] or "?"
 
 
+def _safe_log(msg: str) -> None:
+    """Best-effort stderr diagnostic that NEVER raises. The fail-closed hook
+    handlers call this AFTER taking their fail-closed action, so a failure in
+    stderr I/O can't undo it (review v0.18.10, rule-of-three shared helper)."""
+    try:
+        print(msg, file=sys.stderr, flush=True)
+    except Exception:  # noqa: BLE001 — logging must not undo a fail-closed action
+        pass
+
+
 def _log_denial(host: str, rule: str) -> None:
     """Append a denied egress to the session denial log (#23) so `tjor
     denials` can surface it. Best-effort and TOTAL — it MUST never raise: it runs
@@ -180,19 +190,22 @@ def _pods_log_pod(host: str, path: str) -> "str | None":
     return m.group(1) if m else None
 
 
-def _log_log_volume(pod: str, nbytes: int) -> None:
+def _record_log_volume(pod: str, nbytes: int) -> None:
     """Record workload-log read volume for the session (#50). Best-effort and
     TOTAL — observability must NEVER break, alter, or delay a request: every
     failure is swallowed. Appends `pod\\tbytes` to the bounded, bind-mounted
     counter file the `tjor down` recap aggregates. `pod` is agent-influenced, so
-    it is escape-sanitized here (the recap sanitizes again at display)."""
+    it is redacted then escape-sanitized before it is written — identical to the
+    denial log — even though a DNS-label pod name can't match a secret shape
+    (consistency + defense in depth; the recap sanitizes again at display)."""
     global _log_volume_count
     if not LOG_VOLUME_LOG or nbytes <= 0 or _log_volume_count >= _LOG_VOLUME_MAX:
         return
     _log_volume_count += 1
     try:
+        safe_pod = _safe_ascii(tjor_secrets.redact(pod))
         with open(LOG_VOLUME_LOG, "a") as fh:
-            fh.write(f"{_safe_ascii(pod)}\t{nbytes}\n")
+            fh.write(f"{safe_pod}\t{nbytes}\n")
             if _log_volume_count >= _LOG_VOLUME_MAX:
                 fh.write("...(log-volume counter capped for this session)\n")
     except Exception:  # noqa: BLE001 — best-effort; never propagate into a hook
@@ -761,11 +774,7 @@ class TjorPolicy:
             # Set the fail-closed action FIRST, then log — so a failure in stderr
             # I/O can never leave the connection un-killed (review v0.18.9).
             data.server.error = "tjor ip-guard: pin failure (fail-closed)"
-            try:
-                print(f"tjor: ip-guard pin error — killing connection: {exc!r}",
-                      file=sys.stderr, flush=True)
-            except Exception:  # noqa: BLE001 — logging must not undo the fail-closed
-                pass
+            _safe_log(f"tjor: ip-guard pin error — killing connection: {exc!r}")
 
     def http_connect(self, flow) -> None:
         from mitmproxy import http
@@ -792,11 +801,7 @@ class TjorPolicy:
             flow.response = http.Response.make(
                 403, b"tjor egress policy: DENY CONNECT (fail-closed)\n",
                 {"x-tjor-policy": "deny", "x-tjor-rule": "fail-closed:hook-error"})
-            try:
-                print(f"tjor: http_connect hook error — failing closed: {exc!r}",
-                      file=sys.stderr, flush=True)
-            except Exception:  # noqa: BLE001 — logging must not undo the fail-closed
-                pass
+            _safe_log(f"tjor: http_connect hook error — failing closed: {exc!r}")
 
     def request(self, flow) -> None:
         from mitmproxy import http
@@ -834,11 +839,7 @@ class TjorPolicy:
                 403, b"tjor egress policy: DENY (fail-closed)\n",
                 {"content-type": "text/plain", "x-tjor-policy": "deny",
                  "x-tjor-rule": "fail-closed:hook-error"})
-            try:
-                print(f"tjor: request hook error — failing closed: {exc!r}",
-                      file=sys.stderr, flush=True)
-            except Exception:  # noqa: BLE001 — logging must not undo the fail-closed
-                pass
+            _safe_log(f"tjor: request hook error — failing closed: {exc!r}")
 
     def responseheaders(self, flow) -> None:
         # #50 observability: count `pods/log` read volume WITHOUT touching the
@@ -864,15 +865,14 @@ class TjorPolicy:
                     if chunk:
                         tally["n"] += len(chunk)
                     else:                       # end-of-stream sentinel (b"")
-                        _log_log_volume(pod, tally["n"])
+                        _record_log_volume(pod, tally["n"])
                 except Exception:  # noqa: BLE001 — never corrupt the body on error
                     pass
                 return chunk
 
             flow.response.stream = _count
         except Exception as exc:  # noqa: BLE001 — observability must never break a response
-            print(f"tjor: log-volume hook error (ignored): {exc!r}",
-                  file=sys.stderr, flush=True)
+            _safe_log(f"tjor: log-volume hook error (ignored): {exc!r}")
 
     def done(self) -> None:
         # Best-effort revocation on proxy shutdown (tjor down / gc gives the

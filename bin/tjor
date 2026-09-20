@@ -1363,7 +1363,7 @@ with open(sys.argv[1], "rb") as fh:
 def human(n):
     unit = "B"
     val = float(n)
-    for u in ("KB", "MB", "GB"):
+    for u in ("KB", "MB", "GB", "TB", "PB"):
         if val < 1024:
             break
         val /= 1024

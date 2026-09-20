@@ -922,12 +922,22 @@ class TestLogVolume:
         # If the sink throws, the stream passthrough must still return the chunk
         # unchanged and never raise — observability can't corrupt a response.
         addon = self._addon(tmp_path)
-        monkeypatch.setattr(addon, "_log_log_volume",
+        monkeypatch.setattr(addon, "_record_log_volume",
                             lambda *a, **k: (_ for _ in ()).throw(OSError("disk full")))
         flow = self._flow(self.KUBE, "/api/v1/namespaces/ns/pods/p/log")
         addon.TjorPolicy().responseheaders(flow)
         assert flow.response.stream(b"data") == b"data"
         assert flow.response.stream(b"") == b""  # flush throws internally, swallowed
+
+    def test_hook_outer_exception_is_swallowed(self, tmp_path, monkeypatch):
+        # The hook's OUTER guard: if matching itself throws (before a stream is
+        # installed), the response must be untouched and no exception escapes.
+        addon = self._addon(tmp_path)
+        monkeypatch.setattr(addon, "_pods_log_pod",
+                            lambda *a, **k: (_ for _ in ()).throw(RuntimeError("boom")))
+        flow = self._flow(self.KUBE, "/api/v1/namespaces/ns/pods/p/log")
+        addon.TjorPolicy().responseheaders(flow)  # must not raise
+        assert flow.response.stream is None        # no passthrough installed; body untouched
 
     def test_zero_byte_read_records_nothing(self, tmp_path):
         addon = self._addon(tmp_path)
