@@ -3,7 +3,7 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.18.10] — 2026-09-20 — Review follow-ups (negative-cache + log ordering)
 
 Two low-priority, non-blocking review items (v0.18.9 review): an availability
 weakness in the resolver negative-cache, and defense-in-depth ordering in the
