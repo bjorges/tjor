@@ -124,6 +124,20 @@ gateway_mem = "2g"          # LiteLLM gateway sidecar (D4), when enabled
 # legitimate workload needs more.
 agent_pids = 4096
 
+[secrets]
+# Egress discovered-secret tripwire (#62, ADR 0011). OBSERVE-ONLY and best-effort:
+# the proxy scans outbound inference request bodies for known secret SHAPES and
+# surfaces a count at `tjor down` — it never alters, blocks, or delays a request,
+# and it is NOT a guarantee (an agent can trivially base64/split/encode around
+# it). Its value is catching ACCIDENTAL verbatim leaks.
+# Inference hosts to scan. The LLM gateway host is auto-included when [gateway]
+# is enabled; list additional inference hosts here for gateway-less setups
+# (empty = only the gateway host, or nothing if the gateway is off).
+scan_hosts = []
+# Bytes of each request body scanned (a pasted secret is near the top of a
+# prompt; bounds hot-path cost). Beyond this is not scanned.
+scan_max_bytes = 262144
+
 [dns]
 # Extra DNS zones to forward beyond those derived from the policy allow-list.
 # Required for any forwarding at all when the policy mode is default-allow.

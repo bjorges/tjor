@@ -72,6 +72,13 @@ services:
       # exemption as the gateway host, so private-endpoint control planes work
       # without ip_guard=false globally. One host for a single-cluster session.
       TJOR_KUBE_API_HOSTS: ${TJOR_KUBE_API_HOSTS:-}
+      # Egress secret tripwire (#62, ADR 0011): OBSERVE-ONLY. The proxy scans the
+      # request body of allowed requests to these inference host(s) for known
+      # secret shapes and records a count at `tjor down` — never alters/blocks.
+      # Empty = scan nothing. Bounded by MAX_BYTES.
+      TJOR_SECRET_SCAN_HOSTS: ${TJOR_SECRET_SCAN_HOSTS:-}
+      TJOR_SECRET_SCAN_MAX_BYTES: ${TJOR_SECRET_SCAN_MAX_BYTES:-262144}
+      TJOR_SECRET_SCAN_LOG: /secretscan.log
     labels:
       tjor.role: proxy
       tjor.session: ${TJOR_SESSION:-}
@@ -85,6 +92,8 @@ services:
       - ${TJOR_BROKER_DIR:-${TJOR_SESSION_DIR:?}/proxy-ca}:/broker:ro
       # Session denial log (writable): the launcher pre-creates the file.
       - ${TJOR_SESSION_DIR:?}/denials.log:/denials.log
+      # Egress secret-tripwire signal (#62, writable): launcher pre-creates it.
+      - ${TJOR_SESSION_DIR:?}/secretscan.log:/secretscan.log
       # Workload-log volume counter (#50, writable): launcher pre-creates it.
       - ${TJOR_SESSION_DIR:?}/logvolume.log:/logvolume.log
     healthcheck:

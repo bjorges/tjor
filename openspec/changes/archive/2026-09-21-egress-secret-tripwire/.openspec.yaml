@@ -1,0 +1,8 @@
+schema: spec-driven
+created: 2026-09-21
+# Design-first, like #6 (its parent): the durable record is ADR 0011, and the
+# deliverable is a best-effort, observe-only tripwire + tests. It is deliberately
+# NOT a guarantee (an agent can trivially evade body scanning), so wording it as
+# a spec requirement would overclaim the contract — the honest record is the ADR.
+# Mirrors #6 (secret-scrubbing-adr-and-detector), which was also skip_specs.
+skip_specs: true

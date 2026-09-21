@@ -947,6 +947,83 @@ class TestLogVolume:
         assert not (tmp_path / "logvolume.log").exists() or (tmp_path / "logvolume.log").read_text() == ""
 
 
+class TestEgressSecretTripwire:
+    """#62 observe-only tripwire: scan outbound inference bodies for known secret
+    shapes and record a signal (count + kinds, never the value); never alter,
+    block, or deny; bounded; fail-safe."""
+
+    GW = "tjor-gateway"
+    TOKEN = "ghp_" + "a" * 36
+
+    def _addon(self, tmp_path):
+        addon = load_addon()
+        addon.SCAN_HOSTS = frozenset({self.GW})
+        addon.SECRET_SCAN_LOG = str(tmp_path / "secretscan.log")
+        addon._secret_scan_count = 0
+        return addon
+
+    def _flow(self, host, body):
+        import types
+        return types.SimpleNamespace(request=types.SimpleNamespace(host=host, content=body))
+
+    def test_secret_body_recorded_and_body_unchanged(self, tmp_path):
+        addon = self._addon(tmp_path)
+        body = f'{{"prompt":"my key is {self.TOKEN}"}}'.encode()
+        flow = self._flow(self.GW, body)
+        addon._scan_request_body(flow)
+        assert flow.request.content == body                     # never mutated
+        contents = (tmp_path / "secretscan.log").read_text()
+        assert "github-token" in contents and self.GW in contents
+
+    def test_signal_never_contains_the_value(self, tmp_path):
+        addon = self._addon(tmp_path)
+        addon._scan_request_body(self._flow(self.GW, f"leak={self.TOKEN}".encode()))
+        assert self.TOKEN not in (tmp_path / "secretscan.log").read_text()  # kind only, never the value
+
+    def test_non_scan_host_not_scanned(self, tmp_path):
+        addon = self._addon(tmp_path)
+        addon._scan_request_body(self._flow("api.example.com", f"x {self.TOKEN}".encode()))
+        assert not (tmp_path / "secretscan.log").exists() or (tmp_path / "secretscan.log").read_text() == ""
+
+    def test_bounded_to_max_bytes(self, tmp_path):
+        addon = self._addon(tmp_path)
+        addon.SCAN_MAX_BYTES = 10                                # secret sits past the cap
+        addon._scan_request_body(self._flow(self.GW, (b"x" * 50) + self.TOKEN.encode()))
+        assert not (tmp_path / "secretscan.log").exists() or (tmp_path / "secretscan.log").read_text() == ""
+
+    def test_streamed_or_empty_body_forwarded_unscanned(self, tmp_path):
+        addon = self._addon(tmp_path)
+        addon._scan_request_body(self._flow(self.GW, None))      # streamed past stream_large_bodies
+        addon._scan_request_body(self._flow(self.GW, b""))       # empty
+        assert not (tmp_path / "secretscan.log").exists() or (tmp_path / "secretscan.log").read_text() == ""
+
+    def test_scan_is_failsafe(self, tmp_path, monkeypatch):
+        # A raising detector must not propagate out of the scan.
+        addon = self._addon(tmp_path)
+        monkeypatch.setattr(addon.tjor_secrets, "kinds_present",
+                            lambda s: (_ for _ in ()).throw(RuntimeError("boom")))
+        addon._scan_request_body(self._flow(self.GW, f"x {self.TOKEN}".encode()))  # must NOT raise
+
+    def test_scan_never_denies_a_legitimate_request(self, monkeypatch):
+        # The scan sits in the fail-closed request hook. Even if scanning throws,
+        # an ALLOWED request must be forwarded (flow.response stays None), NOT 403'd.
+        pytest.importorskip("mitmproxy")
+        import types
+        from mitmproxy.http import Headers
+        addon = load_addon()
+        addon.SCAN_HOSTS = frozenset({"allowed.test"})
+        addon._resolver = lambda host: {"140.82.121.3"}          # allowed.test resolves public -> allowed
+        monkeypatch.setattr(addon.tjor_secrets, "kinds_present",
+                            lambda s: (_ for _ in ()).throw(RuntimeError("boom")))
+        flow = types.SimpleNamespace(
+            request=types.SimpleNamespace(host="allowed.test", port=443,
+                                          pretty_url="https://allowed.test/v1/x",
+                                          headers=Headers(), content=f"k={self.TOKEN}".encode()),
+            response=None)
+        addon.TjorPolicy().request(flow)
+        assert flow.response is None                             # forwarded, never denied by a scan error
+
+
 class _GwReq:
     def __init__(self, host, headers=None):
         self.host = host

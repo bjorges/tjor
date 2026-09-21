@@ -76,6 +76,23 @@ def contains_secret(text: str) -> bool:
     return False
 
 
+def kinds_present(text: str) -> list[str]:
+    """Return the sorted, unique kinds whose shape matches in ``text`` — the
+    *labels* only, NEVER any matched value. For the #62 egress tripwire signal:
+    it names WHAT leaked-shape was seen without handling the secret itself (a
+    value must never be re-logged — the #6 concern). Total, like ``redact``."""
+    if not text:
+        return []
+    found = set()
+    for kind, pat in _PATTERNS:
+        try:
+            if pat.search(text):
+                found.add(kind)
+        except Exception:  # noqa: BLE001 — never raise on pathological input
+            continue
+    return sorted(found)
+
+
 def _main(argv: list[str]) -> int:
     # `redact` filter: stdin -> stdout, for shell/manual use. argv excludes the
     # program name (sibling convention, cf. tjor_policy._main / sys.argv[1:]).

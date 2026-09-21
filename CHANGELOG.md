@@ -3,6 +3,30 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+Closes #62 (the highest-yield #6 boundary) design-first: an observe-only egress
+secret tripwire. No egress-boundary, policy, or product change; explicitly not a
+guarantee.
+
+### Added
+- **Egress inference-body secret tripwire (#62, ADR 0011).** The proxy now scans
+  the request body of allowed requests to a configured inference host (the D4
+  gateway host when enabled, plus any `[secrets] scan_hosts`) for known secret
+  *shapes*, and on a match records a per-session signal — a count and the matched
+  *kinds*, **never the value or the body** — surfaced in the `tjor down` recap.
+  The request is forwarded **byte-for-byte unchanged**: this observes, it never
+  alters, blocks, delays, or rate-limits. It is a **best-effort tripwire for
+  _accidental_ verbatim leaks, explicitly NOT a guarantee** — an agent can
+  trivially base64/split/encode around it, and content in the model context
+  reaches allowed egress by design (the recap line says so). The scan is bounded
+  (`[secrets] scan_max_bytes`, default 256 KiB; streamed bodies forwarded
+  unscanned) and fully fail-safe: it is self-guarded so a scan error can never
+  reach the request hook's fail-closed path and wrongly deny a legitimate
+  inference request. A new total `tjor_secrets.kinds_present()` names the matched
+  shapes without handling the value. Enforcement (redact/block) stays deferred.
+  Design-first like #6, so the durable record is ADR 0011 (`skip_specs`).
+
 ## [0.18.16] — 2026-09-20 — Correct the bubblewrap claim (revert) + review nits
 
 Reverts v0.18.15's bubblewrap increment — its enforcement claim was wrong (see

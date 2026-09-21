@@ -101,6 +101,32 @@ class TestBoundaries:
         assert s.contains_secret("ghu_" + "a" * 36) is True
 
 
+class TestKindsPresent:
+    """kinds_present() names WHAT shapes matched, never a value (#62 tripwire signal)."""
+
+    def test_single_kind(self):
+        assert s.kinds_present("x AKIAABCDEFGHIJKLMNOP y") == ["aws-access-key-id"]
+
+    def test_multiple_kinds_sorted_unique(self):
+        text = f"a AKIAABCDEFGHIJKLMNOP b {'ghp_' + 'z'*36} c {'ghp_' + 'q'*36} d"
+        assert s.kinds_present(text) == ["aws-access-key-id", "github-token"]  # sorted, deduped
+
+    def test_benign_and_empty(self):
+        assert s.kinds_present("the quick brown fox") == []
+        assert s.kinds_present("") == []
+
+    def test_returns_no_value(self):
+        # The result must be labels only — the secret substring must never appear.
+        token = "ghp_" + "a" * 36
+        out = s.kinds_present(f"leak={token}")
+        assert out == ["github-token"]
+        assert all(token not in k for k in out)
+
+    def test_total_on_pathological_input(self):
+        payload = "-----BEGIN PRIVATE KEY-----\n" + ("A" * 200_000)
+        assert isinstance(s.kinds_present(payload), list)  # must not raise
+
+
 class TestCli:
     def test_redact_filter(self, capsys, monkeypatch):
         # argv excludes the program name (sibling convention, cf. tjor_policy).

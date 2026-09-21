@@ -122,6 +122,27 @@ LOG_VOLUME_LOG = os.environ.get("TJOR_LOG_VOLUME_LOG", "")
 _log_volume_count = 0
 _LOG_VOLUME_MAX = 1000
 
+# Egress secret tripwire (#62): observe-only. Scan the request body of allowed
+# requests to a configured inference/scan host for known secret SHAPES; on a
+# match, record a per-session signal (count + kinds, NEVER the value or body)
+# surfaced in the `tjor down` recap, and forward the request UNCHANGED. Best-
+# effort against ACCIDENTAL verbatim leakage — NOT a guarantee (an agent can
+# trivially base64/split/encode). Bounded scan, fail-safe, wired like the denial
+# log. See docs/decisions/0011-egress-secret-tripwire.md.
+SCAN_HOSTS = frozenset(
+    tjor_policy._canon_host(h)
+    for h in tjor_identity.parse_inject_hosts(os.environ.get("TJOR_SECRET_SCAN_HOSTS", ""))
+)
+try:  # bounded scan prefix; _env_pos isn't defined yet at this module position
+    SCAN_MAX_BYTES = int(os.environ.get("TJOR_SECRET_SCAN_MAX_BYTES") or 262144)
+    if SCAN_MAX_BYTES <= 0:
+        SCAN_MAX_BYTES = 262144
+except (TypeError, ValueError):
+    SCAN_MAX_BYTES = 262144
+SECRET_SCAN_LOG = os.environ.get("TJOR_SECRET_SCAN_LOG", "")
+_secret_scan_count = 0
+_SECRET_SCAN_MAX = 1000
+
 # Resolver-capacity saturation signal (#61): when the concurrent-distinct-
 # resolution cap is hit, surface a rate-limited operator line to stderr (visible
 # via `docker logs`) so a sustained many-slow-host condition is observable
@@ -209,6 +230,50 @@ def _record_log_volume(pod: str, nbytes: int) -> None:
             if _log_volume_count >= _LOG_VOLUME_MAX:
                 fh.write("...(log-volume counter capped for this session)\n")
     except Exception:  # noqa: BLE001 — best-effort; never propagate into a hook
+        pass
+
+
+def _record_secret_scan(host: str, kinds: "list[str]") -> None:
+    """Record an egress secret-tripwire hit for the session (#62). Best-effort and
+    TOTAL — observability must NEVER break, alter, or delay a request. Writes only
+    the destination host (redacted+sanitized) and the matched KINDS — NEVER the
+    secret value or the body (re-logging the secret is the exact #6 concern). The
+    `tjor down` recap aggregates the bounded, bind-mounted file."""
+    global _secret_scan_count
+    if not SECRET_SCAN_LOG or not kinds or _secret_scan_count >= _SECRET_SCAN_MAX:
+        return
+    _secret_scan_count += 1
+    try:
+        safe_host = _safe_ascii(tjor_secrets.redact(host))
+        # kinds are our own fixed labels (no attacker content), comma-joined.
+        safe_kinds = _safe_ascii(",".join(kinds))
+        with open(SECRET_SCAN_LOG, "a") as fh:
+            fh.write(f"{safe_host}\t{safe_kinds}\n")
+            if _secret_scan_count >= _SECRET_SCAN_MAX:
+                fh.write("...(secret-scan tripwire capped for this session)\n")
+    except Exception:  # noqa: BLE001 — best-effort; never propagate into a hook
+        pass
+
+
+def _scan_request_body(flow) -> None:
+    """Observe-only egress secret tripwire (#62): for an ALLOWED request to a
+    configured scan host, scan up to SCAN_MAX_BYTES of the body for known secret
+    SHAPES and record a hit (count + kinds). Reads only — NEVER mutates the body,
+    blocks, or delays. Entirely self-guarded: any error is swallowed HERE so it
+    can never reach the request hook's outer fail-closed guard and wrongly deny a
+    legitimate inference request (the v0.18.9 lesson)."""
+    try:
+        host = tjor_policy._canon_host(flow.request.host)
+        if not SCAN_HOSTS or host not in SCAN_HOSTS:
+            return
+        body = flow.request.content   # None when streamed past stream_large_bodies
+        if not body:
+            return
+        text = body[:SCAN_MAX_BYTES].decode("utf-8", "replace")
+        kinds = tjor_secrets.kinds_present(text)
+        if kinds:
+            _record_secret_scan(host, kinds)
+    except Exception:  # noqa: BLE001 — observe-only; a scan error must never deny/alter
         pass
 
 
@@ -816,6 +881,7 @@ class TjorPolicy:
                 _apply_identity(flow)
                 _apply_broker(flow)
                 _apply_gateway(flow)
+                _scan_request_body(flow)   # #62 observe-only tripwire; self-guarded, never denies
                 return
             _log_denial(flow.request.host, verdict.rule)  # operator log keeps the full reason
             agent_rule = _agent_rule(verdict.rule)         # agent gets the class only (#60)
