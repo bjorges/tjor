@@ -3,7 +3,7 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.18.17] — 2026-09-21 — Egress inference-body secret tripwire (#62)
 
 Closes #62 (the highest-yield #6 boundary) design-first: an observe-only egress
 secret tripwire. No egress-boundary, policy, or product change; explicitly not a
