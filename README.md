@@ -360,6 +360,27 @@ What it does, in two independent mechanisms:
   `mask_dirs = [".opencode"]` and pair it with a managed opencode config (see
   Agent profiles). Same honest residual as dotenv masking: a directory
   *created mid-session* is not masked.
+- **Git hooks masking (`mask_git_hooks`, on by default, every runtime).**
+  The hooks directory of every git repo under a writable mount — the
+  workspace, `--dir` repos, repos nested under a mounted parent, a linked
+  worktree's common dir — is masked the same way, so a hook the cage writes
+  can never run in your **host** git on the next ordinary command. This is
+  **breaking on purpose** for host-installed hook frameworks (pre-commit,
+  lefthook, husky): they stop firing on in-cage commits; `mask_git_hooks =
+  false` restores them. Honest limits: `core.hooksPath` bypasses the mask
+  (see the pin below); a repo created mid-session is not masked; sibling
+  repos under one writable parent are not isolated from each other. #72
+  tracks detecting the rest of the cage-writable git metadata.
+- **Git config pin (`protect_git_config`, opt-in).** Pins each repo's
+  `.git/config` read-only with a bind of the real file over itself: reads
+  work, every write fails (git replaces the file by rename, and a mountpoint
+  cannot be renamed over). This is the only *preventive* control against
+  `core.hooksPath`, `core.fsmonitor` and filter-driver redirection. The cost:
+  `git config` and `git remote add` fail in-cage (verified live), and by the
+  same mechanism so does every other operation that writes config — `push
+  -u`, `branch --set-upstream-to`, `worktree add -b` with tracking, `gh pr
+  checkout`; `commit`, `push` without `-u`, `fetch`, `status`, `log` and
+  `diff` keep working.
 
 Configure under `[landlock]`:
 
@@ -373,6 +394,9 @@ deny_paths = []        # extra files to mask (absolute; only ever ADDS)
 mask_dirs = []         # directories to mask structurally: absolute paths or bare
                        # names discovered in every mounted repo (no globs);
                        # independent of mask_dotenv; e.g. [".opencode"]
+mask_git_hooks = true  # mask every writable repo's .git/hooks (host hook
+                       # frameworks stop firing in-cage; false restores them)
+protect_git_config = false  # opt-in: pin .git/config read-only (see the cost above)
 ```
 
 The tier states its status in the agent's startup log, one greppable line:

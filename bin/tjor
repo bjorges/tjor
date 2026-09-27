@@ -1399,6 +1399,81 @@ for e in json.load(sys.stdin):
             fi
         done <<<"${mask_list}"
     fi
+    # Git metadata masks (#71, spec: kernel-sandbox): the hooks directory of
+    # every git dir under a WRITABLE root is masked with the same read-only
+    # empty bind mask_dirs uses — a cage-written hook would otherwise run in
+    # the operator's HOST git on the next ordinary command, outside every
+    # boundary. Discovery targets .git itself (the other masks prune it): a
+    # .git DIR is its own git dir; a .git FILE is a worktree pointer whose
+    # common dir is masked only when it lies under a writable root (else it
+    # is unreachable in-cage anyway). Read-only roots need no mask. A missing
+    # hooks dir is created on the host first so the mask has a mountpoint
+    # (the one host-side write here; an empty hooks dir is inert to git).
+    # protect_git_config (opt-in) pins each git dir's config over itself :ro:
+    # git replaces config by rename, and a mountpoint cannot be renamed over,
+    # so every write fails while reads work (cost listed in the docs).
+    # Residuals, documented: core.hooksPath bypasses the hooks mask without
+    # the pin; repos created mid-session are not masked; siblings under one
+    # writable parent are not isolated from each other.
+    local git_hooks_on git_cfg_pin gitdir hooks cfgfile under w skip
+    git_hooks_on="$(cfg landlock.mask_git_hooks --default true)"
+    git_cfg_pin="$(cfg landlock.protect_git_config --default false)"
+    if [[ "${git_hooks_on}" != "false" || "${git_cfg_pin}" == "true" ]]; then
+        if [[ -z "${empty_src:-}" ]]; then
+            empty_src="${TJOR_SESSION_DIR}/mask-empty"
+            rm -rf "${empty_src}"; mkdir -p "${empty_src}"
+        fi
+        for dir in "${safe[@]:-}"; do
+            [[ -n "${dir}" ]] || continue
+            if grep -qxF -- "${dir}" <<<"${ro_dirs}"; then continue; fi   # read-only root: unwritable already
+            while IFS= read -r -d '' entry; do
+                if [[ -d "${entry}" ]]; then
+                    gitdir="${entry}"
+                elif [[ -f "${entry}" ]]; then
+                    gitdir="$(git -C "$(dirname "${entry}")" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+                    [[ -n "${gitdir}" && -d "${gitdir}" ]] || continue
+                else
+                    continue
+                fi
+                under=""
+                for w in "${safe[@]:-}"; do
+                    [[ -n "${w}" ]] || continue
+                    if grep -qxF -- "${w}" <<<"${ro_dirs}"; then continue; fi
+                    if [[ "${gitdir}" == "${w}" || "${gitdir}" == "${w}/"* ]]; then under=1; break; fi
+                done
+                [[ -n "${under}" ]] || continue
+                if [[ "${git_hooks_on}" != "false" ]]; then
+                    hooks="${gitdir}/hooks"
+                    if [[ -z "${masked[${hooks}]:-}" ]]; then
+                        skip=""
+                        for prev in "${!dirmasked[@]}"; do
+                            if [[ "${hooks}" == "${prev}"/* ]]; then skip=1; break; fi
+                        done
+                        if [[ -z "${skip}" ]]; then
+                            [[ -d "${hooks}" ]] || mkdir -p "${hooks}"   # a mountpoint for the mask
+                            masked["${hooks}"]=1; dirmasked["${hooks}"]=1
+                            mounts+=(--volume "${empty_src}:${hooks}:ro")
+                            echo "tjor: + dir mask $(safeprint "${hooks}") (git hooks)" >&2
+                        fi
+                    fi
+                fi
+                if [[ "${git_cfg_pin}" == "true" ]]; then
+                    cfgfile="${gitdir}/config"
+                    if [[ -f "${cfgfile}" && -z "${masked[${cfgfile}]:-}" ]]; then
+                        skip=""
+                        for prev in "${!dirmasked[@]}"; do
+                            if [[ "${cfgfile}" == "${prev}"/* ]]; then skip=1; break; fi
+                        done
+                        if [[ -z "${skip}" ]]; then
+                            masked["${cfgfile}"]=1
+                            mounts+=(--volume "${cfgfile}:${cfgfile}:ro")
+                            echo "tjor: + config pin $(safeprint "${cfgfile}") (protect_git_config)" >&2
+                        fi
+                    fi
+                fi
+            done < <(find "${dir}" \( -type d -o -type f \) -name .git -print0 2>/dev/null)
+        done
+    fi
     if [[ "$(cfg landlock.mask_dotenv --default true)" != "false" ]]; then
         for dir in "${safe[@]:-}"; do
             [[ -n "${dir}" ]] || continue

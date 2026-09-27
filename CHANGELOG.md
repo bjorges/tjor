@@ -3,6 +3,44 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+### Security
+- **BREAKING (by design): git hooks directories are masked in every writable
+  mount (#71).** A hook the cage writes into `<repo>/.git/hooks/` runs in the
+  operator's **host** git on the next ordinary command, outside every tjor
+  boundary — true for any writable mount, the workspace first. The launcher
+  now masks the hooks directory of every git dir it finds under a writable
+  root (workspace, `--dir` repos, repos nested under a mounted parent, a
+  linked worktree's common dir when it lies under a writable root) with the
+  same read-only empty bind `mask_dirs` uses: in-cage it lists empty, nothing
+  can be created in it, it cannot be removed or replaced, and git runs no hook
+  from it. A missing hooks dir is created on the host first so the mask has a
+  mountpoint. Read-only mounts need none. **What breaks:** host-installed hook
+  frameworks (pre-commit, lefthook, husky) no longer fire on in-cage commits
+  — `[landlock] mask_git_hooks = false` restores them. Residuals, stated:
+  `core.hooksPath` bypasses the hooks mask (the pin below is the preventive
+  answer); a repo created mid-session is not masked; siblings under one
+  writable parent are not isolated from each other. #72 tracks detection of
+  the rest.
+- **Opt-in `[landlock] protect_git_config` pins `.git/config` read-only
+  (#71).** The real file is bound over itself `:ro`; git replaces config by
+  rename and a mountpoint cannot be renamed over, so every write fails while
+  reads work. This is the only preventive control here against
+  `core.hooksPath` / `core.fsmonitor` / filter-driver redirection. Cost:
+  `git config` and `git remote add` fail in-cage (verified live), and by the
+  same mechanism every other config-writing operation — `push -u`, `branch
+  --set-upstream-to`, `worktree add -b` with tracking, `gh pr checkout`;
+  `commit`, `push` without `-u`, `fetch`, `status`, `log`, `diff` work
+  (commit and reads verified live). Default off; #71's open question — default-on for untrusted-content
+  profiles — stays open until measured against a real profile.
+- Coverage: the `landlock` suite gains section A4 (hooks listing empty and
+  unwritable in the workspace, a nested repo and a worktree's common dir; a
+  host `pre-commit` does not fire in-cage; the opt-out; the pin's writes,
+  reads and commits); six boundary-matrix rows. Spec: `kernel-sandbox` gains
+  two requirements. Closes #10's "targeted LSM denies (git hooks dir)"
+  candidate structurally.
+
 ## [0.20.4] — 2026-09-27 — Review follow-ups: one workspace resolver, bounded tripwire, GH_TOKEN unset, mint-after-refusal
 
 Review follow-ups for v0.18.16 → v0.20.3 (external review of the batch; the

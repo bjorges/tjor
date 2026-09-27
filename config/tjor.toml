@@ -197,6 +197,25 @@ deny_paths = []
 # Recommended for hardened/read-only investigation profiles:
 #   mask_dirs = [".opencode"]
 mask_dirs = []
+# Git metadata masks (#71). mask_git_hooks: the hooks directory of every git
+# dir under a WRITABLE mount root (workspace, --dir repos, repos nested under
+# a mounted parent, a worktree's common dir when it is under a writable root)
+# is masked with the same read-only EMPTY bind as mask_dirs — a cage-written
+# hook would otherwise run in the operator's HOST git on the next ordinary
+# command, outside every boundary. BREAKING for host-installed hook
+# frameworks (pre-commit, lefthook, husky): they stop firing on in-cage
+# commits; set false to restore. Residual: core.hooksPath bypasses the mask —
+# the pin below is the preventive answer; repos created mid-session are not
+# masked; siblings under one writable parent are not isolated from each other.
+mask_git_hooks = true
+# protect_git_config (opt-in): pin each git dir's config file read-only (the
+# real file bound over itself). git replaces config by rename, so EVERY write
+# fails while reads work. This is the only preventive control against
+# core.hooksPath / core.fsmonitor / filter-driver redirection. COST: `git
+# config`, `git remote add`, `push -u`, `branch --set-upstream-to`,
+# `worktree add -b` with tracking and `gh pr checkout` fail in-cage; commit,
+# push (no -u), fetch, status, log, diff keep working.
+protect_git_config = false
 
 [versions]
 # Harness and tool versions are config, not Dockerfile constants (charter L8).

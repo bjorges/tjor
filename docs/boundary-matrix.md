@@ -4,7 +4,7 @@
      Regenerate: python3 python/gen_boundary_matrix.py
      Drift-checked by tests/doc_consistency.sh (`--check`). -->
 
-Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate` and `self-mount` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (161 checks total; 55 adversarial guarantees below, the rest functional/config checks the suites also run).
+Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate` and `self-mount` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (177 checks total; 61 adversarial guarantees below, the rest functional/config checks the suites also run).
 
 ## cage-network
 
@@ -50,11 +50,17 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | Guarantee | Probe | Suite |
 |---|---|---|
 | A file in a masked dir is unreadable | `plugin file unreadable at its path` | landlock |
+| A host-installed git hook does not fire on an in-cage commit | `git hooks: a host-installed pre-commit hook does not fire in-cage` | landlock |
+| A linked worktree's common hooks directory is masked | `git hooks: worktree common-dir hooks list empty in-cage` | landlock |
 | A masked dir cannot be removed in-cage | `masked dir cannot be removed in-cage` | landlock |
 | A masked dir lists empty in-cage | `masked .opencode lists empty in-cage` | landlock |
 | A masked dotenv cannot be unlinked in-cage | `masked .env cannot be unlinked in-cage` | landlock |
+| A masked git hooks directory cannot be written in-cage | `git hooks: write into the masked hooks dir refused` | landlock |
 | A nested masked dir lists empty in-cage | `nested .opencode lists empty in-cage` | landlock |
+| A nested repository's hooks directory is masked | `git hooks: nested repo hooks dir lists empty in-cage` | landlock |
+| A pinned .git/config refuses writes in-cage (opt-in) | `config pin: git config write refused in-cage` | landlock |
 | A write into a masked dir is refused | `write into the masked dir refused` | landlock |
+| Git hooks directory is masked (lists empty) in a writable mount | `git hooks: workspace hooks dir lists empty in-cage` | landlock |
 | Masked-dir content is absent from results | `plugin content nowhere in the probe result` | landlock |
 | Nested dotenv is masked (reads empty) | `nested sub/.env reads empty (masked)` | landlock |
 | Outside-tree read is kernel-denied | `outside-tree read is kernel-denied` | landlock |

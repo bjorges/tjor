@@ -136,7 +136,31 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
     "no raw ESC byte on any dotenv-mask line":
         (LANDLOCK, "session-launch", "No raw terminal-escape byte on a dotenv-mask line", True),
 
+    # git metadata masks (#71)
+    "git hooks: workspace hooks dir lists empty in-cage":
+        (LANDLOCK, "kernel-sandbox", "Git hooks directory is masked (lists empty) in a writable mount", True),
+    "git hooks: write into the masked hooks dir refused":
+        (LANDLOCK, "kernel-sandbox", "A masked git hooks directory cannot be written in-cage", True),
+    "git hooks: a host-installed pre-commit hook does not fire in-cage":
+        (LANDLOCK, "kernel-sandbox", "A host-installed git hook does not fire on an in-cage commit", True),
+    "git hooks: nested repo hooks dir lists empty in-cage":
+        (LANDLOCK, "kernel-sandbox", "A nested repository's hooks directory is masked", True),
+    "git hooks: worktree common-dir hooks list empty in-cage":
+        (LANDLOCK, "kernel-sandbox", "A linked worktree's common hooks directory is masked", True),
+    "config pin: git config write refused in-cage":
+        (LANDLOCK, "kernel-sandbox", "A pinned .git/config refuses writes in-cage (opt-in)", True),
+
     # --- kernel-sandbox suite: functional / config / launch-UX (acknowledged, not rendered) ---
+    "git hooks: launch announced the workspace hooks mask": (LANDLOCK, "kernel-sandbox", "launch-UX: hooks mask announced", False),
+    "git hooks: launch announced the nested repo hooks mask": (LANDLOCK, "kernel-sandbox", "launch-UX: nested hooks mask announced", False),
+    "git hooks: in-cage commit still succeeds": (LANDLOCK, "kernel-sandbox", "functional: commit works with hooks masked", False),
+    "git hooks: mask_git_hooks=false announces no hooks mask": (LANDLOCK, "kernel-sandbox", "config: hooks mask opt-out (no announcement)", False),
+    "git hooks: mask_git_hooks=false leaves the host hook visible": (LANDLOCK, "kernel-sandbox", "config: hooks mask opt-out (hook visible)", False),
+    "config pin: launch announced the pin": (LANDLOCK, "kernel-sandbox", "launch-UX: config pin announced", False),
+    "config pin: git remote add refused in-cage": (LANDLOCK, "kernel-sandbox", "functional: remote add refused under the pin", False),
+    "config pin: commit still succeeds": (LANDLOCK, "kernel-sandbox", "functional: commit works under the pin", False),
+    "config pin: config stays readable": (LANDLOCK, "kernel-sandbox", "functional: config readable under the pin", False),
+    "config pin: host config file unchanged": (LANDLOCK, "kernel-sandbox", "functional: host config unchanged", False),
     ".env.example (template) is NOT masked": (LANDLOCK, "kernel-sandbox", "masking precision (template not masked)", False),
     "workspace is writable under the wrap": (LANDLOCK, "kernel-sandbox", "functional: workspace writable", False),
     "HTTP_PROXY survives the wrap": (LANDLOCK, "kernel-sandbox", "functional: proxy env survives", False),

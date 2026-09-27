@@ -36,6 +36,9 @@ cleanup() {
     ( cd "${REPO}" 2>/dev/null && "${T}" down --session mo >/dev/null 2>&1 )
     ( cd "${REPO}" 2>/dev/null && "${T}" down --session m3 >/dev/null 2>&1 )
     ( cd "${REPO}" 2>/dev/null && "${T}" down --session m4 >/dev/null 2>&1 )
+    ( cd "${REPO}" 2>/dev/null && "${T}" down --session g1 >/dev/null 2>&1 )
+    ( cd "${REPO}" 2>/dev/null && "${T}" down --session g2 >/dev/null 2>&1 )
+    ( cd "${REPO}" 2>/dev/null && "${T}" down --session g3 >/dev/null 2>&1 )
     docker network rm "tjor-${SID:-nope}_internal" >/dev/null 2>&1
     rm -rf "${REPO}" "${SCRATCH}" "${HOME}"/.tjor/sessions/landlock-repo-*
     return 0
@@ -229,6 +232,81 @@ else
 fi
 check "invalid mask_dirs error names the key" grep -qi "mask_dirs" "${SCRATCH}/m4.out"
 ( cd "${REPO}" && "${T}" down --session m4 >/dev/null 2>&1 )
+
+# ---- A4. git metadata masks (#71): hooks dir masked, config pin opt-in -------
+# Launcher-side mount masking — runs on any engine. Layout: the repo carries a
+# HOST-installed pre-commit hook that writes a marker when it fires, a nested
+# repo, and a linked worktree whose common dir is the repo's own .git.
+rm -rf "${REPO}/.opencode" "${REPO}/subx" "${HD}" 2>/dev/null || true
+( cd "${REPO}" && git -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m base >/dev/null 2>&1 || true )
+MARK="${REPO}/hook-fired.txt"; rm -f "${MARK}"
+mkdir -p "${REPO}/.git/hooks"
+printf '#!/bin/sh\necho fired > "%s"\n' "${MARK}" > "${REPO}/.git/hooks/pre-commit"; chmod +x "${REPO}/.git/hooks/pre-commit"
+mkdir -p "${REPO}/nested"; ( cd "${REPO}/nested" && git init -q >/dev/null 2>&1 )
+( cd "${REPO}" && git worktree add -q "${REPO}/wt" >/dev/null 2>&1 || true )
+cat > "${USERCFG}/tjor/config.toml" <<CFG
+[landlock]
+mode = "off"
+CFG
+G1R="${REPO}/g1-result.txt"
+( cd "${REPO}" && XDG_CONFIG_HOME="${USERCFG}" "${T}" run --session g1 -- sh -c "
+    R='${G1R}'; : > \"\$R\"
+    echo \"hooks=[\$(ls -A '${REPO}/.git/hooks' 2>/dev/null | tr '\n' ' ')]\" >> \"\$R\"
+    (touch '${REPO}/.git/hooks/evil' 2>/dev/null && echo 'write=OK' || echo 'write=refused') >> \"\$R\"
+    echo \"nested=[\$(ls -A '${REPO}/nested/.git/hooks' 2>/dev/null | tr '\n' ' ')]\" >> \"\$R\"
+    echo \"wt=[\$(ls -A \"\$(git -C '${REPO}/wt' rev-parse --path-format=absolute --git-path hooks 2>/dev/null)\" 2>/dev/null | tr '\n' ' ')]\" >> \"\$R\"
+    (cd '${REPO}' && git -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m incage >/dev/null 2>&1 && echo 'commit=OK' || echo 'commit=failed') >> \"\$R\"
+" < /dev/null > "${SCRATCH}/g1.out" 2>&1 || true )
+g1field() { grep "^$1=" "${G1R}" 2>/dev/null | head -1 | cut -d= -f2-; }
+check "git hooks: launch announced the workspace hooks mask" grep -q "dir mask ${REPO}/.git/hooks (git hooks)" "${SCRATCH}/g1.out"
+check "git hooks: launch announced the nested repo hooks mask" grep -q "dir mask ${REPO}/nested/.git/hooks (git hooks)" "${SCRATCH}/g1.out"
+check "git hooks: workspace hooks dir lists empty in-cage" test "$(g1field hooks)" = "[]"
+check "git hooks: write into the masked hooks dir refused" test "$(g1field write)" = "refused"
+check "git hooks: nested repo hooks dir lists empty in-cage" test "$(g1field nested)" = "[]"
+check "git hooks: worktree common-dir hooks list empty in-cage" test "$(g1field wt)" = "[]"
+check "git hooks: in-cage commit still succeeds" test "$(g1field commit)" = "OK"
+check "git hooks: a host-installed pre-commit hook does not fire in-cage" test ! -e "${MARK}"
+( cd "${REPO}" && "${T}" down --session g1 >/dev/null 2>&1 )
+rm -f "${MARK}"
+
+# Opt-out: the host hook is visible (and would fire) again.
+cat > "${USERCFG}/tjor/config.toml" <<CFG
+[landlock]
+mode = "off"
+mask_git_hooks = false
+CFG
+G2R="${REPO}/g2-result.txt"
+( cd "${REPO}" && XDG_CONFIG_HOME="${USERCFG}" "${T}" run --session g2 -- sh -c "
+    echo \"hooks=[\$(ls -A '${REPO}/.git/hooks' 2>/dev/null | tr '\n' ' ')]\" > '${G2R}'
+" < /dev/null > "${SCRATCH}/g2.out" 2>&1 || true )
+check "git hooks: mask_git_hooks=false announces no hooks mask" bash -c "! grep -q '(git hooks)' '${SCRATCH}/g2.out'"
+check "git hooks: mask_git_hooks=false leaves the host hook visible" bash -c "grep -q 'pre-commit' '${G2R}'"
+( cd "${REPO}" && "${T}" down --session g2 >/dev/null 2>&1 )
+
+# Opt-in config pin: writes fail, reads and commits work, host file unchanged.
+cat > "${USERCFG}/tjor/config.toml" <<CFG
+[landlock]
+mode = "off"
+protect_git_config = true
+CFG
+CFG_BEFORE="$(hash8 "$(cat "${REPO}/.git/config")")"
+G3R="${REPO}/g3-result.txt"
+( cd "${REPO}" && XDG_CONFIG_HOME="${USERCFG}" "${T}" run --session g3 -- sh -c "
+    R='${G3R}'; : > \"\$R\"
+    (cd '${REPO}' && git config x.y z 2>/dev/null && echo 'cfgwrite=OK' || echo 'cfgwrite=refused') >> \"\$R\"
+    (cd '${REPO}' && git remote add o https://example.invalid/r 2>/dev/null && echo 'remoteadd=OK' || echo 'remoteadd=refused') >> \"\$R\"
+    (cd '${REPO}' && git -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m incage2 >/dev/null 2>&1 && echo 'commit=OK' || echo 'commit=failed') >> \"\$R\"
+    (cd '${REPO}' && git config --list >/dev/null 2>&1 && echo 'cfgread=OK' || echo 'cfgread=failed') >> \"\$R\"
+" < /dev/null > "${SCRATCH}/g3.out" 2>&1 || true )
+g3field() { grep "^$1=" "${G3R}" 2>/dev/null | head -1 | cut -d= -f2-; }
+check "config pin: launch announced the pin" grep -q "config pin ${REPO}/.git/config (protect_git_config)" "${SCRATCH}/g3.out"
+check "config pin: git config write refused in-cage" test "$(g3field cfgwrite)" = "refused"
+check "config pin: git remote add refused in-cage" test "$(g3field remoteadd)" = "refused"
+check "config pin: commit still succeeds" test "$(g3field commit)" = "OK"
+check "config pin: config stays readable" test "$(g3field cfgread)" = "OK"
+check "config pin: host config file unchanged" test "$(hash8 "$(cat "${REPO}/.git/config")")" = "${CFG_BEFORE}"
+( cd "${REPO}" && "${T}" down --session g3 >/dev/null 2>&1 )
+( cd "${REPO}" && git worktree remove --force "${REPO}/wt" >/dev/null 2>&1 || true )
 
 # ---- B. handoff branches on the image, Landlock forced unavailable -----------
 # auto + unavailable: LOUD degradation, still runs.
