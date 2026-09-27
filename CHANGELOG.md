@@ -3,7 +3,7 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.20.4] — 2026-09-27 — Review follow-ups: one workspace resolver, bounded tripwire, GH_TOKEN unset, mint-after-refusal
 
 Review follow-ups for v0.18.16 → v0.20.3 (external review of the batch; the
 three Highs and every Medium below were confirmed against the code before
