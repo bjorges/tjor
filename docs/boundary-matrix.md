@@ -4,7 +4,7 @@
      Regenerate: python3 python/gen_boundary_matrix.py
      Drift-checked by tests/doc_consistency.sh (`--check`). -->
 
-Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount` and `gitcheck` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (198 checks total; 68 adversarial guarantees below, the rest functional/config checks the suites also run).
+Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount` and `gitcheck` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (226 checks total; 80 adversarial guarantees below, the rest functional/config checks the suites also run).
 
 ## cage-network
 
@@ -59,6 +59,8 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | A nested masked dir lists empty in-cage | `nested .opencode lists empty in-cage` | landlock |
 | A nested repository's hooks directory is masked | `git hooks: nested repo hooks dir lists empty in-cage` | landlock |
 | A pinned .git/config refuses writes in-cage (opt-in) | `config pin: git config write refused in-cage` | landlock |
+| A symlinked .git entry is refused at launch | `git hooks: a symlinked .git entry is refused too` | gitcheck |
+| A symlinked git hooks directory is refused at launch, never masked through | `git hooks: a symlinked hooks dir refuses the launch instead of masking through the link` | gitcheck |
 | A write into a masked dir is refused | `write into the masked dir refused` | landlock |
 | Git hooks directory is masked (lists empty) in a writable mount | `git hooks: workspace hooks dir lists empty in-cage` | landlock |
 | Masked-dir content is absent from results | `plugin content nowhere in the probe result` | landlock |
@@ -92,6 +94,8 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | The session state root is refused as a writable extra mount | `extra-dir gate: session root refused via --dir` | workspace-gate |
 | The session state root is refused as the workspace | `workspace gate: session root refused as the workspace` | workspace-gate |
 | The tjor install root is refused as a mount | `install root refused via --dir` | self-mount |
+| tjor init stops on a core.worktree redirect | `core.worktree: tjor init stops on the redirect (exit status propagates through the subshell)` | workspace-gate |
+| tjor policy stops on a core.worktree redirect instead of falling through | `core.worktree: tjor policy (policy_file) stops on the redirect instead of using the user policy` | workspace-gate |
 
 ## launcher-integrity
 
@@ -107,7 +111,15 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | Guarantee | Probe | Suite |
 |---|---|---|
 | A cage-written dangerous git config key is reported | `gitcheck: planted core.hooksPath makes git-check exit non-zero` | gitcheck |
+| A config file git cannot parse is a finding (fail closed) | `gitcheck: a config git cannot parse is a finding, not clean` | gitcheck |
+| A new truncation of the repository walk is a finding, never silent | `gitcheck: a directory tree deeper than git_check_depth is a NEW truncation, reported` | gitcheck |
+| A repository created under a non-repository root is a finding | `gitcheck: a repository appearing under a non-repo root is a finding (repo-added)` | gitcheck |
+| A scripted (--json) check with findings sets the pending marker | `gitcheck: --json findings set the marker (same rule as the human path)` | gitcheck |
+| A truncated walk at baseline is announced at launch | `gitcheck: a baseline taken over a truncated tree announces the truncation at launch` | gitcheck |
 | An acknowledgement accepts the current state as the new baseline | `gitcheck: after --ack the acknowledged state is the new baseline (next check clean)` | gitcheck |
+| An acknowledgement token for a state that has since changed is refused | `gitcheck: a stale token (the state moved on) is refused` | gitcheck |
+| An acknowledgement without the reviewed state's token is refused | `gitcheck: a bare --ack with findings is refused (exit non-zero)` | gitcheck |
+| An ext:: transport on a remote URL is a finding | `gitcheck: an ext:: remote url is a finding` | gitcheck |
 | An unchecked session is surfaced in tjor ls | `gitcheck: ls surfaces the unchecked session` | gitcheck |
 | Everyday git writes are not findings | `gitcheck: push -u shaped writes are clean (exit zero)` | gitcheck |
 | Findings keep the pending marker | `gitcheck: marker survives findings` | gitcheck |

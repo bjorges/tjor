@@ -416,7 +416,11 @@ if [[ -n "${broker_covers_gh_api}" ]]; then
 else
     # Not covered => gh gets NOTHING, enforced rather than assumed (v0.20.1
     # review): an ambient token — a direct `docker run -e GH_TOKEN=…`, an
-    # image-baked value — must never ride into the cage un-brokered.
+    # image-baked value — must never ride into the cage un-brokered. This
+    # branch is ALSO the broker-disabled case, on purpose (v0.20.4 review):
+    # with no broker there is nothing to hand gh, and an ambient token is
+    # exactly as un-brokered; the launcher never forwards GH_TOKEN either
+    # way, so this only ever bites a direct docker run or a baked image.
     unset GH_TOKEN
 fi
 

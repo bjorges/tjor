@@ -878,15 +878,18 @@ class TjorPolicy:
         # certificate against it — with `ssl_insecure` a forged SNI would steer
         # a credential to any server. Nothing in tjor sets it; refuse to run if
         # anything ever does, rather than silently reopening that door.
+        # Raised, not scheduled (v0.20.4 review): OptionsError from configure
+        # is mitmproxy's synchronous rejection — startup aborts before any
+        # flow is handled, where shutdown() was an async signal.
         try:
-            from mitmproxy import ctx
-            if getattr(ctx.options, "ssl_insecure", False):
-                print("tjor: FATAL: ssl_insecure is set — upstream certificates would not be verified, "
-                      "so credential injection keyed on SNI would be forgeable; refusing to run",
-                      file=sys.stderr, flush=True)
-                ctx.master.shutdown()
+            from mitmproxy import ctx, exceptions
         except ImportError:
-            pass
+            return
+        if getattr(ctx.options, "ssl_insecure", False):
+            msg = ("tjor: FATAL: ssl_insecure is set — upstream certificates would not be verified, "
+                   "so credential injection keyed on SNI would be forgeable; refusing to run")
+            print(msg, file=sys.stderr, flush=True)
+            raise exceptions.OptionsError(msg)
 
     def server_connect(self, data) -> None:
         # Resolve-and-pin (#41): validate the destination HERE — the hook that

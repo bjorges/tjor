@@ -3,6 +3,78 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+Review follow-ups for v0.20.4 → v0.21.1 (external review of the batch; every
+Critical and High below was confirmed against the code before fixing).
+
+### Security
+- **`tjor init`/`trust`/`policy`/`doctor` stop on a core.worktree redirect
+  (v0.20.4 review, Critical).** `repo_root()` ran the guarded resolver
+  inside command substitution, where `die()` exits only the subshell: the
+  redirect was printed and then ignored — `init`/`trust` went on to say
+  "run inside a git repository", `policy` and `doctor` fell through to the
+  user policy. Every `$(repo_root)`/`$(policy_file)` consumer now propagates
+  the refusal; the launcher test drives all four commands against a planted
+  redirect and asserts nothing was scaffolded.
+- **`ext::`/`fd::` transports on `remote.*.url`/`pushurl` and
+  `submodule.*.url` are findings (v0.21.1 review, Critical).**
+  `ext::<command>` runs on every fetch, pull, push and clone; the value-based
+  rule mirrors the `!`-alias one, an https/ssh URL stays quiet. Added to the
+  documented set as well: `sendemail.smtpServerCommand`/`sendmailCmd` (and
+  per identity), `sendemail.smtpServer` as a program path, `imap.tunnel`,
+  `protocol.allow`/`protocol.*.allow`, `trailer.*.command`/`cmd`,
+  `guitool.*.cmd`, `init.templateDir`.
+- **A truncated repository walk is never silent (v0.21.1 review,
+  Critical).** The depth cap — now `[landlock] git_check_depth`, default
+  32, was a fixed 12 — and unreadable directories are recorded in every
+  snapshot: announced at launch, and a NEW spot after the baseline is a
+  finding. A repo planted below a spot already truncated at launch remains
+  the documented residual, named in the README.
+- **An unparseable git config is a finding, never "no dangerous keys"
+  (v0.21.1 review, Critical).** `git config --list` failing records the file
+  as unreadable, reported at every check with git's error (fail closed, like
+  the hooks path).
+- **A symlinked `.git`, `.git/hooks` or `.git/config` refuses the launch
+  (v0.21.0 review, High).** `mkdir -p` and the bind mount both follow the
+  final component, so a link a previous session planted could have steered
+  the hooks mask (or the config pin) onto a chosen path under an
+  ordinary-looking launch line. The refusal names the link, its target, the
+  fix and the opt-out; the check also reports a hooks dir or `.git` turned
+  symlink.
+- **`--json` sets the pending marker on findings (v0.21.1 review, High)** —
+  the same rule as the human path; its output is escape-sanitized like the
+  terminal's, and credentials embedded in URL-shaped keys or values are
+  redacted in both.
+- **`--ack` is bound to the reviewed state (v0.21.1 review, High).**
+  Findings print a token; `tjor git-check --ack <token>` accepts exactly
+  that state as the new baseline. A bare `--ack`, a wrong token or a stale
+  one (the state moved on) shows the findings and refuses.
+- **Every value of a repeated key is compared (v0.21.1 review, Medium):** a
+  value slipped between two legitimate `safe.directory` entries was
+  invisible to a last-value-wins dict.
+- **`ssl_insecure` is rejected synchronously (v0.20.4 review, Low):** the
+  addon's `configure` raises `OptionsError` instead of scheduling a
+  shutdown.
+
+### Changed
+- Pending-marker writes are atomic (write, then rename) through one helper;
+  the repo-coverage, roots and re-baseline lookups moved from inline
+  heredocs into `tjor_gitcheck.py` (`covers`, `roots`, `rebaseline`);
+  discovery is one walk per snapshot instead of one per repository; the
+  hooks-mask `find` prunes below `.git`. `tjor git-check --json` now prints
+  an object (`findings`, `token`, `incomplete`) instead of a bare list.
+- One `gate_sensitive_path` for the workspace and every `--dir`/`--dir-ro`
+  (three verbatim copies before); `dir_is_sensitive` initializes its own
+  roots (the ordering dependency is gone); one `mask_covered` helper for the
+  four mask blocks; the git masks live in `plan_git_masks`, driven directly
+  by the launcher test.
+- `GH_TOKEN` is unset whenever the broker does not cover the API host —
+  including a disabled broker — documented as intentional (README, ADR 0007)
+  and covered by the live broker test. New tests: `doctor`/`init`/`trust`/
+  `policy` redirect refusals; a worktree whose common dir lies outside every
+  root; every documented dangerous key has a unit case.
+
 ## [0.21.1] — 2026-09-27 — Git tamper detection: tjor git-check, launch baseline, crash-safe marker (#72)
 
 ### Security

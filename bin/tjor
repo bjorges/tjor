@@ -71,6 +71,10 @@ safeprint() { printf %s "$1" | python3 "${TJOR_ROOT}/python/tjor_safeprint.py"; 
 # The active policy file, most-specific first: explicit override → a TRUSTED
 # repo .tjor/policy.toml → the user policy → the packaged default. A repo
 # policy is honored only after `tjor trust` (it can widen egress).
+# Every consumer runs through command substitution, and die() inside `$()`
+# exits only that subshell (v0.20.4 review): EVERY `x="$(repo_root)"` and
+# `x="$(policy_file)"` is followed by `|| exit 1`, all the way up the chain,
+# so a refused redirect stops the command instead of reading as "no repo".
 repo_root() { # echoes the current repo's toplevel, or nothing; dies on a core.worktree redirect (#76)
     if [[ -n "${TJOR_WORKSPACE:-}" ]]; then printf '%s' "${TJOR_WORKSPACE}"; return 0; fi
     workspace_toplevel
@@ -79,7 +83,7 @@ repo_root() { # echoes the current repo's toplevel, or nothing; dies on a core.w
 policy_file() {
     if [[ -n "${TJOR_POLICY_OVERRIDE:-}" ]]; then echo "${TJOR_POLICY_OVERRIDE}"; return; fi
     local root repo
-    root="$(repo_root)"
+    root="$(repo_root)" || exit 1
     repo="${root}/.tjor/policy.toml"
     if [[ -n "${root}" && -f "${repo}" ]]; then
         if python3 "${TJOR_ROOT}/python/tjor_trust.py" check "${repo}" >/dev/null 2>&1; then
@@ -139,7 +143,8 @@ self_mount_overlaps() { # $1 = canonical root
 # nested repo — is baselined at launch and diffed at harness exit, at teardown
 # and on demand (`tjor git-check`). The baseline and a PENDING marker live under
 # the session state dir (never mounted into the cage); the marker is written
-# before the agent starts and cleared ONLY by a clean check or `--ack`, so a
+# before the agent starts and cleared ONLY by a clean check or a token-bound
+# `--ack` (the token names the findings that were reviewed), so a
 # crash leaves it — and `tjor ls` shows it. python/tjor_gitcheck.py decides;
 # this only orchestrates and renders (findings arrive already sanitized).
 session_root() {
@@ -148,20 +153,46 @@ session_root() {
     r="$(cfg session.root --default "~/.tjor/sessions")"; printf '%s' "${r/#\~/$HOME}"
 }
 
-gitcheck_baseline() { # $1 = session dir; $2.. = writable mount roots
-    local dir="$1" n; shift
+gitcheck_mark_pending() { # $1 = session dir, $2 = roots (space-joined) — atomic (write, then rename): a crash mid-write never leaves a torn marker
+    local dir="$1" roots="$2"
     mkdir -p "${dir}/gitcheck"
-    n="$(python3 "${TJOR_ROOT}/python/tjor_gitcheck.py" snapshot --out "${dir}/gitcheck/baseline.json" "$@" 2>&1 >/dev/null)" \
-        || die "git-check baseline failed: ${n}"
-    printf 'launched=%s\nroots=%s\n' "$(date +%s)" "$*" > "${dir}/gitcheck/pending"
+    printf 'launched=%s\nroots=%s\n' "$(date +%s)" "${roots}" > "${dir}/gitcheck/pending.tmp"
+    mv -f "${dir}/gitcheck/pending.tmp" "${dir}/gitcheck/pending"
+}
+
+gitcheck_roots() { # $1 = session dir → the baseline's roots, one per line
+    python3 "${TJOR_ROOT}/python/tjor_gitcheck.py" roots "$1/gitcheck/baseline.json" 2>/dev/null
+}
+
+gitcheck_roots_line() { # $1 = session dir → the baseline's roots, space-joined (the marker's spelling)
+    gitcheck_roots "$1" | tr '\n' ' ' | sed 's/ $//'
+}
+
+gitcheck_baseline() { # $1 = session dir; $2.. = writable mount roots
+    local dir="$1" out n line depth; shift
+    depth="$(cfg landlock.git_check_depth --default 32)"
+    [[ "${depth}" =~ ^[0-9]+$ ]] || die "landlock.git_check_depth must be a whole number of directory levels (got '${depth}')"
+    mkdir -p "${dir}/gitcheck"
+    if ! out="$(python3 "${TJOR_ROOT}/python/tjor_gitcheck.py" snapshot --max-depth "${depth}" --out "${dir}/gitcheck/baseline.json" "$@" 2>&1 >/dev/null)"; then
+        die "git-check baseline failed: ${out}"
+    fi
+    n="${out##*$'\n'}"
+    [[ "${n}" =~ ^[0-9]+$ ]] || die "git-check baseline failed: ${out}"
+    # Every line before the count says where discovery STOPPED (the depth
+    # cap, an unreadable directory): announced at launch, never silent — a
+    # repository planted below such a spot is invisible to this check.
+    while IFS= read -r line; do
+        if [[ -n "${line}" && "${line}" != "${n}" ]]; then warn "git-check: $(safeprint "${line}")"; fi
+    done <<<"${out}"
+    gitcheck_mark_pending "${dir}" "$*"
     echo "tjor: git-check baseline recorded (${n} repos) — checked at exit, at teardown, and on demand: tjor git-check" >&2
 }
 
-gitcheck_run() { # $1 = session dir, $2 = moment → 0 clean (marker cleared) / 1 findings (marker kept)
-    local dir="$1" moment="$2" out rc sid
+gitcheck_run() { # $1 = session dir, $2 = moment → 0 clean (marker cleared) / 1 findings (marker set)
+    local dir="$1" moment="$2" out rc sid tok
     [[ -f "${dir}/gitcheck/baseline.json" ]] || return 0
     sid="$(basename "${dir}")"
-    out="$(python3 "${TJOR_ROOT}/python/tjor_gitcheck.py" check "${dir}/gitcheck/baseline.json" 2>&1)"; rc=$?
+    if out="$(python3 "${TJOR_ROOT}/python/tjor_gitcheck.py" check "${dir}/gitcheck/baseline.json" 2>&1)"; then rc=0; else rc=$?; fi
     if [[ ${rc} -eq 0 ]]; then
         rm -f "${dir}/gitcheck/pending"
         echo "tjor: git-check clean at ${moment} — no cage-written git metadata that would run on the host" >&2
@@ -171,8 +202,9 @@ gitcheck_run() { # $1 = session dir, $2 = moment → 0 clean (marker cleared) / 
     printf '%s\n' "${out}" | sed 's/^/tjor: /' >&2
     # Findings SET the marker (it may have been acknowledged earlier and new
     # writes happened since): the flag always reflects the latest verdict.
-    [[ -f "${dir}/gitcheck/pending" ]] || printf 'launched=%s\nroots=%s\n' "$(date +%s)" "$(python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1])).get("roots", [])))' "${dir}/gitcheck/baseline.json" 2>/dev/null)" > "${dir}/gitcheck/pending"
-    echo "tjor: the pending marker is set until a clean check, or: tjor git-check --session ${sid} --ack (accepts the current state as the new baseline)" >&2
+    gitcheck_mark_pending "${dir}" "$(gitcheck_roots_line "${dir}")"
+    tok="$(sed -n 's/^git-check token: //p' <<<"${out}" | tail -1)"
+    echo "tjor: the pending marker is set until a clean check, or until you accept exactly this reviewed state: tjor git-check --session ${sid} --ack ${tok:-<token>}" >&2
     return 1
 }
 
@@ -188,15 +220,18 @@ gitcheck_pending_report() { # every session whose marker is still pending (crash
     return 0
 }
 
-cmd_git_check() { # [<repo> | --session <name|id>] [--ack] [--json]
-    local name="" ack="" json="" repo="" d root canon rc=0
+cmd_git_check() { # [<repo> | --session <name|id>] [--ack [<token>]] [--json]
+    local use="usage: tjor git-check [<repo> | --session <name|id>] [--ack [<token>]] [--json]"
+    local name="" ack="" ack_token="" json="" repo="" d root canon rc=0 sid cur out crc
     local -a dirs=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
-            --session) [[ -n "${2:-}" ]] || die "usage: tjor git-check [<repo> | --session <name|id>] [--ack] [--json]"; name="$2"; shift 2 ;;
-            --ack) ack=1; shift ;;
+            --session) [[ -n "${2:-}" ]] || die "${use}"; name="$2"; shift 2 ;;
+            --ack) ack=1; shift
+                   if [[ "${1:-}" =~ ^[0-9a-f]{12}$ ]]; then ack_token="$1"; shift; fi ;;
+            --ack=*) ack=1; ack_token="${1#--ack=}"; shift ;;
             --json) json=1; shift ;;
-            -*) die "usage: tjor git-check [<repo> | --session <name|id>] [--ack] [--json]" ;;
+            -*) die "${use}" ;;
             *) repo="$1"; shift ;;
         esac
     done
@@ -207,12 +242,9 @@ cmd_git_check() { # [<repo> | --session <name|id>] [--ack] [--json]
         # Every session baseline whose roots cover the repo (equal or ancestor).
         for d in "${root}"/*/gitcheck/baseline.json; do
             [[ -f "${d}" ]] || continue
-            if python3 - "${d}" "${canon}" <<'PY'
-import json, sys
-b = json.load(open(sys.argv[1])); p = sys.argv[2]
-sys.exit(0 if any(p == r or p.startswith(r.rstrip("/") + "/") for r in b.get("roots", [])) else 1)
-PY
-            then dirs+=("$(dirname "$(dirname "${d}")")"); fi
+            if python3 "${TJOR_ROOT}/python/tjor_gitcheck.py" covers "${d}" "${canon}"; then
+                dirs+=("$(dirname "$(dirname "${d}")")")
+            fi
         done
         ((${#dirs[@]})) || die "no session baseline covers ${canon} — nothing to check (a baseline is recorded when tjor launches a session there)"
     else
@@ -220,27 +252,51 @@ PY
         dirs=("${TJOR_SESSION_DIR}")
     fi
     for d in "${dirs[@]}"; do
+        sid="$(basename "${d}")"
         if [[ ! -f "${d}/gitcheck/baseline.json" ]]; then
-            warn "session $(basename "${d}") has no git-check baseline"; continue
-        fi
-        if [[ -n "${json}" ]]; then
-            if python3 "${TJOR_ROOT}/python/tjor_gitcheck.py" check "${d}/gitcheck/baseline.json" --json; then rm -f "${d}/gitcheck/pending"; else rc=1; fi
-        elif ! gitcheck_run "${d}" "on demand (session $(basename "${d}"))"; then
-            rc=1
+            warn "session ${sid} has no git-check baseline"; continue
         fi
         if [[ -n "${ack}" ]]; then
             # Acknowledge = accept the CURRENT state as the new baseline, so
             # the same reviewed findings are not re-reported at the next
-            # check; anything written after this point is.
-            local -a roots=()
-            mapfile -t roots < <(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1])).get("roots", [])))' "${d}/gitcheck/baseline.json")
-            python3 "${TJOR_ROOT}/python/tjor_gitcheck.py" snapshot --out "${d}/gitcheck/baseline.json" "${roots[@]}" >/dev/null 2>&1 \
-                || warn "git-check: could not re-baseline session $(basename "${d}")"
+            # check; anything written afterwards is. REVIEWED is enforced,
+            # not assumed (v0.21.1 review): with findings present the ack
+            # must carry the token printed with exactly those findings — a
+            # bare --ack shows them and refuses, so muscle memory or a script
+            # cannot bless a poisoned repo unseen; a stale token (the state
+            # moved on) is refused the same way with the current token.
+            cur="$(python3 "${TJOR_ROOT}/python/tjor_gitcheck.py" check "${d}/gitcheck/baseline.json" --token 2>/dev/null || true)"
+            if [[ -n "${cur}" && "${ack_token}" != "${cur}" ]]; then
+                gitcheck_run "${d}" "before acknowledging (session ${sid})" || true
+                if [[ -n "${ack_token}" ]]; then
+                    loud "git-check: the state changed since token ${ack_token} was issued — review the findings above, then accept exactly that state with: tjor git-check --session ${sid} --ack ${cur}"
+                else
+                    loud "git-check: refusing to acknowledge unreviewed findings — review the findings above, then accept exactly that state with: tjor git-check --session ${sid} --ack ${cur}"
+                fi
+                rc=1; continue
+            fi
+            if ! python3 "${TJOR_ROOT}/python/tjor_gitcheck.py" rebaseline "${d}/gitcheck/baseline.json" >/dev/null 2>&1; then
+                warn "git-check: could not re-baseline session ${sid} — marker kept"; rc=1; continue
+            fi
             rm -f "${d}/gitcheck/pending"
-            echo "tjor: git-check acknowledged for session $(basename "${d}") — current state accepted as the new baseline, pending marker cleared" >&2
+            echo "tjor: git-check acknowledged for session ${sid} — current state accepted as the new baseline, pending marker cleared" >&2
+            continue
+        fi
+        if [[ -n "${json}" ]]; then
+            # Same marker rule as the human path (v0.21.1 review): findings
+            # SET it, a clean result clears it — a scripted consumer must
+            # never leave a tampered session looking clean to `tjor ls`.
+            if out="$(python3 "${TJOR_ROOT}/python/tjor_gitcheck.py" check "${d}/gitcheck/baseline.json" --json)"; then crc=0; else crc=$?; fi
+            printf '%s\n' "${out}"
+            if [[ ${crc} -eq 0 ]]; then
+                rm -f "${d}/gitcheck/pending"
+            else
+                gitcheck_mark_pending "${d}" "$(gitcheck_roots_line "${d}")"; rc=1
+            fi
+        elif ! gitcheck_run "${d}" "on demand (session ${sid})"; then
+            rc=1
         fi
     done
-    if [[ -n "${ack}" ]]; then return 0; fi
     return "${rc}"
 }
 
@@ -352,7 +408,7 @@ wait_internal_ip() { # svc net -> echoes a validated IP, or fails
 
 ensure_topology() { # expects TJOR_PROJECT, TJOR_SESSION_DIR exported
     local pfile session_policy corefile
-    pfile="$(policy_file)"
+    pfile="$(policy_file)" || exit 1
     session_policy="${TJOR_SESSION_DIR}/policy.toml"
     corefile="${TJOR_SESSION_DIR}/Corefile"
     cp "${pfile}" "${session_policy}"
@@ -1037,17 +1093,13 @@ resolve_session() { # $1 = harness, $2 = task id (optional), $3 = session name (
     # and it is loud only when it actually overrides a refusal.
     if [[ "${4:-}" == "launch" ]]; then
         init_sensitive_roots
-        if dir_is_sensitive "${ws}"; then
-            if [[ -n "${TJOR_UNSAFE_DIR:-}" ]]; then
-                warn "--unsafe-dir: mounting sensitive host path ${ws} as the workspace, READ-WRITE and git-trusted as a tree — every credential under it is exposed to the agent"
-            else
-                cwd="$(pwd -P)"
-                if [[ -n "${in_repo}" && "${cwd}" != "${ws}" ]]; then
-                    gitdir="$(git rev-parse --absolute-git-dir 2>/dev/null || echo "${ws}/.git")"
-                    die "${cwd} is not a repository; git resolved the workspace to ${ws} via ${gitdir} — launch from a repository (or pass --unsafe-dir)"
-                fi
-                die "refusing to use sensitive host path as the workspace: ${ws} (pass --unsafe-dir to override — this mounts it read-write into the agent)"
+        if ! gate_sensitive_path "${ws}" workspace; then
+            cwd="$(pwd -P)"
+            if [[ -n "${in_repo}" && "${cwd}" != "${ws}" ]]; then
+                gitdir="$(git rev-parse --absolute-git-dir 2>/dev/null || echo "${ws}/.git")"
+                die "${cwd} is not a repository; git resolved the workspace to ${ws} via ${gitdir} — launch from a repository (or pass --unsafe-dir)"
             fi
+            die "refusing to use sensitive host path as the workspace: ${ws} (pass --unsafe-dir to override — this mounts it read-write into the agent)"
         fi
     fi
     # shellcheck disable=SC2088  # literal ~ is expanded on the next line
@@ -1204,6 +1256,7 @@ init_sensitive_roots() {
 # (resolve_session, launch path) and to every --dir/--dir-ro (cmd_run).
 dir_is_sensitive() { # $1 = absolute path (already symlink-resolved by pwd -P)
     local p="$1" s home="${HOME%/}"   # strip any trailing slash so ${home}/x matches
+    [[ -n "${TJOR_SENSITIVE_SESSION_ROOT}" ]] || init_sensitive_roots   # ordering guard: never a silent no-op
     case "${p}" in
         / | /etc | /etc/* | /root | /root/* | /boot | /boot/* | /sys | /sys/* \
         | /proc | /proc/* | /dev | /dev/* \
@@ -1229,6 +1282,30 @@ dir_is_sensitive() { # $1 = absolute path (already symlink-resolved by pwd -P)
         [[ "${p}" == "${r}" || "${r}" == "${p}/"* || "${p}" == "${r}/"* ]] && return 0
     done
     return 1
+}
+
+# The ONE sensitive-path gate for the workspace and every --dir/--dir-ro
+# (v0.19.0 review: three verbatim copies before). --unsafe-dir (TJOR_UNSAFE_DIR)
+# is the single override, loud only when it actually overrides. Returns 0 when
+# the path may be mounted; for --dir/--dir-ro a refusal dies here with the
+# role's wording, for the workspace it returns 1 so resolve_session can say
+# whether git climbed above the launch directory to reach the path.
+gate_sensitive_path() { # $1 = physical path, $2 = workspace | --dir | --dir-ro
+    local p="$1" role="$2"
+    dir_is_sensitive "${p}" || return 0
+    if [[ -n "${TJOR_UNSAFE_DIR:-}" ]]; then
+        case "${role}" in
+            workspace) warn "--unsafe-dir: mounting sensitive host path ${p} as the workspace, READ-WRITE and git-trusted as a tree — every credential under it is exposed to the agent" ;;
+            --dir)     warn "--unsafe-dir: mounting sensitive host path ${p} READ-WRITE into the agent — every credential under it is exposed" ;;
+            *)         warn "--unsafe-dir: mounting sensitive host path ${p} read-only into the agent — its contents are exposed" ;;
+        esac
+        return 0
+    fi
+    case "${role}" in
+        workspace) return 1 ;;
+        --dir)     die "refusing to mount sensitive host path into the agent: ${p} (pass --unsafe-dir to override — this exposes it read-write to the agent)" ;;
+        *)         die "refusing to mount sensitive host path into the agent: ${p} (pass --unsafe-dir to override — even read-only, this exposes its contents to the agent)" ;;
+    esac
 }
 
 cmd_run() {
@@ -1269,10 +1346,7 @@ cmd_run() {
         abs="$(cd "${d}" && pwd -P)" || die "--dir path unreadable: ${d}"
         [[ "${abs}" == "${TJOR_WORKSPACE}" ]] && continue   # primary already mounted
         for seen in "${TJOR_EXTRA_DIRS[@]:-}"; do [[ "${abs}" == "${seen}" ]] && continue 2; done
-        if dir_is_sensitive "${abs}"; then
-            [[ -n "${unsafe_dir}" ]] || die "refusing to mount sensitive host path into the agent: ${abs} (pass --unsafe-dir to override — this exposes it read-write to the agent)"
-            warn "--unsafe-dir: mounting sensitive host path ${abs} READ-WRITE into the agent — every credential under it is exposed"
-        fi
+        gate_sensitive_path "${abs}" --dir
         TJOR_EXTRA_DIRS+=("${abs}")
     done
     # Read-only extras (--dir-ro, #44): same resolution and refusal rules as
@@ -1292,10 +1366,7 @@ cmd_run() {
                 && die "conflicting mounts: ${abs} is given via both --dir and --dir-ro — pick one writability"
         done
         for seen in "${TJOR_EXTRA_DIRS_RO[@]:-}"; do [[ "${abs}" == "${seen}" ]] && continue 2; done
-        if dir_is_sensitive "${abs}"; then
-            [[ -n "${unsafe_dir}" ]] || die "refusing to mount sensitive host path into the agent: ${abs} (pass --unsafe-dir to override — even read-only, this exposes its contents to the agent)"
-            warn "--unsafe-dir: mounting sensitive host path ${abs} read-only into the agent — its contents are exposed"
-        fi
+        gate_sensitive_path "${abs}" --dir-ro
         TJOR_EXTRA_DIRS_RO+=("${abs}")
     done
     # Overlapping roots with DIFFERENT writability classes are refused, in
@@ -1373,6 +1444,100 @@ cmd_run() {
     run_agent "${detach}" "${agent_cmd[@]}"
 }
 
+# Skip-if-covered for every launch-time mask (one helper, four users): a path
+# already masked, or one below a masked directory — structurally empty in-cage
+# already, and a mount there would fail on the read-only empty mountpoint.
+# Reads run_agent's masked/dirmasked through bash's dynamic scoping.
+mask_covered() { # $1 = host path → 0 when a mask already covers it
+    local p="$1" prev
+    [[ -n "${masked[${p}]:-}" ]] && return 0
+    for prev in "${!dirmasked[@]}"; do [[ "${p}" == "${prev}"/* ]] && return 0; done
+    return 1
+}
+
+# A git metadata path that is a SYMLINK is refused, never followed (v0.21.0
+# review): `mkdir -p` and a bind mount both resolve the final component, so a
+# link a previous in-cage session planted (`.git/hooks -> /anywhere/writable`)
+# would steer the mask — or the config pin — onto a path the agent chose,
+# while the launch line still read as an ordinary mask. Replace the link with
+# the real thing, or opt out of git metadata masking; never mask through it.
+refuse_git_symlink() { # $1 = path, $2 = what it is, $3 = what to replace it with
+    local target; target="$(readlink "$1" 2>/dev/null || echo '?')"
+    die "refusing: $(safeprint "$1") ($2) is a symbolic link to $(safeprint "${target}") — tjor masks git metadata by path and will not follow a link a previous session could have planted; replace it with a real $3 (remove the link, then recreate it), or set mask_git_hooks = false and protect_git_config = false under [landlock] to skip git metadata masking"
+}
+
+# Git metadata masks (#71, spec: kernel-sandbox): the hooks directory of
+# every git dir under a WRITABLE root is masked with the same read-only
+# empty bind mask_dirs uses — a cage-written hook would otherwise run in
+# the operator's HOST git on the next ordinary command, outside every
+# boundary. Discovery targets .git itself and prunes below it (objects/ can
+# be huge): a .git DIR is its own git dir; a .git FILE is a worktree pointer
+# whose common dir is masked only when it lies under a writable root (else
+# it is unreachable in-cage anyway); a .git SYMLINK is refused. Read-only
+# roots need no mask. A missing hooks dir is created on the host first so
+# the mask has a mountpoint (the one host-side write here; an empty hooks
+# dir is inert to git). protect_git_config (opt-in) pins each git dir's
+# config over itself :ro: git replaces config by rename, and a mountpoint
+# cannot be renamed over, so every write fails while reads work (cost listed
+# in the docs). Residuals, documented: core.hooksPath bypasses the hooks
+# mask without the pin; repos created mid-session are not masked; siblings
+# under one writable parent are not isolated from each other. The worktree
+# rev-parse below runs host git in the repo: it reads config and runs
+# nothing config-driven (no hook, pager, fsmonitor, credential or ssh
+# command is reached on that path).
+# Reads run_agent's safe[], ro_dirs, empty_src, masked/dirmasked/mounts.
+plan_git_masks() {
+    local git_hooks_on git_cfg_pin dir entry gitdir hooks cfgfile under w
+    git_hooks_on="$(cfg landlock.mask_git_hooks --default true)"
+    git_cfg_pin="$(cfg landlock.protect_git_config --default false)"
+    [[ "${git_hooks_on}" != "false" || "${git_cfg_pin}" == "true" ]] || return 0
+    if [[ -z "${empty_src:-}" ]]; then
+        empty_src="${TJOR_SESSION_DIR}/mask-empty"
+        rm -rf "${empty_src}"; mkdir -p "${empty_src}"
+    fi
+    for dir in "${safe[@]:-}"; do
+        [[ -n "${dir}" ]] || continue
+        if grep -qxF -- "${dir}" <<<"${ro_dirs}"; then continue; fi   # read-only root: unwritable already
+        while IFS= read -r -d '' entry; do
+            if [[ -L "${entry}" ]]; then refuse_git_symlink "${entry}" "a .git entry" "directory or worktree file"; fi
+            if [[ -d "${entry}" ]]; then
+                gitdir="${entry}"
+            elif [[ -f "${entry}" ]]; then
+                gitdir="$(git -C "$(dirname "${entry}")" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
+                [[ -n "${gitdir}" && -d "${gitdir}" ]] || continue
+            else
+                continue
+            fi
+            under=""
+            for w in "${safe[@]:-}"; do
+                [[ -n "${w}" ]] || continue
+                if grep -qxF -- "${w}" <<<"${ro_dirs}"; then continue; fi
+                if [[ "${gitdir}" == "${w}" || "${gitdir}" == "${w}/"* ]]; then under=1; break; fi
+            done
+            [[ -n "${under}" ]] || continue
+            if [[ "${git_hooks_on}" != "false" ]]; then
+                hooks="${gitdir}/hooks"
+                if [[ -L "${hooks}" ]]; then refuse_git_symlink "${hooks}" "git hooks dir" "directory"; fi
+                if ! mask_covered "${hooks}"; then
+                    [[ -d "${hooks}" ]] || mkdir -p "${hooks}"   # a mountpoint for the mask
+                    masked["${hooks}"]=1; dirmasked["${hooks}"]=1
+                    mounts+=(--volume "${empty_src}:${hooks}:ro")
+                    echo "tjor: + dir mask $(safeprint "${hooks}") (git hooks)" >&2
+                fi
+            fi
+            if [[ "${git_cfg_pin}" == "true" ]]; then
+                cfgfile="${gitdir}/config"
+                if [[ -L "${cfgfile}" ]]; then refuse_git_symlink "${cfgfile}" "git config" "file"; fi
+                if [[ -f "${cfgfile}" ]] && ! mask_covered "${cfgfile}"; then
+                    masked["${cfgfile}"]=1
+                    mounts+=(--volume "${cfgfile}:${cfgfile}:ro")
+                    echo "tjor: + config pin $(safeprint "${cfgfile}") (protect_git_config)" >&2
+                fi
+            fi
+        done < <(find "${dir}" \( -type d -o -type f -o -type l \) -name .git -print0 -prune 2>/dev/null)
+    done
+}
+
 # Launch the agent DETACHED and persistent, then (unless --detach) attach to
 # it. Detached + no --rm is what makes `tjor attach` meaningful: the
 # container outlives the launching terminal, so a dropped connection leaves a
@@ -1447,7 +1612,7 @@ run_agent() { # $1 = detach flag, $2.. = command
     # Works on every runtime, even where Landlock is unavailable; a mount
     # target cannot be unlinked or replaced from inside the container.
     # Residual (documented): a dotenv file created mid-session is not masked.
-    local mp deny_list entry prev mask_list empty_src
+    local mp deny_list entry mask_list empty_src
     declare -A masked=()
     local -A dirmasked=()
     # Directory masks ([landlock].mask_dirs, #43): extend the /dev/null-style
@@ -1487,7 +1652,7 @@ for e in json.load(sys.stdin):
             [[ -n "${entry}" ]] || continue
             if [[ "${entry}" == /* ]]; then
                 if [[ -d "${entry}" ]]; then
-                    if [[ -z "${masked[${entry}]:-}" ]]; then
+                    if ! mask_covered "${entry}"; then
                         masked["${entry}"]=1; dirmasked["${entry}"]=1
                         mounts+=(--volume "${empty_src}:${entry}:ro")
                         echo "tjor: + dir mask $(safeprint "${entry}")" >&2
@@ -1499,11 +1664,7 @@ for e in json.load(sys.stdin):
                 for dir in "${safe[@]:-}"; do
                     [[ -n "${dir}" ]] || continue
                     while IFS= read -r -d '' mp; do
-                        [[ -n "${masked[${mp}]:-}" ]] && continue
-                        # A hit nested inside an already-masked dir is
-                        # already structurally empty — and mounting into it
-                        # would fail (read-only empty mountpoint).
-                        for prev in "${!dirmasked[@]}"; do [[ "${mp}" == "${prev}"/* ]] && continue 2; done
+                        mask_covered "${mp}" && continue
                         masked["${mp}"]=1; dirmasked["${mp}"]=1
                         mounts+=(--volume "${empty_src}:${mp}:ro")
                         echo "tjor: + dir mask $(safeprint "${mp}")" >&2
@@ -1512,91 +1673,14 @@ for e in json.load(sys.stdin):
             fi
         done <<<"${mask_list}"
     fi
-    # Git metadata masks (#71, spec: kernel-sandbox): the hooks directory of
-    # every git dir under a WRITABLE root is masked with the same read-only
-    # empty bind mask_dirs uses — a cage-written hook would otherwise run in
-    # the operator's HOST git on the next ordinary command, outside every
-    # boundary. Discovery targets .git itself (the other masks prune it): a
-    # .git DIR is its own git dir; a .git FILE is a worktree pointer whose
-    # common dir is masked only when it lies under a writable root (else it
-    # is unreachable in-cage anyway). Read-only roots need no mask. A missing
-    # hooks dir is created on the host first so the mask has a mountpoint
-    # (the one host-side write here; an empty hooks dir is inert to git).
-    # protect_git_config (opt-in) pins each git dir's config over itself :ro:
-    # git replaces config by rename, and a mountpoint cannot be renamed over,
-    # so every write fails while reads work (cost listed in the docs).
-    # Residuals, documented: core.hooksPath bypasses the hooks mask without
-    # the pin; repos created mid-session are not masked; siblings under one
-    # writable parent are not isolated from each other.
-    local git_hooks_on git_cfg_pin gitdir hooks cfgfile under w skip
-    git_hooks_on="$(cfg landlock.mask_git_hooks --default true)"
-    git_cfg_pin="$(cfg landlock.protect_git_config --default false)"
-    if [[ "${git_hooks_on}" != "false" || "${git_cfg_pin}" == "true" ]]; then
-        if [[ -z "${empty_src:-}" ]]; then
-            empty_src="${TJOR_SESSION_DIR}/mask-empty"
-            rm -rf "${empty_src}"; mkdir -p "${empty_src}"
-        fi
-        for dir in "${safe[@]:-}"; do
-            [[ -n "${dir}" ]] || continue
-            if grep -qxF -- "${dir}" <<<"${ro_dirs}"; then continue; fi   # read-only root: unwritable already
-            while IFS= read -r -d '' entry; do
-                if [[ -d "${entry}" ]]; then
-                    gitdir="${entry}"
-                elif [[ -f "${entry}" ]]; then
-                    gitdir="$(git -C "$(dirname "${entry}")" rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true)"
-                    [[ -n "${gitdir}" && -d "${gitdir}" ]] || continue
-                else
-                    continue
-                fi
-                under=""
-                for w in "${safe[@]:-}"; do
-                    [[ -n "${w}" ]] || continue
-                    if grep -qxF -- "${w}" <<<"${ro_dirs}"; then continue; fi
-                    if [[ "${gitdir}" == "${w}" || "${gitdir}" == "${w}/"* ]]; then under=1; break; fi
-                done
-                [[ -n "${under}" ]] || continue
-                if [[ "${git_hooks_on}" != "false" ]]; then
-                    hooks="${gitdir}/hooks"
-                    if [[ -z "${masked[${hooks}]:-}" ]]; then
-                        skip=""
-                        for prev in "${!dirmasked[@]}"; do
-                            if [[ "${hooks}" == "${prev}"/* ]]; then skip=1; break; fi
-                        done
-                        if [[ -z "${skip}" ]]; then
-                            [[ -d "${hooks}" ]] || mkdir -p "${hooks}"   # a mountpoint for the mask
-                            masked["${hooks}"]=1; dirmasked["${hooks}"]=1
-                            mounts+=(--volume "${empty_src}:${hooks}:ro")
-                            echo "tjor: + dir mask $(safeprint "${hooks}") (git hooks)" >&2
-                        fi
-                    fi
-                fi
-                if [[ "${git_cfg_pin}" == "true" ]]; then
-                    cfgfile="${gitdir}/config"
-                    if [[ -f "${cfgfile}" && -z "${masked[${cfgfile}]:-}" ]]; then
-                        skip=""
-                        for prev in "${!dirmasked[@]}"; do
-                            if [[ "${cfgfile}" == "${prev}"/* ]]; then skip=1; break; fi
-                        done
-                        if [[ -z "${skip}" ]]; then
-                            masked["${cfgfile}"]=1
-                            mounts+=(--volume "${cfgfile}:${cfgfile}:ro")
-                            echo "tjor: + config pin $(safeprint "${cfgfile}") (protect_git_config)" >&2
-                        fi
-                    fi
-                fi
-            done < <(find "${dir}" \( -type d -o -type f \) -name .git -print0 2>/dev/null)
-        done
-    fi
+    plan_git_masks   # git hooks mask + opt-in config pin (#71); refuses symlinked git metadata
     if [[ "$(cfg landlock.mask_dotenv --default true)" != "false" ]]; then
         for dir in "${safe[@]:-}"; do
             [[ -n "${dir}" ]] || continue
             # NUL-delimited: a filename may contain anything but NUL. Skip
             # non-secret templates and .git internals.
             while IFS= read -r -d '' mp; do
-                [[ -n "${masked[${mp}]:-}" ]] && continue
-                # Inside a masked directory the file is already unreachable —
-                # and a mount there would fail (read-only empty mountpoint).
-                for prev in "${!dirmasked[@]}"; do [[ "${mp}" == "${prev}"/* ]] && continue 2; done
+                mask_covered "${mp}" && continue
                 masked["${mp}"]=1
                 mounts+=(--volume "/dev/null:${mp}:ro")
                 # The filename comes from the mounted (untrusted) repo: this
@@ -2106,7 +2190,7 @@ ancestors_are_real_dirs() { # $1 root, $2 target
 
 active_writable_policy() { # echoes a policy file safe to edit (never the packaged default)
     local active user
-    active="$(policy_file)"
+    active="$(policy_file)" || exit 1
     user="${XDG_CONFIG_HOME:-$HOME/.config}/tjor/policy.toml"
     if [[ "${active}" == "${TJOR_ROOT}/config/policy.toml" ]]; then
         mkdir -p "$(dirname "${user}")"; cp "${active}" "${user}"
@@ -2125,7 +2209,7 @@ cmd_policy() {
             case "${a}" in --yes|-y) pyes=1 ;; *) addhosts+=("${a}") ;; esac
         done
         [[ ${#addhosts[@]} -ge 1 ]] || die "usage: tjor policy add <host> [host...] [--yes]"
-        local target; target="$(active_writable_policy)"
+        local target; target="$(active_writable_policy)" || exit 1
         # Adding to a TRUSTED repo policy re-approves it (its hash changes),
         # re-widening the boundary from a file that travels with the repo. Make
         # that explicit and confirm it — never a silent re-approve — so an
@@ -2153,13 +2237,13 @@ cmd_policy() {
     local -a rest=()
     for a in "$@"; do [[ "${a}" == "--explain" ]] && explain=1 || rest+=("${a}"); done
     [[ ${#rest[@]} -ge 1 ]] || die "usage: tjor policy <url> [--explain]  |  tjor policy add <host>"
-    local pf; pf="$(policy_file)"
+    local pf; pf="$(policy_file)" || exit 1
     [[ -n "${explain}" ]] && echo "tjor: active policy: ${pf}" >&2
     python3 "${TJOR_ROOT}/python/tjor_policy.py" check --policy "${pf}" "${rest[0]}"
 }
 
 cmd_init() {
-    local root; root="$(repo_root)"
+    local root; root="$(repo_root)" || exit 1
     [[ -n "${root}" ]] || die "tjor init: run inside a git repository"
     local dir="${root}/.tjor"
     mkdir -p "${dir}"
@@ -2177,7 +2261,7 @@ EOF
 }
 
 cmd_trust() {
-    local root; root="$(repo_root)"
+    local root; root="$(repo_root)" || exit 1
     [[ -n "${root}" ]] || die "tjor trust: run inside a git repository"
     local -a files=("${root}/.tjor/policy.toml" "${root}/.tjor/config.toml")
     local show="" yes="" arg
@@ -2346,8 +2430,9 @@ cmd_doctor() {
             warn "a 'tjor run' from here would mount this checkout WRITABLE (workspace ${ws}) and is refused by the self-mount guard — run tjor from an immutable install: tjor self-install, then ${TJOR_INSTALL_ROOT:-$HOME/.tjor/install}/current/bin/tjor"
         fi
     fi
-    echo "policy file:   $(policy_file)"
-    python3 "${TJOR_ROOT}/python/tjor_policy.py" validate --policy "$(policy_file)" || true
+    local pf; pf="$(policy_file)" || exit 1
+    echo "policy file:   ${pf}"
+    python3 "${TJOR_ROOT}/python/tjor_policy.py" validate --policy "${pf}" || true
     report_tiers
     if [[ "${1:-}" == "--full" ]]; then cmd_conformance; fi
 }
@@ -2439,8 +2524,8 @@ usage: tjor <command> [args]
   conformance                                        run the adversarial conformance suite
   doctor [--full]                                    check host deps, policy, guarantees (--full: + conformance)
   build [--harness ...]                              (re)build the images
-  git-check [<repo> | --session <name|id>] [--ack] [--json]
-                                                     diff a session's git metadata against its launch baseline (cage-written hooksPath/fsmonitor/filters/aliases/includes, re-pointed worktrees, planted nested repos) — exits non-zero on findings; --ack clears the pending marker
+  git-check [<repo> | --session <name|id>] [--ack [<token>]] [--json]
+                                                     diff a session's git metadata against its launch baseline (cage-written hooksPath/fsmonitor/filters/aliases/includes/ext:: remotes, re-pointed worktrees, planted nested repos, unparseable configs) — exits non-zero on findings; --ack <token> (the token is printed with the findings) accepts that reviewed state as the new baseline and clears the pending marker
   self-install [--ref <commit-ish>]                  install an immutable copy of this checkout's committed tree under ~/.tjor/install/<sha> (point launchers at ~/.tjor/install/current/bin/tjor)
 EOF
 }

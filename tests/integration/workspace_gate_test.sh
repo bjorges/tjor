@@ -167,6 +167,20 @@ repo_root_refused() { ! ( cd "$1" && repo_root ) >/dev/null 2>"${LAST_OUT}"; }
 check "core.worktree: attach's short-name qualification refuses the redirect" attach_refused "${HOME}/wt/sub"
 check "core.worktree: attach refusal never reached docker" never_reached_docker
 check "core.worktree: repo_root (trust/init/policy) refuses the redirect" repo_root_refused "${HOME}/wt/sub"
+# v0.20.4 review (Critical): die() inside `$(repo_root)` exits only the
+# subshell — every consumer must propagate it, or a redirect reads as "not a
+# repository" (init/trust) or silently falls through to the user policy
+# (policy/doctor). Each command must stop with the redirect wording.
+redirect_stops() { # $1 = dir, $2.. = command; the redirect message, and NOT the misleading fallback
+    local dir="$1"; shift
+    ! ( cd "${dir}" && "$@" ) >/dev/null 2>"${LAST_OUT}"
+    grep -q 'core.worktree' "${LAST_OUT}" && ! grep -q 'run inside a git repository' "${LAST_OUT}"
+}
+check "core.worktree: tjor init stops on the redirect (exit status propagates through the subshell)" redirect_stops "${HOME}/wt/sub" cmd_init
+check "core.worktree: tjor trust stops on the redirect" redirect_stops "${HOME}/wt/sub" cmd_trust --show
+check "core.worktree: tjor policy (policy_file) stops on the redirect instead of using the user policy" redirect_stops "${HOME}/wt/sub" cmd_policy https://example.invalid/
+check "core.worktree: tjor doctor stops on the redirect" redirect_stops "${HOME}/wt/sub" cmd_doctor
+check "core.worktree: no .tjor scaffold was created on the redirected path" test ! -e "${HOME}/wt/.tjor" -a ! -e "${HOME}/proj2/.tjor"
 mkdir -p "${HOME}/all"; mv "${HOME}/wt" "${HOME}/all/wt"
 git -C "${HOME}/all/wt" config core.worktree "${HOME}/all"
 check "core.worktree: redirect toward an ancestor holding other repos is refused" refused "${HOME}/all/wt/sub"

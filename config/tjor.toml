@@ -208,6 +208,15 @@ mask_dirs = []
 # the pin below is the preventive answer; repos created mid-session are not
 # masked; siblings under one writable parent are not isolated from each other.
 mask_git_hooks = true
+# git_check_depth (#72): how many directory levels below each writable root
+# the git-check baseline/check walks when looking for repositories. A
+# directory at the cap that still has subdirectories is recorded as a spot
+# where discovery STOPPED: announced at launch, and a NEW such spot after the
+# baseline is a finding — a truncated walk is never silent. A repository
+# planted below a spot that was already truncated at launch is invisible to
+# the check (the launch line names those spots); raise the cap if a
+# legitimate tree is that deep.
+git_check_depth = 32
 # protect_git_config (opt-in): pin each git dir's config file read-only (the
 # real file bound over itself). git replaces config by rename, so EVERY write
 # fails while reads work. This is the only preventive control against

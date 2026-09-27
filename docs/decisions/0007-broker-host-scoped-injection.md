@@ -53,7 +53,10 @@ change when the proxy-side exchange is tightened.
   `gh` works with no in-cage login, and `gh auth login` **refuses** while the
   variable is set — the easy path to minting a real token is gone in those
   sessions. The agent can still `unset GH_TOKEN` and run the device flow; the
-  limitation above is narrowed, not closed.
+  limitation above is narrowed, not closed. When the broker does NOT cover
+  the API host the entrypoint unsets `GH_TOKEN` — deliberately also when the
+  broker is disabled entirely (v0.20.4 review): an ambient token is exactly
+  as un-brokered there, and the launcher never forwards one either way.
   The same change corrected the injection itself: the proxy now keys its
   host-scoped decisions on the client's SNI (the pinned upstream IP had
   silently replaced the hostname since the #41 pin), the sandboxed harness

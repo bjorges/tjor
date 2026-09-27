@@ -35,7 +35,11 @@ the proxy, with only a placeholder in the cage (`gh` gets it as `GH_TOKEN`; a
 stored in-cage login is superseded, and `gh auth login` refuses while it is
 set). Note: a GitHub App installation token cannot read `/user`, so `gh auth
 status` may report a failure while `gh pr`/`gh api repos/…` work. Without a
-broker, authenticate once inside the session: `gh auth login`.
+broker, authenticate once inside the session: `gh auth login`. Whenever the
+broker does not cover the API host — a broker limited to other hosts, or no
+broker at all — the cage **unsets** `GH_TOKEN` at start, so an ambient token
+(a direct `docker run -e GH_TOKEN=…`, a baked image) never rides in
+un-brokered; tjor's own launch never forwards it either way.
 
 Sessions are per-repo: state (harness auth, history) persists under
 `~/.tjor/sessions/<session>/` across container restarts, while the container
@@ -369,8 +373,12 @@ What it does, in two independent mechanisms:
   lefthook, husky): they stop firing on in-cage commits; `mask_git_hooks =
   false` restores them. Honest limits: `core.hooksPath` bypasses the mask
   (see the pin below); a repo created mid-session is not masked; sibling
-  repos under one writable parent are not isolated from each other. #72
-  tracks detecting the rest of the cage-writable git metadata.
+  repos under one writable parent are not isolated from each other. A
+  `.git` entry, hooks directory or config file that is a **symbolic link** is
+  refused at launch rather than masked through — a link a previous session
+  planted would steer the mask onto a path the agent chose — and the refusal
+  names the link, its target, the fix and the opt-out. `tjor git-check`
+  (below) detects the rest of the cage-writable git metadata.
 - **Git config pin (`protect_git_config`, opt-in).** Pins each repo's
   `.git/config` read-only with a bind of the real file over itself: reads
   work, every write fails (git replaces the file by rename, and a mountpoint
@@ -384,24 +392,42 @@ What it does, in two independent mechanisms:
 
 **Git metadata check (`tjor git-check`, #72).** What the masks cannot
 prevent, tjor detects. At launch it records a baseline of every git repo under
-a writable mount: the *dangerous* config keys present (anything host git would
-execute — `core.hooksPath`, `core.fsmonitor`, `core.sshCommand`, pagers and
-editors, `credential.*.helper`, `filter.*`, `diff.*.textconv`/`command`,
-`merge.*.driver`, `remote.*.uploadpack`/`receivepack`/`proxy`/`vcs`,
-`!`-aliases, includes — plus `url.*.insteadOf` and `safe.*`/`extensions.*`,
-which redirect where code comes from and widen trust), whether the config file
-is a symlink, worktree pointers, hook hashes, and the nested repos already
+a writable mount: the *dangerous* config keys present, every value of each
+(anything host git would execute — `core.hooksPath`, `core.fsmonitor`,
+`core.sshCommand`, pagers and editors, `credential.*.helper`, `filter.*`,
+`diff.*.textconv`/`command`, `merge.*.driver`,
+`remote.*.uploadpack`/`receivepack`/`proxy`/`vcs`, the `sendemail.*` and
+`imap.tunnel` commands, `trailer.*.command`, `!`-aliases, includes,
+`init.templateDir` — plus the keys that redirect where code comes from or
+widen trust: `url.*.insteadOf`, `protocol.*.allow`, `safe.*`,
+`extensions.*`, and a `remote.*.url`/`pushurl` or `submodule.*.url` naming
+the `ext::` or `fd::` transport, which runs a command on every fetch, pull,
+push and clone), whether the config file, the `.git` entry and the hooks dir
+are symlinks, worktree pointers, hook hashes, and the nested repos already
 present. The check runs when an attached session's harness exits, at `tjor
 down`, and on demand; it reports every dangerous key added, changed or
-removed (old and new value), any include added, a config turned symlink, a
-re-pointed worktree, a changed hook, a planted nested repo. `branch.*`,
-`remote.*.url`, `user.*` and other everyday keys are never findings, so `push
--u` stays quiet. A **pending marker**, written before the agent starts and
-kept outside the cage, is cleared only by a clean check or `tjor git-check
---ack` (which accepts the current state as the new baseline) — a session killed with `SIGKILL` or a closed terminal stays flagged,
-and `tjor ls` lists it as unchecked until you look. Honest limit: a write
-fires in host git the moment it lands; this narrows the window, it does not
-close it. To gate host-side git yourself (tjor ships no hook):
+removed (old and new values), any include added, a config, `.git` or hooks
+dir turned symlink, a re-pointed worktree, a changed hook, a planted nested
+repo, a repo that appeared under a non-repo root. It **fails closed**: a
+config git cannot parse is reported as unreadable, never counted as clean,
+and so is any *new* spot where the repository walk stopped — the depth cap
+(`git_check_depth`, 32 levels below a root by default) or an unreadable
+directory; a spot already truncated at launch is announced then, and a
+repository planted below it is the one thing this check cannot see.
+`branch.*`, an https/ssh `remote.*.url`, `user.*` and other everyday keys
+are never findings, so `push -u` stays quiet. A **pending marker**, written
+atomically before the agent starts and kept outside the cage, is cleared only
+by a clean check or an acknowledgement; `--json` follows the same rule, its
+output is escape-sanitized like the terminal's, and credentials embedded in
+URL-shaped keys are redacted in both. **Acknowledging is bound to what you
+reviewed**: findings print a token, and only `tjor git-check --ack <token>`
+for exactly that state accepts it as the new baseline — a bare `--ack`, a
+wrong token or a stale one (the state moved on) shows the findings and
+refuses, so muscle memory or a script cannot bless a poisoned repo unseen. A
+session killed with `SIGKILL` or a closed terminal stays flagged, and `tjor
+ls` lists it as unchecked until you look. Honest limit: a write fires in host
+git the moment it lands; this narrows the window, it does not close it. To
+gate host-side git yourself (tjor ships no hook):
 
 ```sh
 tjor git-check "$(git rev-parse --show-toplevel)" || echo "unchecked cage writes — review first"
@@ -422,6 +448,9 @@ mask_dirs = []         # directories to mask structurally: absolute paths or bar
 mask_git_hooks = true  # mask every writable repo's .git/hooks (host hook
                        # frameworks stop firing in-cage; false restores them)
 protect_git_config = false  # opt-in: pin .git/config read-only (see the cost above)
+git_check_depth = 32   # how deep below each writable root git-check looks for
+                       # repos; a spot where the walk stops is announced at
+                       # launch, and a new one after the baseline is a finding
 ```
 
 The tier states its status in the agent's startup log, one greppable line:

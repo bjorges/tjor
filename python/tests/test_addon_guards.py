@@ -1118,16 +1118,15 @@ class TestEgressSecretTripwire:
         verification; ssl_insecure must fail closed at startup."""
         pytest.importorskip("mitmproxy")
         import importlib, types
+        from mitmproxy import exceptions
         ctxmod = importlib.import_module("mitmproxy.ctx")
-        calls = []
         monkeypatch.setattr(ctxmod, "options", types.SimpleNamespace(ssl_insecure=True), raising=False)
-        monkeypatch.setattr(ctxmod, "master", types.SimpleNamespace(shutdown=lambda: calls.append("shutdown")), raising=False)
-        load_addon().TjorPolicy().configure(set())
-        assert calls == ["shutdown"] and "ssl_insecure" in capsys.readouterr().err
-        calls.clear()
+        # synchronous: OptionsError out of configure aborts startup (v0.20.4 review)
+        with pytest.raises(exceptions.OptionsError, match="ssl_insecure"):
+            load_addon().TjorPolicy().configure(set())
+        assert "ssl_insecure" in capsys.readouterr().err
         monkeypatch.setattr(ctxmod, "options", types.SimpleNamespace(ssl_insecure=False), raising=False)
-        load_addon().TjorPolicy().configure(set())
-        assert calls == []
+        load_addon().TjorPolicy().configure(set())   # no raise
 
     def test_secret_body_recorded_and_body_unchanged(self, tmp_path):
         addon = self._addon(tmp_path)

@@ -137,6 +137,11 @@ check "github.com alone still wires the git placeholder (independent decisions)"
 G_AMBIENT="$(docker run --rm -e TJOR_BROKER_ENABLED=1 -e TJOR_BROKER_HOSTS=kubeapi.example.com -e GH_TOKEN=ambient-not-a-secret "${IMAGE}" \
     sh -c 'printf %s "${GH_TOKEN:-unset}"' 2>/dev/null || true)"
 check "an ambient GH_TOKEN is unset when the broker does not cover the API host" test "${G_AMBIENT}" = "unset"
+# ...and with the broker DISABLED entirely (v0.20.4 review: the same branch,
+# documented as intentional, now tested).
+G_NOBROKER="$(docker run --rm -e GH_TOKEN=ambient-not-a-secret "${IMAGE}" \
+    sh -c 'printf %s "${GH_TOKEN:-unset}"' 2>/dev/null || true)"
+check "an ambient GH_TOKEN is unset when the broker is disabled entirely" test "${G_NOBROKER}" = "unset"
 
 echo
 echo "broker: ${PASS} passed, ${FAIL} failed"

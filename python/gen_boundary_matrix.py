@@ -252,6 +252,14 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
         (WORKSPACE_GATE, "session-launch", "A core.worktree redirect cannot steer attach to another session", True),
     "core.worktree: attach refusal never reached docker": (WORKSPACE_GATE, "session-launch", "gate: attach refusal precedes docker", False),
     "core.worktree: repo_root (trust/init/policy) refuses the redirect": (WORKSPACE_GATE, "session-launch", "gate: trusted-repo resolution refuses a redirect", False),
+    # v0.20.4 review: the refusal must PROPAGATE out of command substitution
+    "core.worktree: tjor init stops on the redirect (exit status propagates through the subshell)":
+        (WORKSPACE_GATE, "session-launch", "tjor init stops on a core.worktree redirect", True),
+    "core.worktree: tjor trust stops on the redirect": (WORKSPACE_GATE, "session-launch", "gate: trust stops on a redirect", False),
+    "core.worktree: tjor policy (policy_file) stops on the redirect instead of using the user policy":
+        (WORKSPACE_GATE, "session-launch", "tjor policy stops on a core.worktree redirect instead of falling through", True),
+    "core.worktree: tjor doctor stops on the redirect": (WORKSPACE_GATE, "session-launch", "gate: doctor stops on a redirect", False),
+    "core.worktree: no .tjor scaffold was created on the redirected path": (WORKSPACE_GATE, "session-launch", "functional: no scaffold on refusal", False),
     "extra-dir gate: a refused --dir minted no credential material":
         (WORKSPACE_GATE, "session-launch", "A refused extra dir leaves no minted credential behind", True),
     "extra-dir gate: a launch that passes every gate does mint (control)": (WORKSPACE_GATE, "session-launch", "functional: control for the mint-order check", False),
@@ -331,7 +339,41 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
     "gitcheck: the finding names the repo, key and value": (GITCHECK, "git-tamper-detection", "launch-UX: finding wording", False),
     "gitcheck: findings say the marker stays and how to ack": (GITCHECK, "git-tamper-detection", "launch-UX: ack hint", False),
     "gitcheck: --json emits the finding class": (GITCHECK, "git-tamper-detection", "functional: json output", False),
-    "gitcheck: --ack exits zero": (GITCHECK, "git-tamper-detection", "functional: ack exit code", False),
+    "gitcheck: --ack <token> exits zero": (GITCHECK, "git-tamper-detection", "functional: token ack exit code", False),
+    # --- v0.21.1 review follow-ups: token-bound ack, fail-closed findings ---
+    "gitcheck: --json carries the ack token": (GITCHECK, "git-tamper-detection", "functional: json token", False),
+    "gitcheck: --json findings set the marker (same rule as the human path)":
+        (GITCHECK, "git-tamper-detection", "A scripted (--json) check with findings sets the pending marker", True),
+    "gitcheck: a bare --ack with findings is refused (exit non-zero)":
+        (GITCHECK, "git-tamper-detection", "An acknowledgement without the reviewed state's token is refused", True),
+    "gitcheck: the refused ack shows the findings and the token to accept them": (GITCHECK, "git-tamper-detection", "launch-UX: refused ack shows findings + token", False),
+    "gitcheck: marker survives a refused ack": (GITCHECK, "git-tamper-detection", "functional: refused ack keeps the marker", False),
+    "gitcheck: a wrong token is refused": (GITCHECK, "git-tamper-detection", "functional: wrong token refused", False),
+    "gitcheck: a stale token (the state moved on) is refused":
+        (GITCHECK, "git-tamper-detection", "An acknowledgement token for a state that has since changed is refused", True),
+    "gitcheck: the stale refusal names the current token": (GITCHECK, "git-tamper-detection", "launch-UX: stale refusal names the current token", False),
+    "gitcheck: an ext:: remote url is a finding":
+        (GITCHECK, "git-tamper-detection", "An ext:: transport on a remote URL is a finding", True),
+    "gitcheck: the ext:: finding names the remote url key": (GITCHECK, "git-tamper-detection", "launch-UX: ext:: finding wording", False),
+    "gitcheck: a config git cannot parse is a finding, not clean":
+        (GITCHECK, "git-tamper-detection", "A config file git cannot parse is a finding (fail closed)", True),
+    "gitcheck: the unparseable config is reported as UNKNOWN, with git's error": (GITCHECK, "git-tamper-detection", "launch-UX: unreadable config wording", False),
+    "gitcheck: the repaired config checks clean again": (GITCHECK, "git-tamper-detection", "functional: repaired config clean", False),
+    "gitcheck: a directory tree deeper than git_check_depth is a NEW truncation, reported":
+        (GITCHECK, "git-tamper-detection", "A new truncation of the repository walk is a finding, never silent", True),
+    "gitcheck: the truncation finding names the depth cap and UNCHECKED": (GITCHECK, "git-tamper-detection", "launch-UX: truncation wording", False),
+    "gitcheck: a baseline taken over a truncated tree announces the truncation at launch":
+        (GITCHECK, "git-tamper-detection", "A truncated walk at baseline is announced at launch", True),
+    "gitcheck: the truncation known at baseline is not re-reported": (GITCHECK, "git-tamper-detection", "functional: known truncation quiet", False),
+    "gitcheck: a repository appearing under a non-repo root is a finding (repo-added)":
+        (GITCHECK, "git-tamper-detection", "A repository created under a non-repository root is a finding", True),
+    "git hooks: an ordinary hooks dir is masked": (GITCHECK, "kernel-sandbox", "functional: mask planner masks hooks", False),
+    "git hooks: a symlinked hooks dir refuses the launch instead of masking through the link":
+        (GITCHECK, "kernel-sandbox", "A symlinked git hooks directory is refused at launch, never masked through", True),
+    "git hooks: the refusal names the fix (replace the link) and the opt-out": (GITCHECK, "kernel-sandbox", "launch-UX: symlink refusal wording", False),
+    "git hooks: a symlinked .git entry is refused too":
+        (GITCHECK, "kernel-sandbox", "A symlinked .git entry is refused at launch", True),
+    "git hooks: with the real directories back the plan succeeds": (GITCHECK, "kernel-sandbox", "functional: mask planner control", False),
     "gitcheck: after --ack the acknowledged state is the new baseline (next check clean)":
         (GITCHECK, "git-tamper-detection", "An acknowledgement accepts the current state as the new baseline", True),
     "gitcheck: a change after --ack is reported again": (GITCHECK, "git-tamper-detection", "functional: post-ack writes reported", False),
