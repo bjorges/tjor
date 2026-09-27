@@ -3,7 +3,7 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.21.1] — 2026-09-27 — Git tamper detection: tjor git-check, launch baseline, crash-safe marker (#72)
 
 ### Security
 - **Git tamper detection: `tjor git-check`, a launch baseline, and a
