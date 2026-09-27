@@ -3,7 +3,10 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.20.2] — 2026-09-27 — Refuse a core.worktree redirect of the workspace (#76)
+
+Patch release: one refusal that no honest git layout hits, closing the route
+by which a session could steer the next host-side launch to another directory.
 
 ### Security
 - **A planted `core.worktree` can no longer redirect the next launch (#76,
