@@ -36,6 +36,8 @@ jobs:
         run: bash tests/integration/conformance_runtime_test.sh
       - name: workspace sensitive-path gate (no docker) (#64)
         run: bash tests/integration/workspace_gate_test.sh
+      - name: launcher self-mount guard + self-install (no docker) (#67)
+        run: bash tests/integration/self_mount_test.sh
       - name: shellcheck
         # --severity=warning: fail on real bugs (warning/error), not info-level
         # findings like SC2317 (trap-invoked functions look "unreachable"),

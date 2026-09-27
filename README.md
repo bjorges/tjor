@@ -136,6 +136,17 @@ prints an integrity notice. For a verified pull, pin the image by digest
 false`. See [ADR 0008](docs/decisions/0008-prebuilt-image-trust.md) and
 [INSTALL.md](INSTALL.md).
 
+**Running from a checkout?** The tree `bin/tjor` runs from executes
+unsandboxed on the host and is the build context of every image, so tjor
+**refuses to mount it writable** into a session — as the workspace or via
+`--dir`, whether the mount is the tree, a parent of it, or a directory inside
+it. Mount it read-only (`--dir-ro`) if a session only needs to read the
+source; to *develop tjor inside tjor*, run `tjor self-install` and launch from
+`~/.tjor/install/current/bin/tjor` — an immutable, sha-named copy of the
+committed tree that still builds locally (never pulls) and labels its images
+`tjor.source-sha`. `--allow-self-mount` overrides, loudly, for disposable
+setups. `tjor doctor` says which kind of tree is running.
+
 ## Kubernetes access (kube broker)
 
 Let a caged agent operate a cluster **without ever holding a cluster

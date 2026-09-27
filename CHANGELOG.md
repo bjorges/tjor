@@ -3,6 +3,52 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+### Security
+- **BREAKING (by design): the running tjor tree is refused as a writable
+  mount (#67).** The tree `bin/tjor` runs from executes unsandboxed on the
+  host on every invocation and is the build context of every image — the
+  proxy (holding the session MITM CA key and brokered credentials) and the
+  root-running agent entrypoint included. Mounted writable into a cage (as the
+  workspace or a `--dir`, whether the mount is the tree, a parent, or a
+  directory inside it), one write persisted into every later session and onto
+  the host; the natural trigger was developing tjor inside a tjor session
+  launched by the checkout's own `bin/tjor`. The launch is now refused after
+  every mount root is canonical and before any image is resolved or built,
+  naming both paths and the remedies. `--allow-self-mount` overrides with a
+  loud warning; a read-only overlap (`--dir-ro`) is allowed with a notice.
+  Applies to every install kind.
+- **`tjor self-install [--ref <commit-ish>]` (#67).** Archives the *committed*
+  tree into `~/.tjor/install/<sha>/` (marked `.tjor-source-sha`, `chmod -R
+  a-w`, `current` symlink), prints the launcher path and the commits since the
+  previous install, and is idempotent per sha. This is how to develop tjor
+  inside tjor: launch from the installed copy with the checkout as the
+  workspace. `a-w` guards against accidents only — the agent runs as the host
+  uid — the controls are the refusal above and the install root joining the
+  sensitive set: `~/.tjor/install` (or `TJOR_INSTALL_ROOT`) is refused as a
+  workspace or `--dir`/`--dir-ro` unless `--unsafe-dir`.
+- **A self-installed tree builds locally, like a checkout (ADR 0008
+  amended).** The pull-vs-build decision keys on "source tree" (`.git` or the
+  marker), so an archived tree never pulls a published image for its
+  `VERSION`. Only an installed release pulls.
+- **Images record their source.** Every local build (agent, proxy,
+  conformance) is labeled `tjor.source-sha`: the marker's sha, or `HEAD`
+  (`-dirty` with uncommitted changes) for a checkout, or `release-<VERSION>`.
+- **`tjor doctor` reports launcher mutability.** The root line says which kind
+  of tree is running (mutable git checkout / self-installed `<sha>`,
+  read-only / installed release), and from inside a checkout warns that a
+  launch from here would be refused, naming `self-install`. Scoping note: the
+  issue's "whether any configured profile mounts it writable" has no
+  equivalent — profiles declare no mounts — so the launch-from-here case is
+  what doctor checks.
+- **Coverage:** `tests/integration/self_mount_test.sh` (daemon-free, `unit`
+  job; 45 checks) proves the refusals, the override, the read-only notice,
+  self-install's properties, the marker-driven local build, the label, the
+  install-root sensitivity and the doctor report; it is the `self-mount` suite
+  of the boundary matrix with a new `launcher-integrity` capability. Specs:
+  new `launcher-integrity`; `image-distribution` and `session-launch` amended.
+
 ## [0.19.0] — 2026-09-27 — Workspace sensitive-path gate (#64)
 
 Breaking by design (pre-1.0 minor bump): a workspace that resolves to a

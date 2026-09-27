@@ -48,6 +48,19 @@ pull succeeded" — not *what* was pulled.
    trailing `/*`) are refused on both the launcher and entrypoint sides —
    the "not `*`" principle is unchanged.
 
+*Amended (launcher-self-mount-guard, #67):* decision 1 now reads **a source
+tree always builds locally** — a git checkout *or* a self-installed tree
+(`tjor self-install`: the committed tree archived to `~/.tjor/install/<sha>`,
+marked by `.tjor-source-sha`, read-only). Only an installed *release* pulls.
+The marker exists because an archived tree has no `.git`, and without it the
+launcher would have pulled a published image for `VERSION` instead of building
+the source it was made from. Every local build is labeled `tjor.source-sha`
+(the marker's sha; `HEAD`, `-dirty` when uncommitted changes exist, for a
+checkout; `release-<VERSION>` otherwise), so `docker image inspect` answers
+which code built a cage. The same change refuses to mount the running tree
+writable into a session — the launcher, the proxy sources and the root-running
+entrypoint would otherwise be one cage write away from the host.
+
 **Open question deferred to the maintainer:** whether `publish` should default
 to `true` (fast first run, tag-pull trust) or `false` (build-from-source by
 default) for a security-focused tool. It currently defaults to `true` with the

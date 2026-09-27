@@ -5,10 +5,11 @@ tjor's boundary is proven by three suites — the conformance probes
 (`images/conformance/probes.py`, each an `@probe("...")`), the kernel-sandbox
 integration test (`tests/integration/landlock_test.sh`, each a `check "..."` or
 `ok "..."`), and the launcher-side workspace-gate test
-(`tests/integration/workspace_gate_test.sh`, same `check`/`ok` form; #64). The
-third is a HOST guarantee, not a cage probe: it proves what the launcher refuses
-before any container exists (a sensitive workspace or mount), which the cage
-cannot re-check for itself. Their results otherwise live only in CI logs. This
+(`tests/integration/workspace_gate_test.sh`, same `check`/`ok` form; #64) plus
+its sibling for launcher integrity (`tests/integration/self_mount_test.sh`; #67).
+Those two are HOST guarantees, not cage probes: they prove what the launcher
+refuses before any container exists (a sensitive workspace or mount; its own
+code tree mounted writable), which the cage cannot re-check for itself. Their results otherwise live only in CI logs. This
 renders a human-readable matrix (`docs/boundary-matrix.md`) mapping each
 adversarial guarantee to the probe that proves it, its suite, and the spec
 capability it backs.
@@ -39,11 +40,13 @@ ROOT = Path(__file__).resolve().parents[1]
 PROBES_FILE = ROOT / "images" / "conformance" / "probes.py"
 LANDLOCK_FILE = ROOT / "tests" / "integration" / "landlock_test.sh"
 WORKSPACE_GATE_FILE = ROOT / "tests" / "integration" / "workspace_gate_test.sh"
+SELF_MOUNT_FILE = ROOT / "tests" / "integration" / "self_mount_test.sh"
 MATRIX_FILE = ROOT / "docs" / "boundary-matrix.md"
 
 CONFORMANCE = "conformance"
 LANDLOCK = "landlock"
 WORKSPACE_GATE = "workspace-gate"
+SELF_MOUNT = "self-mount"
 
 # name -> (suite, capability, guarantee, boundary)
 # boundary=True  -> an adversarial cage guarantee (rendered in the matrix)
@@ -203,12 +206,67 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
     "extra-dir gate: --unsafe-dir warns on an actually-overridden --dir": (WORKSPACE_GATE, "session-launch", "override: loud warning on --dir", False),
     "extra-dir gate: no override warning for an ordinary --dir": (WORKSPACE_GATE, "session-launch", "override: no spurious --dir warning", False),
     "help text names the workspace gate": (WORKSPACE_GATE, "session-launch", "launch-UX: help text", False),
+
+    # --- self-mount suite (#67, launcher-side): adversarial guarantees (rendered) ---
+    "self-mount guard: the checkout as the workspace is refused":
+        (SELF_MOUNT, "launcher-integrity", "The running tjor tree is refused as the workspace", True),
+    "self-mount guard: a dir inside the checkout via --dir is refused":
+        (SELF_MOUNT, "launcher-integrity", "A directory inside the running tjor tree is refused as a writable mount", True),
+    "self-mount guard: a parent of the checkout via --dir is refused":
+        (SELF_MOUNT, "launcher-integrity", "A parent of the running tjor tree is refused as a writable mount", True),
+    "self-install: the installed tree builds locally, never pulls":
+        (SELF_MOUNT, "launcher-integrity", "A self-installed tree builds its images locally and never pulls", True),
+    "install root refused via --dir":
+        (SELF_MOUNT, "session-launch", "The tjor install root is refused as a mount", True),
+    "a workspace inside an installed tree is refused":
+        (SELF_MOUNT, "session-launch", "A workspace inside an installed launcher tree is refused", True),
+
+    # --- self-mount suite: functional / launch-UX (acknowledged, not rendered) ---
+    "self-mount rule: the checkout itself overlaps": (SELF_MOUNT, "launcher-integrity", "rule: equal", False),
+    "self-mount rule: a dir inside the checkout overlaps": (SELF_MOUNT, "launcher-integrity", "rule: descendant", False),
+    "self-mount rule: a parent of the checkout overlaps": (SELF_MOUNT, "launcher-integrity", "rule: ancestor", False),
+    "self-mount rule: a sibling whose name extends the checkout does not overlap": (SELF_MOUNT, "launcher-integrity", "rule: component-boundary precision", False),
+    "self-mount rule: an ordinary repo does not overlap": (SELF_MOUNT, "launcher-integrity", "rule: disjoint passes", False),
+    "self-mount guard: refusal names the tree and the writable root": (SELF_MOUNT, "launcher-integrity", "launch-UX: refusal names both paths", False),
+    "self-mount guard: refusal names the three remedies": (SELF_MOUNT, "launcher-integrity", "launch-UX: refusal names the remedies", False),
+    "self-mount guard: refusals never reached docker": (SELF_MOUNT, "launcher-integrity", "gate: refusals precede docker", False),
+    "self-mount guard: a disjoint workspace prints no self-mount text": (SELF_MOUNT, "launcher-integrity", "functional: disjoint is silent", False),
+    "self-mount guard: read-only self-mount is allowed with a notice": (SELF_MOUNT, "launcher-integrity", "functional: read-only overlap notice", False),
+    "self-mount guard: read-only self-mount is not refused": (SELF_MOUNT, "launcher-integrity", "functional: read-only overlap allowed", False),
+    "self-mount guard: --allow-self-mount proceeds with a loud warning": (SELF_MOUNT, "launcher-integrity", "override: loud warning", False),
+    "image label: a checkout build carries tjor.source-sha=HEAD (dirty-aware)": (SELF_MOUNT, "launcher-integrity", "provenance: checkout label", False),
+    "self-install: installs the committed HEAD tree": (SELF_MOUNT, "launcher-integrity", "functional: self-install runs", False),
+    "self-install: tree contains the launcher, compose, config, python, images, VERSION": (SELF_MOUNT, "launcher-integrity", "functional: tree contents", False),
+    "self-install: marker holds the sha": (SELF_MOUNT, "launcher-integrity", "functional: marker", False),
+    "self-install: nothing under the tree is writable": (SELF_MOUNT, "launcher-integrity", "functional: read-only tree", False),
+    "self-install: current points at the sha": (SELF_MOUNT, "launcher-integrity", "functional: current symlink", False),
+    "self-install: output names the launcher path": (SELF_MOUNT, "launcher-integrity", "launch-UX: launcher path", False),
+    "self-install: output says uncommitted changes are excluded": (SELF_MOUNT, "launcher-integrity", "launch-UX: uncommitted note", False),
+    "self-install: re-installing the same sha is idempotent": (SELF_MOUNT, "launcher-integrity", "functional: idempotent", False),
+    "self-install: a bogus ref fails": (SELF_MOUNT, "launcher-integrity", "functional: bad ref refused", False),
+    "self-install: the installed tree is a source tree": (SELF_MOUNT, "launcher-integrity", "functional: marker is source", False),
+    "self-install: source_sha of the installed tree is the marker": (SELF_MOUNT, "launcher-integrity", "functional: source_sha", False),
+    "self-install: self-install from an installed tree is refused": (SELF_MOUNT, "launcher-integrity", "functional: needs a checkout", False),
+    "image label: an installed-tree build carries the marker sha": (SELF_MOUNT, "launcher-integrity", "provenance: installed-tree label", False),
+    "sensitive roots: install root derived from TJOR_INSTALL_ROOT": (SELF_MOUNT, "session-launch", "functional: install root derivation", False),
+    "install root itself is sensitive": (SELF_MOUNT, "session-launch", "rule: install root equal", False),
+    "an installed tree under the install root is sensitive": (SELF_MOUNT, "session-launch", "rule: install root descendant", False),
+    "an ancestor of the install root is sensitive": (SELF_MOUNT, "session-launch", "rule: install root ancestor", False),
+    "a sibling whose name extends the install root is not sensitive": (SELF_MOUNT, "session-launch", "rule: component-boundary precision (install root)", False),
+    "install root --dir refusal is the sensitive-path error": (SELF_MOUNT, "session-launch", "launch-UX: install-root refusal wording", False),
+    "install-root refusals never reached docker": (SELF_MOUNT, "session-launch", "gate: install-root refusals precede docker", False),
+    "doctor: inside the checkout names a mutable git checkout": (SELF_MOUNT, "launcher-integrity", "doctor: mutable checkout", False),
+    "doctor: inside the checkout warns that a launch from here is refused": (SELF_MOUNT, "launcher-integrity", "doctor: launch-from-here warning", False),
+    "doctor: from an installed tree names the sha, read-only": (SELF_MOUNT, "launcher-integrity", "doctor: installed tree", False),
+    "doctor: from an installed tree has no self-mount warning": (SELF_MOUNT, "launcher-integrity", "doctor: no spurious warning", False),
+    "doctor: succeeds outside any repository": (SELF_MOUNT, "launcher-integrity", "doctor: no repo needed", False),
+    "help text names --allow-self-mount and self-install": (SELF_MOUNT, "launcher-integrity", "launch-UX: help text", False),
 }
 
 # Order capabilities are grouped in the rendered matrix.
 CAPABILITY_ORDER = [
     "cage-network", "egress-policy", "credential-broker",
-    "session-identity", "kernel-sandbox", "session-launch",
+    "session-identity", "kernel-sandbox", "session-launch", "launcher-integrity",
 ]
 
 
@@ -236,7 +294,8 @@ def parse_landlock(text: str) -> list[str]:
 def parsed_names() -> list[str]:
     return (parse_probes(PROBES_FILE.read_text())
             + parse_landlock(LANDLOCK_FILE.read_text())
-            + parse_landlock(WORKSPACE_GATE_FILE.read_text()))
+            + parse_landlock(WORKSPACE_GATE_FILE.read_text())
+            + parse_landlock(SELF_MOUNT_FILE.read_text()))
 
 
 def cross_check(names: list[str]) -> list[str]:
@@ -264,9 +323,9 @@ def render(names: list[str]) -> str:
         f"per-run result**: every guarantee here is exercised by a live probe that the "
         f"CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "
         f"\"listed here\" means \"proven green in CI\". The `conformance` and "
-        f"`landlock` suites probe the cage from inside; the `workspace-gate` suite is "
-        f"launcher-side (a host guarantee the cage cannot re-check: what `tjor run` "
-        f"refuses before any container exists). Generated from the suite "
+        f"`landlock` suites probe the cage from inside; the `workspace-gate` and "
+        f"`self-mount` suites are launcher-side (host guarantees the cage cannot "
+        f"re-check: what `tjor run` refuses before any container exists). Generated from the suite "
         f"sources ({len(names)} checks total; {n_boundary} adversarial guarantees "
         f"below, the rest functional/config checks the suites also run).",
         "",

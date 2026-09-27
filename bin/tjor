@@ -93,10 +93,48 @@ policy_file() {
     echo "${TJOR_ROOT}/config/policy.toml"
 }
 
+# ------------------------------------------------------- launcher integrity
+# A SOURCE tree (#67, spec: launcher-integrity) is a git checkout or a
+# self-installed tree (`tjor self-install`, marked by .tjor-source-sha). A
+# source tree always builds its images locally and never pulls (ADR 0008,
+# decision 1, amended): the security-conscious path is never silently
+# replaced by a registry pull. Anything else is an installed release.
+is_source_tree() { [[ -d "${TJOR_ROOT}/.git" || -f "${TJOR_ROOT}/.tjor-source-sha" ]]; }
+
+# The provenance every locally built image is labeled with
+# (tjor.source-sha): the marker's sha for an installed tree, HEAD (+ "-dirty"
+# when the work tree has uncommitted changes) for a checkout, the release
+# version otherwise — so `docker image inspect` answers "which code built
+# this cage".
+source_sha() {
+    local sha
+    if [[ -f "${TJOR_ROOT}/.tjor-source-sha" ]]; then
+        tr -d ' \n' < "${TJOR_ROOT}/.tjor-source-sha"
+    elif [[ -d "${TJOR_ROOT}/.git" ]]; then
+        sha="$(git -C "${TJOR_ROOT}" rev-parse HEAD 2>/dev/null || echo unknown)"
+        if [[ -n "$(git -C "${TJOR_ROOT}" status --porcelain 2>/dev/null)" ]]; then sha="${sha}-dirty"; fi
+        printf '%s' "${sha}"
+    else
+        printf 'release-%s' "$(tr -d ' \n' < "${TJOR_ROOT}/VERSION" 2>/dev/null || echo unknown)"
+    fi
+}
+
+# True when the running tjor tree equals, lies under, or contains the given
+# canonical root — on path-component boundaries. The tree executes
+# UNSANDBOXED on the host on every invocation and is the build context of
+# every image, so a session holding it writable is a persistent
+# write→execute path onto the host (#67).
+self_mount_overlaps() { # $1 = canonical root
+    local r="${TJOR_ROOT%/}" p="${1%/}"
+    [[ -n "${r}" && -n "${p}" ]] || return 1
+    [[ "${r}" == "${p}" || "${r}" == "${p}/"* || "${p}" == "${r}/"* ]]
+}
+
 # ------------------------------------------------------------------- images
 build_proxy() {
     docker build -q -f "${TJOR_ROOT}/images/proxy/Dockerfile" \
         --build-arg BASE_IMAGE="$(cfg images.mitmproxy)" \
+        --label "tjor.source-sha=$(source_sha)" \
         -t tjor-proxy:local "${TJOR_ROOT}" >/dev/null
 }
 
@@ -123,12 +161,14 @@ build_agent() { # $1 = harness list (comma separated)
         --build-arg CPLT_VERSION="$(cfg versions.cplt)" \
         --build-arg CPLT_SHA256_ARM64="$(cfg versions.sha256.cplt_linux_arm64)" \
         --build-arg CPLT_SHA256_AMD64="$(cfg versions.sha256.cplt_linux_amd64)" \
+        --label "tjor.source-sha=$(source_sha)" \
         -t "tjor-agent-${harness//,/-}:local" "${TJOR_ROOT}"
 }
 
 build_conformance() {
     docker build -q -f "${TJOR_ROOT}/images/conformance/Dockerfile" \
         --build-arg BASE_IMAGE="$(cfg images.python)" \
+        --label "tjor.source-sha=$(source_sha)" \
         -t tjor-conformance:local "${TJOR_ROOT}" >/dev/null
 }
 
@@ -139,10 +179,11 @@ build_conformance() {
 resolve_agent_image() { # $1 = harness ; sets TJOR_AGENT_IMAGE
     local harness="$1"
     export TJOR_AGENT_IMAGE="tjor-agent-${harness}:local"
-    # Only an installed (non-git) copy pulls; a git checkout always builds
-    # locally from the audited Dockerfile (the security-conscious path is
-    # never silently replaced). See ADR 0008 for the trust trade-off.
-    if [[ ! -d "${TJOR_ROOT}/.git" ]] && [[ "$(cfg images.publish --default true)" == "true" ]]; then
+    # Only an installed RELEASE pulls; a source tree (git checkout, or a
+    # self-installed tree — #67) always builds locally from the audited
+    # Dockerfile (the security-conscious path is never silently replaced).
+    # See ADR 0008 for the trust trade-off.
+    if ! is_source_tree && [[ "$(cfg images.publish --default true)" == "true" ]]; then
         local ver reg digest ref
         ver="$(tr -d ' \n' < "${TJOR_ROOT}/VERSION" 2>/dev/null || true)"
         reg="$(cfg images.registry --default ghcr.io/bjorges)"
@@ -991,23 +1032,30 @@ prepare_secret_scan() {
 # spelled. Called by resolve_session on the launch path, ahead of the gate.
 TJOR_SENSITIVE_SESSION_ROOT=""
 TJOR_SENSITIVE_CONFIG_DIR=""
+TJOR_SENSITIVE_INSTALL_ROOT=""
 init_sensitive_roots() {
-    local root cdir
+    local root cdir iroot
     # shellcheck disable=SC2088  # literal ~ is expanded on the next line
     root="$(cfg session.root --default "~/.tjor/sessions")"; root="${root/#\~/$HOME}"
     if [[ -n "${TJOR_USER_CONFIG:-}" ]]; then cdir="$(dirname "${TJOR_USER_CONFIG}")"
     else cdir="${XDG_CONFIG_HOME:-$HOME/.config}/tjor"; fi
+    # The install root (#67): where `tjor self-install` places the immutable
+    # source trees launchers point at — a session must never hold one
+    # writable (it would rewrite a launcher that runs unsandboxed later).
+    iroot="${TJOR_INSTALL_ROOT:-$HOME/.tjor/install}"
     if [[ -d "${root}" ]]; then root="$(cd "${root}" && pwd -P)"; fi
     if [[ -d "${cdir}" ]]; then cdir="$(cd "${cdir}" && pwd -P)"; fi
+    if [[ -d "${iroot}" ]]; then iroot="$(cd "${iroot}" && pwd -P)"; fi
     TJOR_SENSITIVE_SESSION_ROOT="${root%/}"
     TJOR_SENSITIVE_CONFIG_DIR="${cdir%/}"
+    TJOR_SENSITIVE_INSTALL_ROOT="${iroot%/}"
 }
 
 # True (0) if an absolute path is too sensitive to mount read-write into the
 # agent without an explicit override: the filesystem root and system dirs, the
 # home directory itself or an ancestor of it (which would expose credentials),
-# known credential directories, and tjor's own session root and config dir
-# (init_sensitive_roots) in BOTH directions. Applied to the primary workspace
+# known credential directories, and tjor's own session root, config dir and
+# install root (init_sensitive_roots) in BOTH directions. Applied to the primary workspace
 # (resolve_session, launch path) and to every --dir/--dir-ro (cmd_run).
 dir_is_sensitive() { # $1 = absolute path (already symlink-resolved by pwd -P)
     local p="$1" s home="${HOME%/}"   # strip any trailing slash so ${home}/x matches
@@ -1025,12 +1073,13 @@ dir_is_sensitive() { # $1 = absolute path (already symlink-resolved by pwd -P)
              .local/share/keyrings .password-store; do
         [[ "${p}" == "${home}/${s}" || "${p}" == "${home}/${s}/"* ]] && return 0
     done
-    # tjor's own roots (#64): equal, an ANCESTOR (the candidate would contain
-    # every session's CA/broker material, or tjor's config), or a DESCENDANT
-    # (a session's own state dir) — on path-component boundaries, so a sibling
-    # whose name merely extends the root (<root>-other) is not caught.
+    # tjor's own roots (#64, #67): equal, an ANCESTOR (the candidate would
+    # contain every session's CA/broker material, tjor's config, or an
+    # installed launcher tree), or a DESCENDANT (a session's own state dir, one
+    # installed tree) — on path-component boundaries, so a sibling whose name
+    # merely extends the root (<root>-other) is not caught.
     local r
-    for r in "${TJOR_SENSITIVE_SESSION_ROOT}" "${TJOR_SENSITIVE_CONFIG_DIR}"; do
+    for r in "${TJOR_SENSITIVE_SESSION_ROOT}" "${TJOR_SENSITIVE_CONFIG_DIR}" "${TJOR_SENSITIVE_INSTALL_ROOT}"; do
         [[ -n "${r}" ]] || continue
         [[ "${p}" == "${r}" || "${r}" == "${p}/"* || "${p}" == "${r}/"* ]] && return 0
     done
@@ -1038,7 +1087,7 @@ dir_is_sensitive() { # $1 = absolute path (already symlink-resolved by pwd -P)
 }
 
 cmd_run() {
-    local harness="opencode" task="" name="" detach="" unsafe_dir="" profile="" profile_dir=""
+    local harness="opencode" task="" name="" detach="" unsafe_dir="" allow_self_mount="" profile="" profile_dir=""
     local -a extra_dirs=() extra_dirs_ro=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -1048,6 +1097,7 @@ cmd_run() {
             --dir) extra_dirs+=("$2"); shift 2 ;;
             --dir-ro) extra_dirs_ro+=("$2"); shift 2 ;;
             --unsafe-dir) unsafe_dir=1; shift ;;
+            --allow-self-mount) allow_self_mount=1; shift ;;
             --profile) profile="$2"; shift 2 ;;
             --profile-dir) profile_dir="$2"; shift 2 ;;
             --detach|-d) detach=1; shift ;;
@@ -1125,6 +1175,33 @@ cmd_run() {
                 die "conflicting mount writability: writable ${w_root} is nested inside read-only ${ro_root} — the nested bind stays writable, so the read-only tree claim would be false; mount the roots disjointly"
             fi
         done
+    done
+    # Self-mount guard (#67, spec: launcher-integrity): the tree this launcher
+    # runs from executes UNSANDBOXED on the host on every invocation and is
+    # the build context of every image — the proxy (which holds the session
+    # MITM CA key and brokered credentials) and the root-running agent
+    # entrypoint included. Mounted WRITABLE into a cage, one write persists
+    # into every later session and onto the host. So any writable root that
+    # equals, contains, or lies under it is refused — here, after every root
+    # is canonical and final, and BEFORE any image is resolved or built. A
+    # read-only overlap is fine (reading the source from inside a session)
+    # and is announced. Applies to every install kind: a checkout and an
+    # installed tree are the same threat. --allow-self-mount overrides,
+    # loudly and only when it actually overrides something.
+    if [[ -n "${allow_self_mount}" ]]; then export TJOR_ALLOW_SELF_MOUNT=1; fi
+    local self_root
+    for self_root in "${TJOR_WORKSPACE}" "${TJOR_EXTRA_DIRS[@]:-}"; do
+        [[ -n "${self_root}" ]] || continue
+        if self_mount_overlaps "${self_root}"; then
+            [[ -n "${allow_self_mount}" ]] || die "refusing to launch: the running tjor tree ${TJOR_ROOT} would be mounted WRITABLE via ${self_root} — code the session writes there runs unsandboxed on the host next time and builds every later image; run tjor from a separate install (tjor self-install), mount it read-only (--dir-ro), or pass --allow-self-mount"
+            warn "--allow-self-mount: the running tjor tree ${TJOR_ROOT} is mounted WRITABLE via ${self_root} — the session can rewrite the launcher, the entrypoint and the proxy sources"
+        fi
+    done
+    for self_root in "${TJOR_EXTRA_DIRS_RO[@]:-}"; do
+        [[ -n "${self_root}" ]] || continue
+        if self_mount_overlaps "${self_root}"; then
+            echo "tjor: note: the running tjor tree ${TJOR_ROOT} is mounted read-only via ${self_root}" >&2
+        fi
     done
     resolve_agent_image "${harness}"
     # Collision guard: a session id already backing a running agent must not
@@ -1999,11 +2076,82 @@ cmd_conformance() {
 }
 
 cmd_doctor() {
-    echo "tjor root:     ${TJOR_ROOT}"
+    # Launcher mutability (#67): say what kind of tree is running, and — for a
+    # checkout — whether a launch from HERE would mount it writable (and be
+    # refused by the self-mount guard). tjor profiles declare no mounts and
+    # there is no config for default --dir's, so the launch-from-here case is
+    # the one that can be checked.
+    local kind ws
+    if [[ -f "${TJOR_ROOT}/.tjor-source-sha" ]]; then
+        kind="self-installed $(tr -d ' \n' < "${TJOR_ROOT}/.tjor-source-sha"), read-only"
+    elif [[ -d "${TJOR_ROOT}/.git" ]]; then
+        kind="git checkout — MUTABLE"
+    else
+        kind="installed release $(tr -d ' \n' < "${TJOR_ROOT}/VERSION" 2>/dev/null || echo unknown)"
+    fi
+    echo "tjor root:     ${TJOR_ROOT} (${kind})"
+    if [[ -d "${TJOR_ROOT}/.git" ]]; then
+        ws="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
+        if self_mount_overlaps "${ws}"; then
+            warn "a 'tjor run' from here would mount this checkout WRITABLE (workspace ${ws}) and is refused by the self-mount guard — run tjor from an immutable install: tjor self-install, then ${TJOR_INSTALL_ROOT:-$HOME/.tjor/install}/current/bin/tjor"
+        fi
+    fi
     echo "policy file:   $(policy_file)"
     python3 "${TJOR_ROOT}/python/tjor_policy.py" validate --policy "$(policy_file)" || true
     report_tiers
     if [[ "${1:-}" == "--full" ]]; then cmd_conformance; fi
+}
+
+# Install an IMMUTABLE copy of this checkout's committed tree (#67, spec:
+# launcher-integrity): `git archive <ref>` → <install root>/<sha>/, marked
+# with .tjor-source-sha (so it stays a SOURCE tree that builds locally, never
+# pulls), chmod -R a-w, and a `current` symlink for launchers to point at.
+# Archiving the COMMIT, not the work tree, keeps the sha honest: the tree is
+# that commit, and uncommitted edits are excluded (said out loud). a-w guards
+# against accidental edits only — the agent runs as the host uid and could
+# re-add write permission; the controls are the self-mount guard and the
+# install root being part of the sensitive set. Idempotent per sha.
+cmd_self_install() {
+    local ref="HEAD"
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --ref) [[ -n "${2:-}" ]] || die "usage: tjor self-install [--ref <commit-ish>]"; ref="$2"; shift 2 ;;
+            *) die "usage: tjor self-install [--ref <commit-ish>]" ;;
+        esac
+    done
+    command -v git >/dev/null || die "self-install needs git"
+    [[ -d "${TJOR_ROOT}/.git" ]] || die "self-install needs a git checkout of tjor — this tree has no .git: ${TJOR_ROOT}"
+    local sha root prev tmp
+    sha="$(git -C "${TJOR_ROOT}" rev-parse --verify --quiet "${ref}^{commit}")" \
+        || die "self-install: '${ref}' is not a commit in ${TJOR_ROOT}"
+    root="${TJOR_INSTALL_ROOT:-$HOME/.tjor/install}"
+    mkdir -p "${root}"
+    prev=""
+    if [[ -L "${root}/current" ]]; then prev="$(basename "$(readlink "${root}/current")")"; fi
+    if [[ -d "${root}/${sha}" ]]; then
+        echo "tjor: ${sha} is already installed at ${root}/${sha} — repointing current" >&2
+    else
+        tmp="$(mktemp -d "${root}/.tmp.XXXXXX")"
+        if ! git -C "${TJOR_ROOT}" archive --format=tar "${sha}" | tar -x -C "${tmp}"; then
+            chmod -R u+w "${tmp}" 2>/dev/null; rm -rf "${tmp}"
+            die "self-install: git archive of ${sha} failed"
+        fi
+        printf '%s\n' "${sha}" > "${tmp}/.tjor-source-sha"
+        chmod -R a-w "${tmp}"
+        if ! mv "${tmp}" "${root}/${sha}"; then
+            chmod -R u+w "${tmp}" 2>/dev/null; rm -rf "${tmp}"
+            die "self-install: could not place ${root}/${sha}"
+        fi
+        echo "tjor: installed ${sha} → ${root}/${sha} (read-only; the COMMITTED tree — uncommitted changes in ${TJOR_ROOT} are not included)" >&2
+    fi
+    ln -sfn "${sha}" "${root}/current"
+    echo "tjor: point launchers at: ${root}/current/bin/tjor" >&2
+    if [[ -n "${prev}" && "${prev}" != "${sha}" ]]; then
+        echo "tjor: changes since the previous install (${prev:0:12}):" >&2
+        if ! git -C "${TJOR_ROOT}" log --oneline "${prev}..${sha}" 2>/dev/null | sed 's/^/    /' >&2; then
+            echo "    (previous sha ${prev:0:12} is not in this checkout)" >&2
+        fi
+    fi
 }
 
 cmd_build() {
@@ -2020,8 +2168,8 @@ tjor — run AI coding agents inside a portable, fail-closed container cage
 
 usage: tjor <command> [args]
 
-  run [--harness opencode|claude|copilot] [--task <id>] [--session <name>] [--dir <path>]... [--dir-ro <path>]... [--unsafe-dir] [--profile <name>|--profile-dir <path>] [--detach] [cmd...]
-                                                     launch a caged session (--dir: mount another repo at its host path; --dir-ro: same but READ-ONLY, container-wide — sensitive paths refused as the workspace or as --dir/--dir-ro unless --unsafe-dir; --profile/--profile-dir: overlay host-defined agents/commands, credential-safe; --detach: start without attaching)
+  run [--harness opencode|claude|copilot] [--task <id>] [--session <name>] [--dir <path>]... [--dir-ro <path>]... [--unsafe-dir] [--allow-self-mount] [--profile <name>|--profile-dir <path>] [--detach] [cmd...]
+                                                     launch a caged session (--dir: mount another repo at its host path; --dir-ro: same but READ-ONLY, container-wide — sensitive paths refused as the workspace or as --dir/--dir-ro unless --unsafe-dir; the running tjor tree is refused as a writable mount unless --allow-self-mount; --profile/--profile-dir: overlay host-defined agents/commands, credential-safe; --detach: start without attaching)
   ls                                                 list all sessions (and re-verify their boundaries)
   attach [session]                                   reattach to a running agent's terminal (short name or full id)
   gc [--age <hours>] [--dry-run]                     reap idle session containers/networks/volumes
@@ -2038,6 +2186,7 @@ usage: tjor <command> [args]
   conformance                                        run the adversarial conformance suite
   doctor [--full]                                    check host deps, policy, guarantees (--full: + conformance)
   build [--harness ...]                              (re)build the images
+  self-install [--ref <commit-ish>]                  install an immutable copy of this checkout's committed tree under ~/.tjor/install/<sha> (point launchers at ~/.tjor/install/current/bin/tjor)
 EOF
 }
 
@@ -2045,7 +2194,10 @@ main() {
     local cmd="${1:-}"
     [[ -n "${cmd}" ]] || { usage; exit 1; }
     shift || true
-    case "${cmd}" in help|-h|--help) usage; exit 0 ;; esac
+    case "${cmd}" in
+        help|-h|--help) usage; exit 0 ;;
+        self-install) cmd_self_install "$@"; exit 0 ;;   # needs git, not a docker daemon
+    esac
     preflight
     case "${cmd}" in
         run) cmd_run "$@" ;;

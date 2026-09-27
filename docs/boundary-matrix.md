@@ -4,7 +4,7 @@
      Regenerate: python3 python/gen_boundary_matrix.py
      Drift-checked by tests/doc_consistency.sh (`--check`). -->
 
-Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate` suite is launcher-side (a host guarantee the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (99 checks total; 44 adversarial guarantees below, the rest functional/config checks the suites also run).
+Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate` and `self-mount` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (144 checks total; 50 adversarial guarantees below, the rest functional/config checks the suites also run).
 
 ## cage-network
 
@@ -72,6 +72,7 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | A hostile dir name is escape-sanitized in launch output | `hostile parent dir name announced escape-sanitized` | landlock |
 | A hostile dotenv filename is escape-sanitized in launch output | `hostile dotenv filename is announced escape-sanitized` | landlock |
 | A refused launch leaves no session state directory behind | `workspace gate: no state dir created after a refusal` | workspace-gate |
+| A workspace inside an installed launcher tree is refused | `a workspace inside an installed tree is refused` | self-mount |
 | A workspace reached by git climbing to a sensitive toplevel is refused | `workspace gate: non-repo subdir of a home-rooted repo refused` | workspace-gate |
 | No raw terminal-escape byte on a dir-mask line | `no raw ESC byte on any dir-mask line` | landlock |
 | No raw terminal-escape byte on a dotenv-mask line | `no raw ESC byte on any dotenv-mask line` | landlock |
@@ -79,3 +80,13 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | The session state root is refused as a read-only extra mount | `extra-dir gate: session root refused via --dir-ro` | workspace-gate |
 | The session state root is refused as a writable extra mount | `extra-dir gate: session root refused via --dir` | workspace-gate |
 | The session state root is refused as the workspace | `workspace gate: session root refused as the workspace` | workspace-gate |
+| The tjor install root is refused as a mount | `install root refused via --dir` | self-mount |
+
+## launcher-integrity
+
+| Guarantee | Probe | Suite |
+|---|---|---|
+| A directory inside the running tjor tree is refused as a writable mount | `self-mount guard: a dir inside the checkout via --dir is refused` | self-mount |
+| A parent of the running tjor tree is refused as a writable mount | `self-mount guard: a parent of the checkout via --dir is refused` | self-mount |
+| A self-installed tree builds its images locally and never pulls | `self-install: the installed tree builds locally, never pulls` | self-mount |
+| The running tjor tree is refused as the workspace | `self-mount guard: the checkout as the workspace is refused` | self-mount |

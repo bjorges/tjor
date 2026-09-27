@@ -404,15 +404,17 @@ launcher SHALL print a loud warning naming the exposed path.
 
 The **sensitive set** SHALL comprise: the filesystem root and system
 directories; the user's home directory and every ancestor of it; the known
-credential directories under the home directory; and — new with this
-requirement — the effective session state root (`session.root`) and the
-effective tjor user-config directory. For the two new roots, a candidate path
-SHALL be refused when it **equals** the root, **contains** it (is an ancestor
-of it), or **lies under** it, judged on path-component boundaries. Because the
-same rule serves every gate, the two new roots are refused for `--dir` and
-`--dir-ro` too. Custom locations (a non-default `session.root`, a non-default
-config home) SHALL be honored — the check uses the effective values, not the
-defaults.
+credential directories under the home directory; and the three tjor-owned
+roots — the effective session state root (`session.root`), the effective tjor
+user-config directory, and the effective tjor install root (`~/.tjor/install`
+by default; where `tjor self-install` places immutable source trees that
+launchers point at). For the tjor-owned roots, a candidate path SHALL be
+refused when it **equals** the root, **contains** it (is an ancestor of it), or
+**lies under** it, judged on path-component boundaries. Because the same rule
+serves every gate, these roots are refused for `--dir` and `--dir-ro` too.
+Custom locations (a non-default `session.root`, a non-default config home, a
+non-default install root) SHALL be honored — the check uses the effective
+values, not the defaults.
 
 When the workspace was reached by version-control discovery climbing **above**
 the launch directory — the launch directory is not itself a repository root
@@ -509,3 +511,8 @@ makes no claim to re-check them, and documentation SHALL NOT claim otherwise.
 - **WHEN** the agent container is started with a system-directory mount root
   and the launcher's `--unsafe-dir` override set in its environment
 - **THEN** the container prints a warning naming the root and starts
+
+#### Scenario: Install root refused as a mount
+
+- **WHEN** the resolved workspace, or a `--dir`/`--dir-ro` path, equals, contains, or lies under the effective tjor install root, without `--unsafe-dir`
+- **THEN** the launch aborts with the sensitive-path error — a session must not be able to rewrite an installed launcher tree

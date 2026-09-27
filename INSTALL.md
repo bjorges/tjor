@@ -67,6 +67,25 @@ A tag pull (no digest) prints an integrity notice each run. See
 - Broker, images, limits, identity: `~/.config/tjor/config.toml` (merged over
   the built-in defaults in `config/tjor.toml`).
 
+## Developing tjor inside tjor
+
+The checkout you run `bin/tjor` from must never be mounted writable into a
+session (it runs unsandboxed on the host and builds the images), so a launch
+with the checkout — or a parent of it — as the workspace is refused. Launch
+from an immutable install instead:
+
+```console
+$ ./bin/tjor self-install                       # archives the committed HEAD → ~/.tjor/install/<sha>/, read-only
+$ ~/.tjor/install/current/bin/tjor run          # from inside the checkout: the workspace is now disjoint from the launcher
+$ ~/.tjor/install/current/bin/tjor doctor       # "self-installed <sha>, read-only"
+```
+
+Re-run `self-install` after committing to pick up new code (`--ref` selects
+another commit; the output lists the commits since the previous install).
+Uncommitted changes are never installed. The install root (`~/.tjor/install`)
+is itself a sensitive path: no session may mount it writable without
+`--unsafe-dir`.
+
 ## Uninstall
 
 `tjor down` per session, `tjor gc` to reap idle topologies, then
