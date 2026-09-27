@@ -226,12 +226,32 @@ def p_broker_injected():
 
 @probe("broker: the agent's placeholder is overwritten, never forwarded")
 def p_broker_overwrites_placeholder():
+    # git's placeholder: Basic x-access-token:tjor-broker-placeholder. The proxy
+    # re-issues the credential in the CLIENT's scheme (#65): GitHub's git
+    # endpoint accepts only Basic x-access-token:<token>, so upstream must see
+    # Basic with the real token — and the placeholder nowhere, decoded either.
+    import base64
     arrived = echo_headers(
         "echo-broker.tjor-test",
         {"authorization": "Basic eC1hY2Nlc3MtdG9rZW46dGpvci1icm9rZXItcGxhY2Vob2xkZXI="},
     )
-    assert arrived.get("authorization") == f"token {BROKER_TOKEN}", "placeholder was not overwritten"
-    assert "placeholder" not in arrived.get("authorization", ""), "placeholder leaked upstream"
+    auth = arrived.get("authorization", "")
+    expected = "Basic " + base64.b64encode(f"x-access-token:{BROKER_TOKEN}".encode()).decode()
+    assert auth == expected, f"placeholder was not overwritten in git's scheme, got {auth!r}"
+    decoded = base64.b64decode(auth.split(" ", 1)[1]).decode(errors="replace")
+    assert "placeholder" not in auth and "placeholder" not in decoded, "placeholder leaked upstream"
+
+
+@probe("broker: gh's token-scheme placeholder is overwritten in its own scheme")
+def p_broker_overwrites_gh_placeholder():
+    # gh sends `Authorization: token <placeholder>` (#65); api.github.com
+    # accepts the token scheme, so it is kept and only the secret is swapped.
+    arrived = echo_headers(
+        "echo-broker.tjor-test",
+        {"authorization": "token tjor-broker-placeholder"},
+    )
+    assert arrived.get("authorization") == f"token {BROKER_TOKEN}", \
+        f"gh placeholder was not overwritten, got {arrived.get('authorization')!r}"
 
 
 @probe("broker: credential does not leak to a non-destination host")

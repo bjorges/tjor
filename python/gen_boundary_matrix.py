@@ -88,6 +88,8 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
         (CONFORMANCE, "credential-broker", "Real credential injected toward the destination host", True),
     "broker: the agent's placeholder is overwritten, never forwarded":
         (CONFORMANCE, "credential-broker", "The agent's placeholder is overwritten, never forwarded", True),
+    "broker: gh's token-scheme placeholder is overwritten in its own scheme":
+        (CONFORMANCE, "credential-broker", "gh's token-scheme placeholder is overwritten in its own scheme", True),
     "broker: credential does not leak to a non-destination host":
         (CONFORMANCE, "credential-broker", "Credential never leaks to a non-destination host", True),
 

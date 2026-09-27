@@ -3,6 +3,20 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [0.20.3] — 2026-09-27 — Conformance probe follows the client's auth scheme
+
+### Fixed
+- **The `broker: the agent's placeholder is overwritten` conformance probe
+  expected the old injection contract** — it sent git's Basic placeholder and
+  demanded a `token …` header upstream, which is exactly the scheme GitHub's
+  git endpoint rejects and which v0.20.1 stopped emitting for Basic clients.
+  The proxy was right; the probe was stale, and it turned the v0.20.1 and
+  v0.20.2 `ci` runs red on that one probe (the other 17 passed; image
+  publishing was unaffected). The probe now expects Basic
+  `x-access-token:<real token>` and asserts the placeholder is absent raw and
+  decoded. A new probe covers gh's `token` scheme being kept with only the
+  secret swapped. 19/19 locally on colima; one new boundary-matrix row.
+
 ## [0.20.2] — 2026-09-27 — Refuse a core.worktree redirect of the workspace (#76)
 
 Patch release: one refusal that no honest git layout hits, closing the route
