@@ -4,7 +4,7 @@
      Regenerate: python3 python/gen_boundary_matrix.py
      Drift-checked by tests/doc_consistency.sh (`--check`). -->
 
-Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate` and `self-mount` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (177 checks total; 61 adversarial guarantees below, the rest functional/config checks the suites also run).
+Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount` and `gitcheck` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (198 checks total; 68 adversarial guarantees below, the rest functional/config checks the suites also run).
 
 ## cage-network
 
@@ -101,3 +101,15 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | A parent of the running tjor tree is refused as a writable mount | `self-mount guard: a parent of the checkout via --dir is refused` | self-mount |
 | A self-installed tree builds its images locally and never pulls | `self-install: the installed tree builds locally, never pulls` | self-mount |
 | The running tjor tree is refused as the workspace | `self-mount guard: the checkout as the workspace is refused` | self-mount |
+
+## git-tamper-detection
+
+| Guarantee | Probe | Suite |
+|---|---|---|
+| A cage-written dangerous git config key is reported | `gitcheck: planted core.hooksPath makes git-check exit non-zero` | gitcheck |
+| An acknowledgement accepts the current state as the new baseline | `gitcheck: after --ack the acknowledged state is the new baseline (next check clean)` | gitcheck |
+| An unchecked session is surfaced in tjor ls | `gitcheck: ls surfaces the unchecked session` | gitcheck |
+| Everyday git writes are not findings | `gitcheck: push -u shaped writes are clean (exit zero)` | gitcheck |
+| Findings keep the pending marker | `gitcheck: marker survives findings` | gitcheck |
+| Only an acknowledgement or a clean check clears the marker | `gitcheck: --ack clears the marker` | gitcheck |
+| The on-demand gate checks a repo against every covering baseline | `gitcheck: <repo> argument finds the covering session and reports` | gitcheck |

@@ -3,6 +3,36 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+### Security
+- **Git tamper detection: `tjor git-check`, a launch baseline, and a
+  crash-safe pending marker (#72).** The v0.21.0 masks keep `.git/hooks`
+  empty and, opt-in, pin `.git/config`; what they cannot prevent —
+  `core.hooksPath` and every other key host git would execute, a re-pointed
+  worktree `.git` file or `commondir`, a nested `.git/` planted in the working
+  tree — lands on the host the moment the cage writes it, and a crashed
+  session never reached any teardown report. Now: at launch, once the mount
+  set is final and before any container starts, the launcher records per
+  writable-root git dir the dangerous keys present (the documented set in
+  `python/tjor_gitcheck.py` and the README: hooks, editors, pagers, ssh and
+  credential commands, filter/diff/merge drivers, remote helpers and proxies,
+  `!`-aliases, includes, `url.*.insteadOf`, `safe.*`, `extensions.*`), the
+  config symlink state, worktree pointers, hook hashes and existing nested
+  repos — under the session state dir, never mounted into the cage. The check
+  runs at attached-session exit, at `tjor down` (which still completes) and
+  via `tjor git-check [<repo> | --session <id>] [--ack] [--json]`, reporting
+  each finding escape-sanitized with repo, class, key and old → new value.
+  `branch.*`, `remote.*.url/fetch/push`, `user.*` and the rest are never
+  findings (a `push -u` is clean, tested). The pending marker is cleared only
+  by a clean check or `--ack` (which accepts the current state as the new
+  baseline) and set again by any check with findings; `tjor ls` lists unchecked sessions, containers
+  or not. `git-check` exits non-zero on findings so it can gate host-side git
+  in the operator's own shell — tjor ships no hook. Detection only: the
+  window is narrowed, not closed. New `git-tamper-detection` capability; a
+  daemon-free `gitcheck` suite (18 checks) and 57 module tests; six matrix
+  rows.
+
 ## [0.21.0] — 2026-09-27 — Git hooks masked in writable mounts; opt-in .git/config pin (#71)
 
 Breaking by design (pre-1.0 minor bump): host-installed git hooks no longer

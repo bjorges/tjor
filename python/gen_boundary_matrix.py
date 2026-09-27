@@ -41,12 +41,14 @@ PROBES_FILE = ROOT / "images" / "conformance" / "probes.py"
 LANDLOCK_FILE = ROOT / "tests" / "integration" / "landlock_test.sh"
 WORKSPACE_GATE_FILE = ROOT / "tests" / "integration" / "workspace_gate_test.sh"
 SELF_MOUNT_FILE = ROOT / "tests" / "integration" / "self_mount_test.sh"
+GITCHECK_FILE = ROOT / "tests" / "integration" / "gitcheck_test.sh"
 MATRIX_FILE = ROOT / "docs" / "boundary-matrix.md"
 
 CONFORMANCE = "conformance"
 LANDLOCK = "landlock"
 WORKSPACE_GATE = "workspace-gate"
 SELF_MOUNT = "self-mount"
+GITCHECK = "gitcheck"
 
 # name -> (suite, capability, guarantee, boundary)
 # boundary=True  -> an adversarial cage guarantee (rendered in the matrix)
@@ -308,12 +310,44 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
     "doctor: from an installed tree has no self-mount warning": (SELF_MOUNT, "launcher-integrity", "doctor: no spurious warning", False),
     "doctor: succeeds outside any repository": (SELF_MOUNT, "launcher-integrity", "doctor: no repo needed", False),
     "help text names --allow-self-mount and self-install": (SELF_MOUNT, "launcher-integrity", "launch-UX: help text", False),
+
+    # --- gitcheck suite (#72, launcher-side): detection guarantees (rendered) ---
+    "gitcheck: planted core.hooksPath makes git-check exit non-zero":
+        (GITCHECK, "git-tamper-detection", "A cage-written dangerous git config key is reported", True),
+    "gitcheck: marker survives findings":
+        (GITCHECK, "git-tamper-detection", "Findings keep the pending marker", True),
+    "gitcheck: --ack clears the marker":
+        (GITCHECK, "git-tamper-detection", "Only an acknowledgement or a clean check clears the marker", True),
+    "gitcheck: push -u shaped writes are clean (exit zero)":
+        (GITCHECK, "git-tamper-detection", "Everyday git writes are not findings", True),
+    "gitcheck: ls surfaces the unchecked session":
+        (GITCHECK, "git-tamper-detection", "An unchecked session is surfaced in tjor ls", True),
+    "gitcheck: <repo> argument finds the covering session and reports":
+        (GITCHECK, "git-tamper-detection", "The on-demand gate checks a repo against every covering baseline", True),
+    # --- gitcheck suite: functional / launch-UX (acknowledged, not rendered) ---
+    "gitcheck: baseline records every writable root": (GITCHECK, "git-tamper-detection", "functional: baseline coverage", False),
+    "gitcheck: pending marker written at baseline": (GITCHECK, "git-tamper-detection", "functional: marker at baseline", False),
+    "gitcheck: launch announced the baseline": (GITCHECK, "git-tamper-detection", "launch-UX: baseline announced", False),
+    "gitcheck: the finding names the repo, key and value": (GITCHECK, "git-tamper-detection", "launch-UX: finding wording", False),
+    "gitcheck: findings say the marker stays and how to ack": (GITCHECK, "git-tamper-detection", "launch-UX: ack hint", False),
+    "gitcheck: --json emits the finding class": (GITCHECK, "git-tamper-detection", "functional: json output", False),
+    "gitcheck: --ack exits zero": (GITCHECK, "git-tamper-detection", "functional: ack exit code", False),
+    "gitcheck: after --ack the acknowledged state is the new baseline (next check clean)":
+        (GITCHECK, "git-tamper-detection", "An acknowledgement accepts the current state as the new baseline", True),
+    "gitcheck: a change after --ack is reported again": (GITCHECK, "git-tamper-detection", "functional: post-ack writes reported", False),
+    "gitcheck: findings after an ack set the marker again": (GITCHECK, "git-tamper-detection", "functional: findings set the marker", False),
+    "gitcheck: ls is silent once acknowledged": (GITCHECK, "git-tamper-detection", "functional: ls silent after ack", False),
+    "gitcheck: a clean check clears the marker": (GITCHECK, "git-tamper-detection", "functional: clean clears", False),
+    "gitcheck: the extra repo's finding is attributed to it": (GITCHECK, "git-tamper-detection", "launch-UX: attribution", False),
+    "gitcheck: a repo no session covers is refused clearly": (GITCHECK, "git-tamper-detection", "launch-UX: uncovered repo", False),
+    "gitcheck: help text names git-check": (GITCHECK, "git-tamper-detection", "launch-UX: help text", False),
 }
 
 # Order capabilities are grouped in the rendered matrix.
 CAPABILITY_ORDER = [
     "cage-network", "egress-policy", "credential-broker",
     "session-identity", "kernel-sandbox", "session-launch", "launcher-integrity",
+    "git-tamper-detection",
 ]
 
 
@@ -342,7 +376,8 @@ def parsed_names() -> list[str]:
     return (parse_probes(PROBES_FILE.read_text())
             + parse_landlock(LANDLOCK_FILE.read_text())
             + parse_landlock(WORKSPACE_GATE_FILE.read_text())
-            + parse_landlock(SELF_MOUNT_FILE.read_text()))
+            + parse_landlock(SELF_MOUNT_FILE.read_text())
+            + parse_landlock(GITCHECK_FILE.read_text()))
 
 
 def cross_check(names: list[str]) -> list[str]:
@@ -370,8 +405,8 @@ def render(names: list[str]) -> str:
         f"per-run result**: every guarantee here is exercised by a live probe that the "
         f"CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "
         f"\"listed here\" means \"proven green in CI\". The `conformance` and "
-        f"`landlock` suites probe the cage from inside; the `workspace-gate` and "
-        f"`self-mount` suites are launcher-side (host guarantees the cage cannot "
+        f"`landlock` suites probe the cage from inside; the `workspace-gate`, "
+        f"`self-mount` and `gitcheck` suites are launcher-side (host guarantees the cage cannot "
         f"re-check: what `tjor run` refuses before any container exists). Generated from the suite "
         f"sources ({len(names)} checks total; {n_boundary} adversarial guarantees "
         f"below, the rest functional/config checks the suites also run).",

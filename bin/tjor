@@ -131,6 +131,119 @@ self_mount_overlaps() { # $1 = canonical root
     [[ "${r}" == "${p}" || "${r}" == "${p}/"* || "${p}" == "${r}/"* ]]
 }
 
+# ------------------------------------------------ git tamper detection (#72)
+# Detect — never prevent — git metadata written inside the cage that would run
+# code in the operator's HOST git (spec: git-tamper-detection). The masks (#71)
+# cover .git/hooks and, opt-in, pin .git/config; everything else they cannot
+# stop — core.hooksPath and friends, a re-pointed worktree .git file, a planted
+# nested repo — is baselined at launch and diffed at harness exit, at teardown
+# and on demand (`tjor git-check`). The baseline and a PENDING marker live under
+# the session state dir (never mounted into the cage); the marker is written
+# before the agent starts and cleared ONLY by a clean check or `--ack`, so a
+# crash leaves it — and `tjor ls` shows it. python/tjor_gitcheck.py decides;
+# this only orchestrates and renders (findings arrive already sanitized).
+session_root() {
+    local r
+    # shellcheck disable=SC2088  # literal ~ is expanded on the next line
+    r="$(cfg session.root --default "~/.tjor/sessions")"; printf '%s' "${r/#\~/$HOME}"
+}
+
+gitcheck_baseline() { # $1 = session dir; $2.. = writable mount roots
+    local dir="$1" n; shift
+    mkdir -p "${dir}/gitcheck"
+    n="$(python3 "${TJOR_ROOT}/python/tjor_gitcheck.py" snapshot --out "${dir}/gitcheck/baseline.json" "$@" 2>&1 >/dev/null)" \
+        || die "git-check baseline failed: ${n}"
+    printf 'launched=%s\nroots=%s\n' "$(date +%s)" "$*" > "${dir}/gitcheck/pending"
+    echo "tjor: git-check baseline recorded (${n} repos) — checked at exit, at teardown, and on demand: tjor git-check" >&2
+}
+
+gitcheck_run() { # $1 = session dir, $2 = moment → 0 clean (marker cleared) / 1 findings (marker kept)
+    local dir="$1" moment="$2" out rc sid
+    [[ -f "${dir}/gitcheck/baseline.json" ]] || return 0
+    sid="$(basename "${dir}")"
+    out="$(python3 "${TJOR_ROOT}/python/tjor_gitcheck.py" check "${dir}/gitcheck/baseline.json" 2>&1)"; rc=$?
+    if [[ ${rc} -eq 0 ]]; then
+        rm -f "${dir}/gitcheck/pending"
+        echo "tjor: git-check clean at ${moment} — no cage-written git metadata that would run on the host" >&2
+        return 0
+    fi
+    loud "git-check at ${moment}: cage-written git metadata found in session ${sid} — review before running git in these repos on the host"
+    printf '%s\n' "${out}" | sed 's/^/tjor: /' >&2
+    # Findings SET the marker (it may have been acknowledged earlier and new
+    # writes happened since): the flag always reflects the latest verdict.
+    [[ -f "${dir}/gitcheck/pending" ]] || printf 'launched=%s\nroots=%s\n' "$(date +%s)" "$(python3 -c 'import json,sys; print(" ".join(json.load(open(sys.argv[1])).get("roots", [])))' "${dir}/gitcheck/baseline.json" 2>/dev/null)" > "${dir}/gitcheck/pending"
+    echo "tjor: the pending marker is set until a clean check, or: tjor git-check --session ${sid} --ack (accepts the current state as the new baseline)" >&2
+    return 1
+}
+
+gitcheck_pending_report() { # every session whose marker is still pending (crash-safe visibility)
+    local root d sid roots
+    root="$(session_root)"
+    for d in "${root}"/*/gitcheck/pending; do
+        [[ -f "${d}" ]] || continue
+        sid="$(basename "$(dirname "$(dirname "${d}")")")"
+        roots="$(grep '^roots=' "${d}" 2>/dev/null | cut -d= -f2-)"
+        warn "session ${sid} has UNCHECKED repos (git-check pending): $(safeprint "${roots}") — run: tjor git-check --session ${sid}"
+    done
+    return 0
+}
+
+cmd_git_check() { # [<repo> | --session <name|id>] [--ack] [--json]
+    local name="" ack="" json="" repo="" d root canon rc=0
+    local -a dirs=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --session) [[ -n "${2:-}" ]] || die "usage: tjor git-check [<repo> | --session <name|id>] [--ack] [--json]"; name="$2"; shift 2 ;;
+            --ack) ack=1; shift ;;
+            --json) json=1; shift ;;
+            -*) die "usage: tjor git-check [<repo> | --session <name|id>] [--ack] [--json]" ;;
+            *) repo="$1"; shift ;;
+        esac
+    done
+    if [[ -n "${repo}" ]]; then
+        [[ -d "${repo}" ]] || die "no such directory: ${repo}"
+        canon="$(cd "${repo}" && pwd -P)"
+        root="$(session_root)"
+        # Every session baseline whose roots cover the repo (equal or ancestor).
+        for d in "${root}"/*/gitcheck/baseline.json; do
+            [[ -f "${d}" ]] || continue
+            if python3 - "${d}" "${canon}" <<'PY'
+import json, sys
+b = json.load(open(sys.argv[1])); p = sys.argv[2]
+sys.exit(0 if any(p == r or p.startswith(r.rstrip("/") + "/") for r in b.get("roots", [])) else 1)
+PY
+            then dirs+=("$(dirname "$(dirname "${d}")")"); fi
+        done
+        ((${#dirs[@]})) || die "no session baseline covers ${canon} — nothing to check (a baseline is recorded when tjor launches a session there)"
+    else
+        resolve_session "opencode" "" "${name}"
+        dirs=("${TJOR_SESSION_DIR}")
+    fi
+    for d in "${dirs[@]}"; do
+        if [[ ! -f "${d}/gitcheck/baseline.json" ]]; then
+            warn "session $(basename "${d}") has no git-check baseline"; continue
+        fi
+        if [[ -n "${json}" ]]; then
+            if python3 "${TJOR_ROOT}/python/tjor_gitcheck.py" check "${d}/gitcheck/baseline.json" --json; then rm -f "${d}/gitcheck/pending"; else rc=1; fi
+        elif ! gitcheck_run "${d}" "on demand (session $(basename "${d}"))"; then
+            rc=1
+        fi
+        if [[ -n "${ack}" ]]; then
+            # Acknowledge = accept the CURRENT state as the new baseline, so
+            # the same reviewed findings are not re-reported at the next
+            # check; anything written after this point is.
+            local -a roots=()
+            mapfile -t roots < <(python3 -c 'import json,sys; print("\n".join(json.load(open(sys.argv[1])).get("roots", [])))' "${d}/gitcheck/baseline.json")
+            python3 "${TJOR_ROOT}/python/tjor_gitcheck.py" snapshot --out "${d}/gitcheck/baseline.json" "${roots[@]}" >/dev/null 2>&1 \
+                || warn "git-check: could not re-baseline session $(basename "${d}")"
+            rm -f "${d}/gitcheck/pending"
+            echo "tjor: git-check acknowledged for session $(basename "${d}") — current state accepted as the new baseline, pending marker cleared" >&2
+        fi
+    done
+    if [[ -n "${ack}" ]]; then return 0; fi
+    return "${rc}"
+}
+
 # ------------------------------------------------------------------- images
 build_proxy() {
     docker build -q -f "${TJOR_ROOT}/images/proxy/Dockerfile" \
@@ -1521,6 +1634,16 @@ for p in json.load(sys.stdin):
             warn "landlock.deny_paths entry not maskable (no such file at launch): $(safeprint "${mp}")"
         fi
     done <<<"${deny_list}"
+    # Git tamper-detection baseline (#72): the writable roots are final here
+    # and no container exists yet — record the baseline + the pending marker
+    # before the agent can write anything.
+    local -a writable_roots=()
+    for dir in "${safe[@]:-}"; do
+        [[ -n "${dir}" ]] || continue
+        if grep -qxF -- "${dir}" <<<"${ro_dirs}"; then continue; fi
+        writable_roots+=("${dir}")
+    done
+    ((${#writable_roots[@]})) && gitcheck_baseline "${TJOR_SESSION_DIR}" "${writable_roots[@]}"
     # Agent profile (#29): mount the credential-filtered staging dir read-only
     # and tell the entrypoint where to overlay it. Empty env when no profile.
     local profile_env=""
@@ -1576,6 +1699,9 @@ for p in json.load(sys.stdin):
         docker attach --sig-proxy=false "${ctr}" || true
     fi
     code="$(docker inspect -f '{{.State.ExitCode}}' "${ctr}" 2>/dev/null || echo 0)"
+    # Attached-session exit is the earliest moment tjor gets to diff the git
+    # metadata (#72); the harness's exit code is the harness's — never changed.
+    if [[ -z "${detach}" ]]; then gitcheck_run "${TJOR_SESSION_DIR}" "session exit" || true; fi
     exit "${code:-0}"
 }
 
@@ -1611,6 +1737,9 @@ cmd_down() {
     compose down --volumes --remove-orphans
     docker network rm "${TJOR_PROJECT}_internal" >/dev/null 2>&1 || true
     echo "tjor: session topology ${TJOR_PROJECT} removed (state in ${TJOR_SESSION_DIR} preserved)" >&2
+    # Git tamper-detection check (#72): teardown always completes; findings
+    # are reported loudly and keep the pending marker.
+    gitcheck_run "${TJOR_SESSION_DIR}" "teardown" || true
     # Denial recap (#42): teardown is the moment a quietly-blocked session is
     # most likely to be noticed — surface the session's denied egress
     # unprompted (count + top hosts + the review/widen hints), quiet when
@@ -1752,6 +1881,7 @@ cmd_ls() {
         --format $'{{.State}}\x1f{{.Label "tjor.session"}}\x1f{{.Label "tjor.workspace"}}\x1f{{.Label "tjor.task"}}\x1f{{.Label "tjor.launched-at"}}\x1f{{.Label "tjor.role"}}')
     if ((${#total[@]} == 0)); then
         echo "tjor: no sessions" >&2
+        gitcheck_pending_report   # a SIGKILLed session has no containers but may still be unchecked (#72)
         return 0
     fi
     printf '%-40s %-9s %-7s %-6s %-40s %s\n' SESSION STATE AGENTS AGE WORKSPACE TASK
@@ -1774,6 +1904,7 @@ cmd_ls() {
                 "${agents_running[${sid}]:-0}/${total[${sid}]}" "${age}" "${ws[${sid}]:--}" "${task[${sid}]:--}"
         done
     } | sort
+    gitcheck_pending_report   # unchecked repos (#72): visible even after a crash
 }
 
 cmd_attach() {
@@ -2308,6 +2439,8 @@ usage: tjor <command> [args]
   conformance                                        run the adversarial conformance suite
   doctor [--full]                                    check host deps, policy, guarantees (--full: + conformance)
   build [--harness ...]                              (re)build the images
+  git-check [<repo> | --session <name|id>] [--ack] [--json]
+                                                     diff a session's git metadata against its launch baseline (cage-written hooksPath/fsmonitor/filters/aliases/includes, re-pointed worktrees, planted nested repos) — exits non-zero on findings; --ack clears the pending marker
   self-install [--ref <commit-ish>]                  install an immutable copy of this checkout's committed tree under ~/.tjor/install/<sha> (point launchers at ~/.tjor/install/current/bin/tjor)
 EOF
 }
@@ -2319,6 +2452,7 @@ main() {
     case "${cmd}" in
         help|-h|--help) usage; exit 0 ;;
         self-install) cmd_self_install "$@"; exit 0 ;;   # needs git, not a docker daemon
+        git-check) cmd_git_check "$@"; exit $? ;;          # needs git + python, not a docker daemon
     esac
     preflight
     case "${cmd}" in

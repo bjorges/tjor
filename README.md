@@ -382,6 +382,31 @@ What it does, in two independent mechanisms:
   checkout`; `commit`, `push` without `-u`, `fetch`, `status`, `log` and
   `diff` keep working.
 
+**Git metadata check (`tjor git-check`, #72).** What the masks cannot
+prevent, tjor detects. At launch it records a baseline of every git repo under
+a writable mount: the *dangerous* config keys present (anything host git would
+execute — `core.hooksPath`, `core.fsmonitor`, `core.sshCommand`, pagers and
+editors, `credential.*.helper`, `filter.*`, `diff.*.textconv`/`command`,
+`merge.*.driver`, `remote.*.uploadpack`/`receivepack`/`proxy`/`vcs`,
+`!`-aliases, includes — plus `url.*.insteadOf` and `safe.*`/`extensions.*`,
+which redirect where code comes from and widen trust), whether the config file
+is a symlink, worktree pointers, hook hashes, and the nested repos already
+present. The check runs when an attached session's harness exits, at `tjor
+down`, and on demand; it reports every dangerous key added, changed or
+removed (old and new value), any include added, a config turned symlink, a
+re-pointed worktree, a changed hook, a planted nested repo. `branch.*`,
+`remote.*.url`, `user.*` and other everyday keys are never findings, so `push
+-u` stays quiet. A **pending marker**, written before the agent starts and
+kept outside the cage, is cleared only by a clean check or `tjor git-check
+--ack` (which accepts the current state as the new baseline) — a session killed with `SIGKILL` or a closed terminal stays flagged,
+and `tjor ls` lists it as unchecked until you look. Honest limit: a write
+fires in host git the moment it lands; this narrows the window, it does not
+close it. To gate host-side git yourself (tjor ships no hook):
+
+```sh
+tjor git-check "$(git rev-parse --show-toplevel)" || echo "unchecked cage writes — review first"
+```
+
 Configure under `[landlock]`:
 
 ```toml
