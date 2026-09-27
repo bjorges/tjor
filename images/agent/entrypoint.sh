@@ -413,6 +413,11 @@ fi
 if [[ -n "${broker_covers_gh_api}" ]]; then
     export GH_TOKEN="tjor-broker-placeholder"
     echo "tjor-entrypoint: broker covers api.github.com — gh authenticates through the proxy (GH_TOKEN placeholder; no real token in the cage)" >&2
+else
+    # Not covered => gh gets NOTHING, enforced rather than assumed (v0.20.1
+    # review): an ambient token — a direct `docker run -e GH_TOKEN=…`, an
+    # image-baked value — must never ride into the cage un-brokered.
+    unset GH_TOKEN
 fi
 
 # 3b. Kube broker (#26 single-cluster, #57 multi-cluster): render a PLACEHOLDER

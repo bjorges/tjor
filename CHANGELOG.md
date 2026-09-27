@@ -3,6 +3,60 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+Review follow-ups for v0.18.16 → v0.20.3 (external review of the batch; the
+three Highs and every Medium below were confirmed against the code before
+fixing).
+
+### Security
+- **One guarded workspace resolver for every host-side consumer (v0.20.2
+  review, High).** v0.20.2's core.worktree check guarded `resolve_session`
+  only; the identical `git rev-parse --show-toplevel` sat unguarded in
+  `tjor attach` (short-name qualification — a planted redirect could attach
+  the terminal to another repo's running agent when short names collide),
+  in `repo_root` (the trusted repo policy/config behind `trust`, `init`,
+  `policy` — a redirect could show the wrong path's policy to the operator's
+  informed-consent review) and in `doctor`. `workspace_toplevel()` now does
+  the cross-check once and everything resolves through it; the redirect
+  section of the launcher test covers attach and repo_root. The message no
+  longer suggests unsetting `core.worktree` when none is set (it names
+  `GIT_DIR`/`GIT_WORK_TREE` instead); `nearest_git_root` refuses a relative
+  path.
+- **The egress secret tripwire is bounded before decompression (v0.18.17
+  review, High).** The scan read `flow.request.content`, which mitmproxy
+  transparently decompresses — a ~1 MB gzip request body (under
+  `stream_large_bodies`) toward a scanned host could inflate to a gigabyte in
+  the shared proxy sidecar before `scan_max_bytes` applied: a decompression
+  bomb against the session's only egress. The scan now reads the wire bytes,
+  caps them, and inflates gzip/deflate with zlib's `max_length` (output
+  capped regardless of ratio); brotli/zstd bodies are forwarded unscanned,
+  like streamed bodies. Tests: a 50 MB bomb yields at most the cap; gzip
+  bodies are still scanned; the scan site keys on the SNI after the pin.
+- **`GH_TOKEN` is explicitly unset when the broker does not cover the API
+  host (v0.20.1 review, High).** The comment said "left unset"; now the code
+  enforces it, so an ambient token (a direct `docker run -e GH_TOKEN=…`, an
+  image-baked value) never rides into the cage un-brokered. Live test:
+  kube-only broker + ambient token → unset.
+- **Credential material is minted after every refusal (v0.19.0 review,
+  Medium).** `cmd_run` resolved the session and minted broker material
+  before the `--dir`/`--dir-ro` gates and the self-mount guard ran, so a
+  refused launch could leave a real PAT / GitHub App key / live kube token on
+  disk, invisible to `tjor ls`/`gc`. The mint now runs last; the launcher
+  test asserts a refused `--dir` leaves no `broker.json` (with a control).
+- **`ssl_insecure` fails closed at proxy startup (v0.20.1 review, Medium).**
+  SNI-keyed injection is safe only because upstream certificates are
+  verified; the addon's `configure` hook now shuts mitmproxy down if
+  `ssl_insecure` is ever set.
+
+### Changed
+- Dropped the unused `TJOR_ALLOW_SELF_MOUNT` export (v0.20.0 review: dead
+  code implying a cage-side re-check that does not exist). `self-install`
+  swaps the `current` symlink atomically (rename over, no unlinked window).
+- Tests: `kinds_present` covered for all six secret shapes; empty-secret and
+  bytes-SNI paths; the launcher test's redirect section comment now describes
+  the shipped design and its sections are in order.
+
 ## [0.20.3] — 2026-09-27 — Conformance probe follows the client's auth scheme
 
 ### Fixed

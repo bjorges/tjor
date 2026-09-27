@@ -104,6 +104,18 @@ class TestBoundaries:
 class TestKindsPresent:
     """kinds_present() names WHAT shapes matched, never a value (#62 tripwire signal)."""
 
+    @pytest.mark.parametrize("secret,kind", [
+        ("AKIAABCDEFGHIJKLMNOP", "aws-access-key-id"),
+        ("ghp_" + "a" * 36, "github-token"),
+        ("github_pat_" + "A1b2c3d4e5f6g7h8i9j0k1", "github-pat"),
+        ("xoxb-1234567890-abcdefghijkl", "slack-token"),
+        ("AIza" + "A" * 35, "google-api-key"),
+        ("-----BEGIN RSA PRIVATE KEY-----\nMIIEow\n-----END RSA PRIVATE KEY-----", "private-key"),
+    ])
+    def test_kinds_present_each_shape(self, secret, kind):
+        """Every detector shape is named by kinds_present (v0.18.17 review: only 2 of 6 were covered)."""
+        assert s.kinds_present(f"x {secret} y") == [kind]
+
     def test_single_kind(self):
         assert s.kinds_present("x AKIAABCDEFGHIJKLMNOP y") == ["aws-access-key-id"]
 

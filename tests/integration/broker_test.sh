@@ -132,6 +132,11 @@ check "kube-only hosts leave GH_TOKEN unset" test "${G_KUBE}" = "unset"
 check "github.com alone (no glob) leaves GH_TOKEN unset" test "${G_GITONLY}" = "unset"
 check "github.com alone still wires the git placeholder (independent decisions)" bash -c \
     "grep -q placeholder <<<'${H_GITONLY}'"
+# An AMBIENT token (direct `docker run -e GH_TOKEN=…`, an image-baked value)
+# must never ride into the cage un-brokered: not covered => explicitly unset.
+G_AMBIENT="$(docker run --rm -e TJOR_BROKER_ENABLED=1 -e TJOR_BROKER_HOSTS=kubeapi.example.com -e GH_TOKEN=ambient-not-a-secret "${IMAGE}" \
+    sh -c 'printf %s "${GH_TOKEN:-unset}"' 2>/dev/null || true)"
+check "an ambient GH_TOKEN is unset when the broker does not cover the API host" test "${G_AMBIENT}" = "unset"
 
 echo
 echo "broker: ${PASS} passed, ${FAIL} failed"

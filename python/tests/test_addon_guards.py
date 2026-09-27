@@ -1,6 +1,7 @@
 """Tests for the proxy addon's fail-closed wrapper and resolved-address
 (DNS-rebind/SSRF) guard — imported without mitmproxy, like the parity suite."""
 
+import base64
 import importlib.util
 import sys
 from pathlib import Path
@@ -180,7 +181,6 @@ class TestBrokerInjection:
         addon._apply_broker(flow)
         # git sends Basic; GitHub's git endpoint accepts ONLY Basic
         # (x-access-token:<token>) — the credential is re-issued in git's scheme (#65).
-        import base64
         assert flow.request.headers["authorization"] == \
             "Basic " + base64.b64encode(b"x-access-token:tok-123").decode()
 
@@ -267,6 +267,27 @@ class TestBrokerInjection:
             ))
         addon._apply_broker(flow)
         assert flow.request.headers["authorization"] == "token tjor-broker-placeholder"
+
+    def test_reissue_authorization_empty_secret_falls_back_to_canonical(self):
+        addon = self.make()
+        assert addon._reissue_authorization("Basic abc", "token ") == "token "
+        assert addon._reissue_authorization("Bearer abc", "token ") == "token "
+
+    def test_logical_host_decodes_bytes_sni(self):
+        pytest.importorskip("mitmproxy")
+        import types
+        from mitmproxy.http import Headers
+
+        addon = self.make(source_hosts="github.com,*.github.com")
+        flow = types.SimpleNamespace(
+            server_conn=types.SimpleNamespace(sni=b"api.github.com"),
+            request=types.SimpleNamespace(
+                host="140.82.121.6", pretty_host="api.github.com", port=443,
+                headers=Headers([(b"authorization", b"token tjor-broker-placeholder")]),
+            ))
+        assert addon._logical_host(flow) == "api.github.com"
+        addon._apply_broker(flow)
+        assert flow.request.headers["authorization"] == "token tok-123"
 
     def test_apply_broker_strips_when_no_credential(self, capsys):
         pytest.importorskip("mitmproxy")
@@ -1050,9 +1071,63 @@ class TestEgressSecretTripwire:
         addon._secret_scan_count = 0
         return addon
 
-    def _flow(self, host, body):
+    def _flow(self, host, body, encoding=None, sni=None):
         import types
-        return types.SimpleNamespace(request=types.SimpleNamespace(host=host, content=body))
+        headers = {"content-encoding": encoding} if encoding else {}
+        return types.SimpleNamespace(
+            server_conn=types.SimpleNamespace(sni=sni),
+            request=types.SimpleNamespace(host=host, content=body, raw_content=body, headers=headers))
+
+    def test_scan_keys_on_logical_host_after_pin(self, tmp_path):
+        """Regression (v0.18.17 review): the scan site must key on the SNI, not
+        the pinned IP mitmproxy reports in flow.request.host after #41."""
+        addon = self._addon(tmp_path)
+        body = f"prompt {self.TOKEN}".encode()
+        addon._scan_request_body(self._flow("10.0.0.7", body, sni=self.GW))
+        assert "github-token" in (tmp_path / "secretscan.log").read_text()
+
+    def test_gzip_body_scanned_after_bounded_inflate(self, tmp_path):
+        import gzip
+        addon = self._addon(tmp_path)
+        body = gzip.compress(f'{{"prompt":"key {self.TOKEN}"}}'.encode())
+        addon._scan_request_body(self._flow(self.GW, body, encoding="gzip"))
+        assert "github-token" in (tmp_path / "secretscan.log").read_text()
+
+    def test_decompression_bomb_is_bounded(self, tmp_path):
+        """v0.18.17 review (High): a small compressed body must never inflate past
+        SCAN_MAX_BYTES in the proxy — the cap applies to what zlib PRODUCES."""
+        import gzip
+        addon = self._addon(tmp_path)
+        addon.SCAN_MAX_BYTES = 4096
+        bomb = gzip.compress((b"\0" * 50_000_000) + self.TOKEN.encode())   # ~50 MB -> ~50 KB
+        assert len(bomb) < 200_000
+        out = addon._scan_bytes(self._flow(self.GW, bomb, encoding="gzip"))
+        assert out is not None and len(out) <= 4096                     # bounded output
+        addon._scan_request_body(self._flow(self.GW, bomb, encoding="gzip"))
+        log = tmp_path / "secretscan.log"
+        assert not log.exists() or log.read_text() == ""               # secret past the cap: unseen, not inflated
+
+    def test_unknown_encoding_forwarded_unscanned(self, tmp_path):
+        addon = self._addon(tmp_path)
+        addon._scan_request_body(self._flow(self.GW, b"br-bytes " + self.TOKEN.encode(), encoding="br"))
+        log = tmp_path / "secretscan.log"
+        assert not log.exists() or log.read_text() == ""
+
+    def test_configure_refuses_ssl_insecure(self, monkeypatch, capsys):
+        """v0.20.1 review: the SNI-keyed injection claim depends on upstream cert
+        verification; ssl_insecure must fail closed at startup."""
+        pytest.importorskip("mitmproxy")
+        import importlib, types
+        ctxmod = importlib.import_module("mitmproxy.ctx")
+        calls = []
+        monkeypatch.setattr(ctxmod, "options", types.SimpleNamespace(ssl_insecure=True), raising=False)
+        monkeypatch.setattr(ctxmod, "master", types.SimpleNamespace(shutdown=lambda: calls.append("shutdown")), raising=False)
+        load_addon().TjorPolicy().configure(set())
+        assert calls == ["shutdown"] and "ssl_insecure" in capsys.readouterr().err
+        calls.clear()
+        monkeypatch.setattr(ctxmod, "options", types.SimpleNamespace(ssl_insecure=False), raising=False)
+        load_addon().TjorPolicy().configure(set())
+        assert calls == []
 
     def test_secret_body_recorded_and_body_unchanged(self, tmp_path):
         addon = self._addon(tmp_path)

@@ -222,6 +222,13 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
     "core.worktree: home redirect names core.worktree, not the not-a-repository wording": (WORKSPACE_GATE, "session-launch", "launch-UX: redirect wording precedes the climb wording", False),
     "core.worktree: a linked worktree launches (containment holds)": (WORKSPACE_GATE, "session-launch", "functional: linked worktree", False),
     "core.worktree: a subdirectory launch is unchanged": (WORKSPACE_GATE, "session-launch", "functional: subdirectory launch", False),
+    "core.worktree: attach's short-name qualification refuses the redirect":
+        (WORKSPACE_GATE, "session-launch", "A core.worktree redirect cannot steer attach to another session", True),
+    "core.worktree: attach refusal never reached docker": (WORKSPACE_GATE, "session-launch", "gate: attach refusal precedes docker", False),
+    "core.worktree: repo_root (trust/init/policy) refuses the redirect": (WORKSPACE_GATE, "session-launch", "gate: trusted-repo resolution refuses a redirect", False),
+    "extra-dir gate: a refused --dir minted no credential material":
+        (WORKSPACE_GATE, "session-launch", "A refused extra dir leaves no minted credential behind", True),
+    "extra-dir gate: a launch that passes every gate does mint (control)": (WORKSPACE_GATE, "session-launch", "functional: control for the mint-order check", False),
 
     # --- self-mount suite (#67, launcher-side): adversarial guarantees (rendered) ---
     "self-mount guard: the checkout as the workspace is refused":

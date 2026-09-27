@@ -4,7 +4,7 @@
      Regenerate: python3 python/gen_boundary_matrix.py
      Drift-checked by tests/doc_consistency.sh (`--check`). -->
 
-Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate` and `self-mount` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (156 checks total; 53 adversarial guarantees below, the rest functional/config checks the suites also run).
+Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate` and `self-mount` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (161 checks total; 55 adversarial guarantees below, the rest functional/config checks the suites also run).
 
 ## cage-network
 
@@ -70,10 +70,12 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 
 | Guarantee | Probe | Suite |
 |---|---|---|
+| A core.worktree redirect cannot steer attach to another session | `core.worktree: attach's short-name qualification refuses the redirect` | workspace-gate |
 | A core.worktree redirect of the workspace is refused | `core.worktree: redirect toward a harmless directory is refused` | workspace-gate |
 | A core.worktree redirect toward an ancestor directory is refused | `core.worktree: redirect toward an ancestor holding other repos is refused` | workspace-gate |
 | A hostile dir name is escape-sanitized in launch output | `hostile parent dir name announced escape-sanitized` | landlock |
 | A hostile dotenv filename is escape-sanitized in launch output | `hostile dotenv filename is announced escape-sanitized` | landlock |
+| A refused extra dir leaves no minted credential behind | `extra-dir gate: a refused --dir minted no credential material` | workspace-gate |
 | A refused launch leaves no session state directory behind | `workspace gate: no state dir created after a refusal` | workspace-gate |
 | A workspace inside an installed launcher tree is refused | `a workspace inside an installed tree is refused` | self-mount |
 | A workspace reached by git climbing to a sensitive toplevel is refused | `workspace gate: non-repo subdir of a home-rooted repo refused` | workspace-gate |

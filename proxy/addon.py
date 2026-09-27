@@ -43,6 +43,7 @@ import re
 import socket
 import sys
 import time
+import zlib
 from typing import Callable, NamedTuple
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -256,6 +257,35 @@ def _record_secret_scan(host: str, kinds: "list[str]") -> None:
         pass
 
 
+def _scan_bytes(flow) -> "bytes | None":
+    """At most SCAN_MAX_BYTES of the request body, bounded BEFORE decoding.
+    `flow.request.content` would transparently decompress Content-Encoding —
+    a ~1 MB gzip body (under stream_large_bodies) inflates to a gigabyte in
+    this shared sidecar before any cap applied: a decompression bomb against
+    the session's only egress (v0.18.17 review, High). So: read the WIRE bytes
+    (`raw_content`, never decoded by mitmproxy), cap them, and for gzip /
+    deflate inflate with zlib's `max_length`, which stops producing output at
+    the cap no matter what the stream expands to. Other encodings (br, zstd)
+    are forwarded unscanned — the same honest stance as streamed bodies."""
+    raw = flow.request.raw_content
+    if not raw:
+        return None
+    raw = raw[:SCAN_MAX_BYTES]
+    enc = (flow.request.headers.get("content-encoding") or "").strip().lower()
+    if enc in ("", "identity"):
+        return raw
+    if enc in ("gzip", "x-gzip", "deflate"):
+        wbits = zlib.MAX_WBITS | 32          # auto-detect gzip / zlib headers
+        try:
+            return zlib.decompressobj(wbits).decompress(raw, SCAN_MAX_BYTES)
+        except zlib.error:
+            try:                              # raw deflate (no zlib header)
+                return zlib.decompressobj(-zlib.MAX_WBITS).decompress(raw, SCAN_MAX_BYTES)
+            except zlib.error:
+                return None
+    return None
+
+
 def _scan_request_body(flow) -> None:
     """Observe-only egress secret tripwire (#62): for an ALLOWED request to a
     configured scan host, scan up to SCAN_MAX_BYTES of the body for known secret
@@ -267,10 +297,10 @@ def _scan_request_body(flow) -> None:
         host = tjor_policy._canon_host(_logical_host(flow))
         if not SCAN_HOSTS or host not in SCAN_HOSTS:
             return
-        body = flow.request.content   # None when streamed past stream_large_bodies
+        body = _scan_bytes(flow)      # bounded BEFORE any decompression (see below)
         if not body:
             return
-        text = body[:SCAN_MAX_BYTES].decode("utf-8", "replace")
+        text = body.decode("utf-8", "replace")
         kinds = tjor_secrets.kinds_present(text)
         if kinds:
             _record_secret_scan(host, kinds)
@@ -842,6 +872,22 @@ def _agent_rule(rule: str) -> str:
 # ------------------------------------------------------------ mitmproxy glue
 
 class TjorPolicy:
+    def configure(self, updated) -> None:
+        # Fail-closed precondition (v0.20.1 review): host-scoped injection keys
+        # on the client's SNI *because* mitmproxy verifies the upstream
+        # certificate against it — with `ssl_insecure` a forged SNI would steer
+        # a credential to any server. Nothing in tjor sets it; refuse to run if
+        # anything ever does, rather than silently reopening that door.
+        try:
+            from mitmproxy import ctx
+            if getattr(ctx.options, "ssl_insecure", False):
+                print("tjor: FATAL: ssl_insecure is set — upstream certificates would not be verified, "
+                      "so credential injection keyed on SNI would be forgeable; refusing to run",
+                      file=sys.stderr, flush=True)
+                ctx.master.shutdown()
+        except ImportError:
+            pass
+
     def server_connect(self, data) -> None:
         # Resolve-and-pin (#41): validate the destination HERE — the hook that
         # decides where the upstream socket actually goes — and pin the address

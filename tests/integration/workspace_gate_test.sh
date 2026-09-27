@@ -55,9 +55,16 @@ git -C "${HOME}/proj" init -q
 git -C "${HOME}/proj2" init -q
 export XDG_CONFIG_HOME="${WORK}/xdg"; mkdir -p "${XDG_CONFIG_HOME}/tjor"
 STATE="${WORK}/state/sessions"; mkdir -p "${STATE}"
+# A stub pat broker (no network) so the test can prove WHEN credential
+# material gets minted: never before a refusal (v0.19.0 review).
+export TJOR_TEST_PAT="stub-not-a-secret-$$"
 cat >"${XDG_CONFIG_HOME}/tjor/config.toml" <<TOML
 [session]
 root = "${STATE}"
+[broker]
+source = "pat"
+hosts = ["github.com", "*.github.com"]
+pat_env = "TJOR_TEST_PAT"
 TOML
 unset TJOR_USER_CONFIG TJOR_UNSAFE_DIR
 
@@ -129,16 +136,22 @@ check "extra-dir gate: --dir refusal names the sensitive path" grep -qF "refusin
 check "extra-dir gate: session root refused via --dir-ro" refused_run "${HOME}/proj" --dir-ro "${STATE}" -- true
 check "extra-dir gate: --dir-ro refusal states the read-only exposure" grep -qF "even read-only, this exposes its contents" "${LAST_OUT}"
 check "extra-dir gate: refusals never reached docker" never_reached_docker
+no_broker_minted() { local d; for d in "${STATE}"/proj-*/broker/broker.json; do [[ -e "${d}" ]] && return 1; done; return 0; }
+check "extra-dir gate: a refused --dir minted no credential material" no_broker_minted
 run_from "${HOME}/proj" --dir "${STATE}" --unsafe-dir -- true || true   # continues past the gate into the (shimmed) docker path
+broker_minted_after_pass() { local d; for d in "${STATE}"/proj-*/broker/broker.json; do [[ -e "${d}" ]] && return 0; done; return 1; }
+check "extra-dir gate: a launch that passes every gate does mint (control)" broker_minted_after_pass
 check "extra-dir gate: --unsafe-dir warns on an actually-overridden --dir" grep -qF -e "--unsafe-dir: mounting sensitive host path ${STATE} READ-WRITE" "${LAST_OUT}"
 run_from "${HOME}/proj" --dir "${HOME}/proj2" -- true || true
 check "extra-dir gate: no override warning for an ordinary --dir" no_gate_text
 
-# === 7. core.worktree redirect (#76 reproduction, kept as a regression test) =
+# === 6. core.worktree redirect (#76 reproduction, kept as a regression test) =
 # A session always has its workspace repo writable, so it can plant
 # core.worktree; git then reports the planted path as the toplevel from
-# anywhere inside the repo. The launcher must refuse a toplevel that does not
-# CONTAIN the launch directory — on the launch path and on lifecycle paths.
+# anywhere inside the repo. The launcher finds the repository on its own (the
+# nearest .git above the launch dir) and refuses git's toplevel when it
+# disagrees — on the launch path, on lifecycle paths, and in every other
+# host-side consumer (attach, repo_root behind trust/init/policy).
 mkdir -p "${HOME}/wt/sub"; git -C "${HOME}/wt" init -q
 no_state_for() { local d; for d in "${STATE}/$1-"*; do [[ -e "${d}" ]] && return 1; done; return 0; }
 lifecycle_refused() { ! ( cd "$1" && resolve_session opencode "" "" ) >/dev/null 2>"${LAST_OUT}"; }
@@ -148,6 +161,12 @@ check "core.worktree: refusal names the launch dir and the reported work tree" g
 check "core.worktree: refusal names the setting and its config file" grep -qF "core.worktree = '${HOME}/proj2' in ${HOME}/wt/.git/config" "${LAST_OUT}"
 check "core.worktree: no state dir for the redirected path" no_state_for proj2
 check "core.worktree: lifecycle resolution refuses the redirect too" lifecycle_refused "${HOME}/wt/sub"
+rm -f "${WORK}/docker_reached"   # section 5's override runs reached the shim by design; attach must not
+attach_refused() { ! ( cd "$1" && cmd_attach foo ) >/dev/null 2>"${LAST_OUT}"; }
+repo_root_refused() { ! ( cd "$1" && repo_root ) >/dev/null 2>"${LAST_OUT}"; }
+check "core.worktree: attach's short-name qualification refuses the redirect" attach_refused "${HOME}/wt/sub"
+check "core.worktree: attach refusal never reached docker" never_reached_docker
+check "core.worktree: repo_root (trust/init/policy) refuses the redirect" repo_root_refused "${HOME}/wt/sub"
 mkdir -p "${HOME}/all"; mv "${HOME}/wt" "${HOME}/all/wt"
 git -C "${HOME}/all/wt" config core.worktree "${HOME}/all"
 check "core.worktree: redirect toward an ancestor holding other repos is refused" refused "${HOME}/all/wt/sub"
@@ -162,7 +181,7 @@ git -C "${HOME}/wt" worktree add -q "${HOME}/wt-linked" >/dev/null 2>&1
 check "core.worktree: a linked worktree launches (containment holds)" launch_from "${HOME}/wt-linked"
 check "core.worktree: a subdirectory launch is unchanged" launch_from "${HOME}/wt/sub"
 
-# === 6. Help text names the workspace ======================================
+# === 7. Help text names the workspace ======================================
 check "help text names the workspace gate" bash -c "'${ROOT}/bin/tjor' help | grep -qF 'sensitive paths refused as the workspace or as --dir/--dir-ro unless --unsafe-dir'"
 
 echo

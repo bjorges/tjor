@@ -71,8 +71,9 @@ safeprint() { printf %s "$1" | python3 "${TJOR_ROOT}/python/tjor_safeprint.py"; 
 # The active policy file, most-specific first: explicit override → a TRUSTED
 # repo .tjor/policy.toml → the user policy → the packaged default. A repo
 # policy is honored only after `tjor trust` (it can widen egress).
-repo_root() { # echoes the current repo's toplevel, or nothing
-    echo "${TJOR_WORKSPACE:-$(git rev-parse --show-toplevel 2>/dev/null || true)}"
+repo_root() { # echoes the current repo's toplevel, or nothing; dies on a core.worktree redirect (#76)
+    if [[ -n "${TJOR_WORKSPACE:-}" ]]; then printf '%s' "${TJOR_WORKSPACE}"; return 0; fi
+    workspace_toplevel
 }
 
 policy_file() {
@@ -855,11 +856,38 @@ verify_bind_source() {
 # steer the workspace.
 nearest_git_root() { # $1 = physical directory
     local d="$1"
+    [[ "${d}" == /* ]] || return 1
     while :; do
         if [[ -e "${d}/.git" ]]; then printf '%s' "${d}"; return 0; fi
         [[ "${d}" == "/" || -z "${d}" ]] && return 1
         d="$(dirname "${d}")"
     done
+}
+
+# The workspace git reports, cross-checked against tjor's own discovery
+# (#76): echoes the toplevel (empty when not inside a repository) and DIES on
+# a mismatch — a planted core.worktree, or an odd GIT_DIR/GIT_WORK_TREE
+# environment. ONE resolver for every host-side consumer — resolve_session
+# (launch and lifecycle), attach's short-name qualification, repo_root
+# (trusted repo policy/config behind trust/init/policy) and doctor — because
+# the v0.20.2 review found the first fix guarded resolve_session alone while
+# the same `git rev-parse --show-toplevel` sat unguarded in four siblings.
+# Callers use `ws="$(workspace_toplevel)" || exit 1`: die() in a command
+# substitution ends only the subshell, so the caller must propagate.
+workspace_toplevel() {
+    local ws cwd found gitdir redirect
+    ws="$(git rev-parse --show-toplevel 2>/dev/null)" || return 0
+    cwd="$(pwd -P)"
+    found="$(nearest_git_root "${cwd}" || true)"
+    if [[ "${ws}" != "${found}" ]]; then
+        gitdir="$(git rev-parse --absolute-git-dir 2>/dev/null || echo '?')"
+        redirect="$(git config --get core.worktree 2>/dev/null || true)"
+        if [[ -n "${redirect}" ]]; then
+            die "refusing: git reports the work tree of ${cwd} as ${ws}, but the nearest repository above the launch directory is ${found:-none} — core.worktree = '${redirect}' in ${gitdir}/config (a session with this repo mounted can plant that); unset it (git config --unset core.worktree) or launch from the real work tree"
+        fi
+        die "refusing: git reports the work tree of ${cwd} as ${ws}, but the nearest repository above the launch directory is ${found:-none} — no core.worktree is set, so check GIT_DIR / GIT_WORK_TREE in your environment; launch from the real work tree"
+    fi
+    printf '%s' "${ws}"
 }
 
 session_base_id() { # $1 = workspace path
@@ -869,11 +897,12 @@ session_base_id() { # $1 = workspace path
 # Resolve a session's identity + topology env (id, dirs, project, compose env)
 # with NO side effects — no credential minting. Read-only and teardown commands
 # (status/down/reset/denials) use this directly so they never assemble broker
-# material; under a kube broker source, session_setup would otherwise mint a
+# material; under a kube broker source, the launch path would otherwise mint a
 # real short-TTL ServiceAccount token against the cluster just to resolve a path.
 resolve_session() { # $1 = harness, $2 = task id (optional), $3 = session name (optional), $4 = "launch" on the run path
-    local ws root sid in_repo="" cwd gitdir redirect found
-    if ws="$(git rev-parse --show-toplevel 2>/dev/null)"; then in_repo=1; else
+    local ws root sid in_repo="" cwd gitdir
+    ws="$(workspace_toplevel)" || exit 1   # dies on a core.worktree redirect (#76)
+    if [[ -n "${ws}" ]]; then in_repo=1; else
         # PHYSICAL path (pwd -P), matching git's own canonicalized toplevel
         # and the --dir/--dir-ro resolution: a logical (symlinked) spelling
         # here would compare in a different namespace than the extras and
@@ -882,38 +911,10 @@ resolve_session() { # $1 = harness, $2 = task id (optional), $3 = session name (
         ws="$(pwd -P)"
         warn "not inside a git repository — using ${ws} as the workspace"
     fi
-    # Workspace integrity (#76, spec: session-launch): git's toplevel is
-    # trusted only if it is the repository tjor would find on its own — the
-    # nearest ancestor of the launch directory (itself included) holding a
-    # .git entry. A repo-local `core.worktree` — writable by any session that
-    # has the repo mounted, and the workspace always is — makes `rev-parse
-    # --show-toplevel` answer with an arbitrary path from anywhere inside the
-    # repo (a sibling, an ANCESTOR such as the directory holding every repo,
-    # or $HOME), so the next host-side launch would silently adopt THAT
-    # directory as the workspace (mounted writable, tree-trusted, a different
-    # session id), and lifecycle commands would act on the wrong session.
-    # Containment alone is not enough (an ancestor redirect contains the
-    # launch dir), hence the independent discovery. Every honest resolution
-    # — plain repo, subdirectory, linked worktree (.git file), submodule,
-    # nested repo, symlinked spelling (both sides physical) — agrees with the
-    # walk. Checked on EVERY resolution path and before the sensitive-path
-    # gate, so a redirect toward $HOME is reported as what it is. No
-    # override: a repo whose work tree is elsewhere is never a tjor
-    # workspace — fix the config or launch from the real work tree (the
-    # qualified --session id still works from any other directory).
-    if [[ -n "${in_repo}" ]]; then
-        cwd="$(pwd -P)"
-        found="$(nearest_git_root "${cwd}" || true)"
-        if [[ "${ws}" != "${found}" ]]; then
-            gitdir="$(git rev-parse --absolute-git-dir 2>/dev/null || echo '?')"
-            redirect="$(git config --get core.worktree 2>/dev/null || true)"
-            die "refusing: git reports the work tree of ${cwd} as ${ws}, but the nearest repository above the launch directory is ${found:-none}${redirect:+ — core.worktree = '${redirect}' in ${gitdir}/config (a session with this repo mounted can plant that)}; unset it (git config --unset core.worktree) or launch from the real work tree"
-        fi
-    fi
     # Workspace gate (#64, spec: session-launch): the primary workspace goes
     # through the SAME sensitive-path refusal as --dir/--dir-ro — here, before
     # the state directory is created (end of this function) and before any
-    # credential is minted (session_setup, right after). Launch path only:
+    # credential is minted (cmd_run, after every gate). Launch path only:
     # lifecycle commands (down/status/reset/denials) resolve the same
     # workspace and must keep working for a session launched under
     # --unsafe-dir. When git discovery climbed ABOVE the launch directory to
@@ -1038,17 +1039,6 @@ resolve_session() { # $1 = harness, $2 = task id (optional), $3 = session name (
     mkdir -p "${TJOR_SESSION_DIR}/home"
 }
 
-# Full launch setup: resolve the session AND assemble broker material (which may
-# mint a live credential). Only the launch path (cmd_run) uses this — the
-# "launch" marker makes resolve_session REFUSE a foreign fully-qualified
-# session id here (lifecycle commands honor one; a launch never does).
-session_setup() { # $1 = harness, $2 = task id (optional), $3 = session name (optional)
-    resolve_session "${1}" "${2}" "${3}" launch
-    prepare_broker
-    prepare_gateway
-    prepare_secret_scan   # #62: after prepare_gateway (needs the gateway host)
-}
-
 # Egress secret tripwire (#62): the inference hosts whose request bodies the
 # proxy scans = the configured `secrets.scan_hosts` PLUS the gateway host when
 # the gateway is enabled (the clean inference chokepoint). Empty => the proxy
@@ -1151,7 +1141,7 @@ cmd_run() {
     # resolve_session reads it for the primary workspace (and the entrypoint
     # for its system-directory re-check), the loops below for the extras.
     if [[ -n "${unsafe_dir}" ]]; then export TJOR_UNSAFE_DIR=1; fi
-    session_setup "${harness}" "${task}" "${name}"
+    resolve_session "${harness}" "${task}" "${name}" launch
     prepare_profile "${profile}" "${profile_dir}"
     # Multi-repo (--dir): resolve each to an absolute path now (existence
     # check); VM-share verification + mounting happen in run_agent, after the
@@ -1230,7 +1220,6 @@ cmd_run() {
     # and is announced. Applies to every install kind: a checkout and an
     # installed tree are the same threat. --allow-self-mount overrides,
     # loudly and only when it actually overrides something.
-    if [[ -n "${allow_self_mount}" ]]; then export TJOR_ALLOW_SELF_MOUNT=1; fi
     local self_root
     for self_root in "${TJOR_WORKSPACE}" "${TJOR_EXTRA_DIRS[@]:-}"; do
         [[ -n "${self_root}" ]] || continue
@@ -1245,6 +1234,13 @@ cmd_run() {
             echo "tjor: note: the running tjor tree ${TJOR_ROOT} is mounted read-only via ${self_root}" >&2
         fi
     done
+    # Credential material is assembled only NOW (v0.19.0 review): every
+    # refusal above — sensitive paths, writability conflicts, the self-mount
+    # guard — precedes the mint, so an aborted launch never leaves a real PAT,
+    # GitHub App key or live kube ServiceAccount token orphaned on disk.
+    prepare_broker
+    prepare_gateway
+    prepare_secret_scan   # #62: after prepare_gateway (needs the gateway host)
     resolve_agent_image "${harness}"
     # Collision guard: a session id already backing a running agent must not
     # be launched again — a second unnamed `tjor run` in the same workspace
@@ -1713,7 +1709,12 @@ cmd_attach() {
     # qualified against the CURRENT workspace — so the name a user launched
     # with (`tjor run --session foo`) reattaches with `tjor attach foo`.
     if [[ -n "${want}" ]]; then
-        qualified="$(session_base_id "$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)")-$(tr '[:upper:]' '[:lower:]' <<<"${want}")"
+        # Same guarded resolver as launch/lifecycle (#76 review): a planted
+        # core.worktree must not qualify the short name against another
+        # repo's session and attach the terminal to the wrong agent.
+        local ws; ws="$(workspace_toplevel)" || exit 1
+        [[ -n "${ws}" ]] || ws="$(pwd -P)"
+        qualified="$(session_base_id "${ws}")-$(tr '[:upper:]' '[:lower:]' <<<"${want}")"
     fi
     # Field-separate on US (\x1f), not '|' — a workspace path can contain a
     # literal pipe (consistent with ls/gc).
@@ -2133,7 +2134,8 @@ cmd_doctor() {
     fi
     echo "tjor root:     ${TJOR_ROOT} (${kind})"
     if [[ -d "${TJOR_ROOT}/.git" ]]; then
-        ws="$(git rev-parse --show-toplevel 2>/dev/null || pwd -P)"
+        ws="$(workspace_toplevel)" || exit 1
+        [[ -n "${ws}" ]] || ws="$(pwd -P)"
         if self_mount_overlaps "${ws}"; then
             warn "a 'tjor run' from here would mount this checkout WRITABLE (workspace ${ws}) and is refused by the self-mount guard — run tjor from an immutable install: tjor self-install, then ${TJOR_INSTALL_ROOT:-$HOME/.tjor/install}/current/bin/tjor"
         fi
@@ -2186,7 +2188,10 @@ cmd_self_install() {
         fi
         echo "tjor: installed ${sha} → ${root}/${sha} (read-only; the COMMITTED tree — uncommitted changes in ${TJOR_ROOT} are not included)" >&2
     fi
-    ln -sfn "${sha}" "${root}/current"
+    # Atomic swap: build the link aside, rename over `current` (rename(2) is
+    # atomic; `ln -sfn` alone unlinks then re-creates, a window with no link).
+    [[ -d "${root}/current" && ! -L "${root}/current" ]] && die "self-install: ${root}/current is a directory, expected a symlink"
+    ln -sfn "${sha}" "${root}/.current.$$" && mv -f "${root}/.current.$$" "${root}/current"
     echo "tjor: point launchers at: ${root}/current/bin/tjor" >&2
     if [[ -n "${prev}" && "${prev}" != "${sha}" ]]; then
         echo "tjor: changes since the previous install (${prev:0:12}):" >&2
