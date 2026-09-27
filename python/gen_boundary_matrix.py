@@ -1,13 +1,17 @@
 #!/usr/bin/env python3
 """Generate the adversarial boundary results matrix (#38) from the suites.
 
-tjor's boundary is proven by two adversarial suites — the conformance probes
-(`images/conformance/probes.py`, each an `@probe("...")`) and the kernel-sandbox
+tjor's boundary is proven by three suites — the conformance probes
+(`images/conformance/probes.py`, each an `@probe("...")`), the kernel-sandbox
 integration test (`tests/integration/landlock_test.sh`, each a `check "..."` or
-`ok "..."`). Their results otherwise live only in CI logs. This renders a
-human-readable matrix (`docs/boundary-matrix.md`) mapping each adversarial
-guarantee to the probe that proves it, its suite, and the spec capability it
-backs.
+`ok "..."`), and the launcher-side workspace-gate test
+(`tests/integration/workspace_gate_test.sh`, same `check`/`ok` form; #64). The
+third is a HOST guarantee, not a cage probe: it proves what the launcher refuses
+before any container exists (a sensitive workspace or mount), which the cage
+cannot re-check for itself. Their results otherwise live only in CI logs. This
+renders a human-readable matrix (`docs/boundary-matrix.md`) mapping each
+adversarial guarantee to the probe that proves it, its suite, and the spec
+capability it backs.
 
 Regenerated from the suites, drift-checked: REGISTRY below maps every check name
 to (suite, capability, guarantee, boundary). The generator asserts REGISTRY's
@@ -34,10 +38,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 PROBES_FILE = ROOT / "images" / "conformance" / "probes.py"
 LANDLOCK_FILE = ROOT / "tests" / "integration" / "landlock_test.sh"
+WORKSPACE_GATE_FILE = ROOT / "tests" / "integration" / "workspace_gate_test.sh"
 MATRIX_FILE = ROOT / "docs" / "boundary-matrix.md"
 
 CONFORMANCE = "conformance"
 LANDLOCK = "landlock"
+WORKSPACE_GATE = "workspace-gate"
 
 # name -> (suite, capability, guarantee, boundary)
 # boundary=True  -> an adversarial cage guarantee (rendered in the matrix)
@@ -148,6 +154,55 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
     "off runs the harness unwrapped": (LANDLOCK, "kernel-sandbox", "functional: off runs unwrapped", False),
     "invalid mode aborts (exit nonzero)": (LANDLOCK, "policy-ergonomics", "config-validation: invalid mode aborts", False),
     "invalid mode names the bad value": (LANDLOCK, "policy-ergonomics", "config-validation: error names value", False),
+
+    # --- workspace-gate suite (#64, launcher-side): adversarial guarantees (rendered) ---
+    "workspace gate: home-rooted dotfiles repo refused from the home dir":
+        (WORKSPACE_GATE, "session-launch", "Sensitive host path refused as the primary workspace", True),
+    "workspace gate: non-repo subdir of a home-rooted repo refused":
+        (WORKSPACE_GATE, "session-launch", "A workspace reached by git climbing to a sensitive toplevel is refused", True),
+    "workspace gate: no state dir created after a refusal":
+        (WORKSPACE_GATE, "session-launch", "A refused launch leaves no session state directory behind", True),
+    "workspace gate: session root refused as the workspace":
+        (WORKSPACE_GATE, "session-launch", "The session state root is refused as the workspace", True),
+    "extra-dir gate: session root refused via --dir":
+        (WORKSPACE_GATE, "session-launch", "The session state root is refused as a writable extra mount", True),
+    "extra-dir gate: session root refused via --dir-ro":
+        (WORKSPACE_GATE, "session-launch", "The session state root is refused as a read-only extra mount", True),
+
+    # --- workspace-gate suite: functional / launch-UX (acknowledged, not rendered) ---
+    "sensitive roots: session root derived from config": (WORKSPACE_GATE, "session-launch", "functional: session root derivation", False),
+    "sensitive roots: config dir derived from XDG_CONFIG_HOME": (WORKSPACE_GATE, "session-launch", "functional: config dir derivation", False),
+    "sensitive roots: TJOR_USER_CONFIG dirname wins over XDG": (WORKSPACE_GATE, "session-launch", "functional: TJOR_USER_CONFIG precedence", False),
+    "session root itself is sensitive": (WORKSPACE_GATE, "session-launch", "rule: session root equal", False),
+    "a dir under the session root is sensitive": (WORKSPACE_GATE, "session-launch", "rule: session root descendant", False),
+    "an ancestor of the session root is sensitive": (WORKSPACE_GATE, "session-launch", "rule: session root ancestor", False),
+    "a sibling whose name extends the session root is not sensitive": (WORKSPACE_GATE, "session-launch", "rule: component-boundary precision", False),
+    "config dir itself is sensitive": (WORKSPACE_GATE, "session-launch", "rule: config dir equal", False),
+    "a dir under the config dir is sensitive": (WORKSPACE_GATE, "session-launch", "rule: config dir descendant", False),
+    "an ordinary repo is not sensitive": (WORKSPACE_GATE, "session-launch", "rule: ordinary repo passes", False),
+    "workspace gate: refusal names the home dir as a sensitive workspace": (WORKSPACE_GATE, "session-launch", "launch-UX: refusal names the path", False),
+    "workspace gate: git-climb refusal names cwd, toplevel and git dir": (WORKSPACE_GATE, "session-launch", "launch-UX: git-climb explanation", False),
+    "workspace gate: git-climb refusal names the remedy": (WORKSPACE_GATE, "session-launch", "launch-UX: git-climb remedy", False),
+    "workspace gate: ancestor of the session root refused as the workspace": (WORKSPACE_GATE, "session-launch", "gate: session root ancestor as workspace", False),
+    "workspace gate: dir under the session root refused as the workspace": (WORKSPACE_GATE, "session-launch", "gate: session root descendant as workspace", False),
+    "workspace gate: config dir refused as the workspace": (WORKSPACE_GATE, "session-launch", "gate: config dir as workspace", False),
+    "workspace gate: dir under the config dir refused as the workspace": (WORKSPACE_GATE, "session-launch", "gate: config dir descendant as workspace", False),
+    "workspace gate: still no state dir after every refusal": (WORKSPACE_GATE, "session-launch", "gate: no state dir after any refusal", False),
+    "workspace gate: refusals never reached docker": (WORKSPACE_GATE, "session-launch", "gate: refusals precede docker", False),
+    "workspace gate: --unsafe-dir launches the home-rooted workspace": (WORKSPACE_GATE, "session-launch", "override: --unsafe-dir launches", False),
+    "workspace gate: --unsafe-dir warns, naming the exposed workspace": (WORKSPACE_GATE, "session-launch", "override: loud warning names the path", False),
+    "workspace gate: ordinary repo launches with no gate output": (WORKSPACE_GATE, "session-launch", "functional: ordinary repo launches", False),
+    "workspace gate: ordinary repo launch prints no refusal or override text": (WORKSPACE_GATE, "session-launch", "functional: ordinary repo is silent", False),
+    "workspace gate: --unsafe-dir on an ordinary repo stays silent": (WORKSPACE_GATE, "session-launch", "override: silent when nothing overridden", False),
+    "workspace gate: no override warning when nothing was overridden": (WORKSPACE_GATE, "session-launch", "override: no spurious warning", False),
+    "lifecycle path: resolve without the launch marker skips the gate": (WORKSPACE_GATE, "session-launch", "functional: lifecycle commands skip the gate", False),
+    "lifecycle path: no refusal or override text": (WORKSPACE_GATE, "session-launch", "functional: lifecycle commands are silent", False),
+    "extra-dir gate: --dir refusal names the sensitive path": (WORKSPACE_GATE, "session-launch", "launch-UX: --dir refusal names the path", False),
+    "extra-dir gate: --dir-ro refusal states the read-only exposure": (WORKSPACE_GATE, "session-launch", "launch-UX: --dir-ro refusal wording", False),
+    "extra-dir gate: refusals never reached docker": (WORKSPACE_GATE, "session-launch", "gate: extra-dir refusals precede docker", False),
+    "extra-dir gate: --unsafe-dir warns on an actually-overridden --dir": (WORKSPACE_GATE, "session-launch", "override: loud warning on --dir", False),
+    "extra-dir gate: no override warning for an ordinary --dir": (WORKSPACE_GATE, "session-launch", "override: no spurious --dir warning", False),
+    "help text names the workspace gate": (WORKSPACE_GATE, "session-launch", "launch-UX: help text", False),
 }
 
 # Order capabilities are grouped in the rendered matrix.
@@ -179,7 +234,9 @@ def parse_landlock(text: str) -> list[str]:
 
 
 def parsed_names() -> list[str]:
-    return parse_probes(PROBES_FILE.read_text()) + parse_landlock(LANDLOCK_FILE.read_text())
+    return (parse_probes(PROBES_FILE.read_text())
+            + parse_landlock(LANDLOCK_FILE.read_text())
+            + parse_landlock(WORKSPACE_GATE_FILE.read_text()))
 
 
 def cross_check(names: list[str]) -> list[str]:
@@ -202,11 +259,14 @@ def render(names: list[str]) -> str:
         "     Regenerate: python3 python/gen_boundary_matrix.py",
         "     Drift-checked by tests/doc_consistency.sh (`--check`). -->",
         "",
-        f"Each row is an adversarial guarantee the cage enforces, the probe that "
+        f"Each row is an adversarial guarantee tjor enforces, the probe that "
         f"proves it, and the spec capability it backs. **Status is coverage, not a "
         f"per-run result**: every guarantee here is exercised by a live probe that the "
-        f"CI `conformance` and `landlock` jobs run — a red CI blocks merge, so "
-        f"\"listed here\" means \"proven green in CI\". Generated from the suite "
+        f"CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "
+        f"\"listed here\" means \"proven green in CI\". The `conformance` and "
+        f"`landlock` suites probe the cage from inside; the `workspace-gate` suite is "
+        f"launcher-side (a host guarantee the cage cannot re-check: what `tjor run` "
+        f"refuses before any container exists). Generated from the suite "
         f"sources ({len(names)} checks total; {n_boundary} adversarial guarantees "
         f"below, the rest functional/config checks the suites also run).",
         "",

@@ -276,6 +276,28 @@ if [[ -n "${TJOR_SAFE_DIRS:-}" || -n "${TJOR_RO_DIRS:-}" ]]; then
         fi
         _safe+=("${_n}")
     done <<<"${TJOR_SAFE_DIRS:-}"
+    # System-directory roots are refused outright (#64, spec: session-launch):
+    # a root at or under /etc, /usr, /var, /bin, /sbin, /boot, /sys, /proc,
+    # /dev or /root would be tree-trusted and (via the kernel tier) granted
+    # to the agent. '/' itself is already refused by _norm_root. This is the
+    # ONLY half of the launcher's sensitive-path gate the cage can judge: the
+    # host home and its credential dirs, the session root and the tjor config
+    # dir are host facts this container cannot see, so those are a LAUNCHER
+    # guarantee (bin/tjor dir_is_sensitive) — not re-checked here, and never
+    # claimed to be. The launcher's --unsafe-dir override reaches here as
+    # TJOR_UNSAFE_DIR so the one override stays one: it downgrades this
+    # refusal to a loud warning, exactly as it does host-side.
+    for _s in "${_safe[@]}"; do
+        case "${_s}" in
+            /etc|/etc/*|/usr|/usr/*|/var|/var/*|/bin|/bin/*|/sbin|/sbin/*|/boot|/boot/*|/sys|/sys/*|/proc|/proc/*|/dev|/dev/*|/root|/root/*)
+                if [[ -n "${TJOR_UNSAFE_DIR:-}" ]]; then
+                    echo "tjor-entrypoint: WARNING: --unsafe-dir: mount root '${_s}' is a system directory — continuing on the launcher's override." >&2
+                else
+                    echo "tjor-entrypoint: FATAL: mount root '${_s}' is a system directory — refusing to start (pass --unsafe-dir at launch to override)." >&2
+                    exit "${TJOR_EXIT_BOUNDARY}"
+                fi ;;
+        esac
+    done
     while IFS= read -r _d; do
         [[ -n "${_d}" ]] || continue
         if ! _n="$(_norm_root "${_d}")"; then

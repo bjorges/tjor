@@ -817,7 +817,7 @@ session_base_id() { # $1 = workspace path
 # material; under a kube broker source, session_setup would otherwise mint a
 # real short-TTL ServiceAccount token against the cluster just to resolve a path.
 resolve_session() { # $1 = harness, $2 = task id (optional), $3 = session name (optional), $4 = "launch" on the run path
-    local ws root sid in_repo=""
+    local ws root sid in_repo="" cwd gitdir
     if ws="$(git rev-parse --show-toplevel 2>/dev/null)"; then in_repo=1; else
         # PHYSICAL path (pwd -P), matching git's own canonicalized toplevel
         # and the --dir/--dir-ro resolution: a logical (symlinked) spelling
@@ -826,6 +826,32 @@ resolve_session() { # $1 = harness, $2 = task id (optional), $3 = session name (
         # refusal (re-review of v0.17.1).
         ws="$(pwd -P)"
         warn "not inside a git repository — using ${ws} as the workspace"
+    fi
+    # Workspace gate (#64, spec: session-launch): the primary workspace goes
+    # through the SAME sensitive-path refusal as --dir/--dir-ro — here, before
+    # the state directory is created (end of this function) and before any
+    # credential is minted (session_setup, right after). Launch path only:
+    # lifecycle commands (down/status/reset/denials) resolve the same
+    # workspace and must keep working for a session launched under
+    # --unsafe-dir. When git discovery climbed ABOVE the launch directory to
+    # reach a sensitive toplevel (a $HOME-rooted dotfiles repo is the common
+    # case), say so — the operator did not choose that workspace, git did.
+    # --unsafe-dir (TJOR_UNSAFE_DIR, set by cmd_run) is the single override,
+    # and it is loud only when it actually overrides a refusal.
+    if [[ "${4:-}" == "launch" ]]; then
+        init_sensitive_roots
+        if dir_is_sensitive "${ws}"; then
+            if [[ -n "${TJOR_UNSAFE_DIR:-}" ]]; then
+                warn "--unsafe-dir: mounting sensitive host path ${ws} as the workspace, READ-WRITE and git-trusted as a tree — every credential under it is exposed to the agent"
+            else
+                cwd="$(pwd -P)"
+                if [[ -n "${in_repo}" && "${cwd}" != "${ws}" ]]; then
+                    gitdir="$(git rev-parse --absolute-git-dir 2>/dev/null || echo "${ws}/.git")"
+                    die "${cwd} is not a repository; git resolved the workspace to ${ws} via ${gitdir} — launch from a repository (or pass --unsafe-dir)"
+                fi
+                die "refusing to use sensitive host path as the workspace: ${ws} (pass --unsafe-dir to override — this mounts it read-write into the agent)"
+            fi
+        fi
     fi
     # shellcheck disable=SC2088  # literal ~ is expanded on the next line
     root="$(cfg session.root --default "~/.tjor/sessions")"; root="${root/#\~/$HOME}"
@@ -953,10 +979,36 @@ prepare_secret_scan() {
     export TJOR_SECRET_SCAN_HOSTS="${hosts}"
 }
 
+# The two tjor-OWNED roots the sensitive-path gate also refuses (#64): the
+# effective session state root (every state dir under it holds the session's
+# proxy CA key, broker material, harness auth) and the effective user-config
+# directory. Derived ONCE here — the same session.root read and ~ expansion
+# resolve_session does, and the same user-config resolution tjor_cfg.py uses
+# ($TJOR_USER_CONFIG, else $XDG_CONFIG_HOME/tjor, else ~/.config/tjor) — so
+# dir_is_sensitive stays a pure path check. Both are canonicalized physically
+# when they exist (a symlinked session root must compare in the same
+# namespace as the pwd -P'd candidates); a not-yet-created one is used as
+# spelled. Called by resolve_session on the launch path, ahead of the gate.
+TJOR_SENSITIVE_SESSION_ROOT=""
+TJOR_SENSITIVE_CONFIG_DIR=""
+init_sensitive_roots() {
+    local root cdir
+    # shellcheck disable=SC2088  # literal ~ is expanded on the next line
+    root="$(cfg session.root --default "~/.tjor/sessions")"; root="${root/#\~/$HOME}"
+    if [[ -n "${TJOR_USER_CONFIG:-}" ]]; then cdir="$(dirname "${TJOR_USER_CONFIG}")"
+    else cdir="${XDG_CONFIG_HOME:-$HOME/.config}/tjor"; fi
+    if [[ -d "${root}" ]]; then root="$(cd "${root}" && pwd -P)"; fi
+    if [[ -d "${cdir}" ]]; then cdir="$(cd "${cdir}" && pwd -P)"; fi
+    TJOR_SENSITIVE_SESSION_ROOT="${root%/}"
+    TJOR_SENSITIVE_CONFIG_DIR="${cdir%/}"
+}
+
 # True (0) if an absolute path is too sensitive to mount read-write into the
 # agent without an explicit override: the filesystem root and system dirs, the
 # home directory itself or an ancestor of it (which would expose credentials),
-# and known credential directories.
+# known credential directories, and tjor's own session root and config dir
+# (init_sensitive_roots) in BOTH directions. Applied to the primary workspace
+# (resolve_session, launch path) and to every --dir/--dir-ro (cmd_run).
 dir_is_sensitive() { # $1 = absolute path (already symlink-resolved by pwd -P)
     local p="$1" s home="${HOME%/}"   # strip any trailing slash so ${home}/x matches
     case "${p}" in
@@ -972,6 +1024,15 @@ dir_is_sensitive() { # $1 = absolute path (already symlink-resolved by pwd -P)
     for s in .ssh .aws .gnupg .kube .docker .config .gcloud .azure \
              .local/share/keyrings .password-store; do
         [[ "${p}" == "${home}/${s}" || "${p}" == "${home}/${s}/"* ]] && return 0
+    done
+    # tjor's own roots (#64): equal, an ANCESTOR (the candidate would contain
+    # every session's CA/broker material, or tjor's config), or a DESCENDANT
+    # (a session's own state dir) — on path-component boundaries, so a sibling
+    # whose name merely extends the root (<root>-other) is not caught.
+    local r
+    for r in "${TJOR_SENSITIVE_SESSION_ROOT}" "${TJOR_SENSITIVE_CONFIG_DIR}"; do
+        [[ -n "${r}" ]] || continue
+        [[ "${p}" == "${r}" || "${r}" == "${p}/"* || "${p}" == "${r}/"* ]] && return 0
     done
     return 1
 }
@@ -994,6 +1055,10 @@ cmd_run() {
             *) break ;;
         esac
     done
+    # --unsafe-dir is the ONE override for every sensitive-path gate (#64):
+    # resolve_session reads it for the primary workspace (and the entrypoint
+    # for its system-directory re-check), the loops below for the extras.
+    if [[ -n "${unsafe_dir}" ]]; then export TJOR_UNSAFE_DIR=1; fi
     session_setup "${harness}" "${task}" "${name}"
     prepare_profile "${profile}" "${profile_dir}"
     # Multi-repo (--dir): resolve each to an absolute path now (existence
@@ -1009,8 +1074,9 @@ cmd_run() {
         abs="$(cd "${d}" && pwd -P)" || die "--dir path unreadable: ${d}"
         [[ "${abs}" == "${TJOR_WORKSPACE}" ]] && continue   # primary already mounted
         for seen in "${TJOR_EXTRA_DIRS[@]:-}"; do [[ "${abs}" == "${seen}" ]] && continue 2; done
-        if [[ -z "${unsafe_dir}" ]] && dir_is_sensitive "${abs}"; then
-            die "refusing to mount sensitive host path into the agent: ${abs} (pass --unsafe-dir to override — this exposes it read-write to the agent)"
+        if dir_is_sensitive "${abs}"; then
+            [[ -n "${unsafe_dir}" ]] || die "refusing to mount sensitive host path into the agent: ${abs} (pass --unsafe-dir to override — this exposes it read-write to the agent)"
+            warn "--unsafe-dir: mounting sensitive host path ${abs} READ-WRITE into the agent — every credential under it is exposed"
         fi
         TJOR_EXTRA_DIRS+=("${abs}")
     done
@@ -1031,8 +1097,9 @@ cmd_run() {
                 && die "conflicting mounts: ${abs} is given via both --dir and --dir-ro — pick one writability"
         done
         for seen in "${TJOR_EXTRA_DIRS_RO[@]:-}"; do [[ "${abs}" == "${seen}" ]] && continue 2; done
-        if [[ -z "${unsafe_dir}" ]] && dir_is_sensitive "${abs}"; then
-            die "refusing to mount sensitive host path into the agent: ${abs} (pass --unsafe-dir to override — even read-only, this exposes its contents to the agent)"
+        if dir_is_sensitive "${abs}"; then
+            [[ -n "${unsafe_dir}" ]] || die "refusing to mount sensitive host path into the agent: ${abs} (pass --unsafe-dir to override — even read-only, this exposes its contents to the agent)"
+            warn "--unsafe-dir: mounting sensitive host path ${abs} read-only into the agent — its contents are exposed"
         fi
         TJOR_EXTRA_DIRS_RO+=("${abs}")
     done
@@ -1954,7 +2021,7 @@ tjor — run AI coding agents inside a portable, fail-closed container cage
 usage: tjor <command> [args]
 
   run [--harness opencode|claude|copilot] [--task <id>] [--session <name>] [--dir <path>]... [--dir-ro <path>]... [--unsafe-dir] [--profile <name>|--profile-dir <path>] [--detach] [cmd...]
-                                                     launch a caged session (--dir: mount another repo at its host path; --dir-ro: same but READ-ONLY, container-wide — sensitive paths refused unless --unsafe-dir; --profile/--profile-dir: overlay host-defined agents/commands, credential-safe; --detach: start without attaching)
+                                                     launch a caged session (--dir: mount another repo at its host path; --dir-ro: same but READ-ONLY, container-wide — sensitive paths refused as the workspace or as --dir/--dir-ro unless --unsafe-dir; --profile/--profile-dir: overlay host-defined agents/commands, credential-safe; --detach: start without attaching)
   ls                                                 list all sessions (and re-verify their boundaries)
   attach [session]                                   reattach to a running agent's terminal (short name or full id)
   gc [--age <hours>] [--dry-run]                     reap idle session containers/networks/volumes

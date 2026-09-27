@@ -34,6 +34,8 @@ jobs:
         run: bash tests/integration/gateway_test.sh
       - name: conformance runtime detection + attestation (mocked engine, no docker) (#13)
         run: bash tests/integration/conformance_runtime_test.sh
+      - name: workspace sensitive-path gate (no docker) (#64)
+        run: bash tests/integration/workspace_gate_test.sh
       - name: shellcheck
         # --severity=warning: fail on real bugs (warning/error), not info-level
         # findings like SC2317 (trap-invoked functions look "unreachable"),
@@ -97,6 +99,26 @@ jobs:
       - name: kube placeholder-config symlink-follow regression (real entrypoint)
         if: matrix.harness == 'opencode'
         run: bash tests/integration/kube_symlink_test.sh
+      - name: system-directory mount root is refused at direct invocation (#64, negative path)
+        if: matrix.harness == 'opencode'
+        run: |
+          # Start the REAL entrypoint bypassing the launcher, with a system
+          # directory as an approved root: it must refuse before the harness
+          # with the boundary exit code (90), and say why.
+          set +e
+          out="$(docker run --rm -e TJOR_SAFE_DIRS=/usr tjor-agent-opencode:local true 2>&1)"; rc=$?
+          set -e
+          [ "${rc}" -eq 90 ] || { echo "FATAL: expected exit 90 for a system-directory root, got ${rc}"; echo "${out}"; exit 1; }
+          echo "${out}" | grep -q "mount root '/usr' is a system directory" || { echo "FATAL: refusal did not name the root"; echo "${out}"; exit 1; }
+          # The launcher's override reaches the cage and downgrades it to a warning.
+          # TJOR_LANDLOCK=off: the kernel tier (cplt) independently refuses to
+          # sandbox '/usr' as too broad, which would mask the exit code we assert.
+          set +e
+          out="$(docker run --rm -e TJOR_SAFE_DIRS=/usr -e TJOR_UNSAFE_DIR=1 -e TJOR_LANDLOCK=off tjor-agent-opencode:local true 2>&1)"; rc=$?
+          set -e
+          [ "${rc}" -eq 0 ] || { echo "FATAL: --unsafe-dir override did not let the cage start (rc=${rc})"; echo "${out}"; exit 1; }
+          echo "${out}" | grep -q "WARNING: --unsafe-dir: mount root '/usr' is a system directory" || { echo "FATAL: override did not warn"; echo "${out}"; exit 1; }
+          echo "system-directory root refused at direct invocation; override warns and continues"
       - name: checksum gate must reject a tampered artifact (negative path)
         if: matrix.harness == 'opencode'
         run: |

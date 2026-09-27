@@ -3,6 +3,53 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+### Security
+- **BREAKING (by design): the sensitive-path gate now covers the primary
+  workspace (#64).** `dir_is_sensitive` refused `/`, system directories,
+  `$HOME` and its ancestors, and credential directories for every `--dir` /
+  `--dir-ro` — but never for the workspace itself. On a machine whose dotfiles
+  repository is rooted at `$HOME`, `tjor run` from `~` (or from any
+  non-repository directory under it) resolved the workspace to `$HOME` via
+  `git rev-parse --show-toplevel` and mounted the entire home directory
+  writable and git-trusted as a tree, silently. The workspace is now checked
+  with the same rule, on the launch path only, **before** the session state
+  directory is created and before any credential is minted; a refusal leaves
+  nothing behind. When git discovery climbed above the launch directory to
+  reach a sensitive toplevel, the error says so (`<cwd> is not a repository;
+  git resolved the workspace to <toplevel> via <toplevel>/.git — launch from a
+  repository (or pass --unsafe-dir)`). `--unsafe-dir` remains the single
+  override and now prints a loud warning naming the exposed path whenever it
+  actually overrides a refusal (workspace or extra dir); it stays silent when
+  nothing needed overriding. Lifecycle commands (`down`, `status`, `reset`,
+  `denials`) never apply the gate, so a session launched under the override
+  remains manageable. Repository workspaces are unaffected.
+- **tjor's own roots join the sensitive set (#64).** The effective
+  `session.root` (every state dir under it holds a session's proxy CA key,
+  broker material and harness auth) and the effective user-config directory
+  (`$TJOR_USER_CONFIG`'s dir, else `$XDG_CONFIG_HOME/tjor`, else
+  `~/.config/tjor`) are refused when a path equals, contains, or lies under
+  them — for the workspace and for `--dir`/`--dir-ro` alike (`--dir
+  ~/.tjor/sessions` was accepted before). Custom locations are honored.
+- **The cage refuses a system-directory mount root at direct invocation
+  (#64).** The entrypoint now aborts (exit 90) when any approved root in
+  `TJOR_SAFE_DIRS` is `/etc`, `/usr`, `/var`, `/bin`, `/sbin`, `/boot`,
+  `/sys`, `/proc`, `/dev`, `/root` or a child of one; `/` was already refused.
+  The launcher's `--unsafe-dir` reaches the cage (`TJOR_UNSAFE_DIR`) and
+  downgrades this to a loud warning, so the one override holds end to end.
+  **Honest scope:** this is the only half of the gate the cage can judge —
+  the host home, its credential dirs, the session root and the config dir are
+  host facts the container cannot see, so those remain a *launcher*
+  guarantee, and the docs say so rather than claiming an in-cage re-check.
+- **Coverage:** a new daemon-free launcher test
+  (`tests/integration/workspace_gate_test.sh`, `unit` CI job) proves every
+  refusal, the override, the no-state-dir property and the lifecycle
+  exemption; it is the third suite source of the boundary matrix
+  (`workspace-gate`, launcher-side) with six rendered `session-launch` rows.
+  The `agent-image` CI job gains the direct-invocation negative path.
+  `session-launch` spec amended.
+
 ## [0.18.17] — 2026-09-21 — Egress inference-body secret tripwire (#62)
 
 Closes #62 (the highest-yield #6 boundary) design-first: an observe-only egress

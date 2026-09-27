@@ -63,6 +63,17 @@ inside a writable one (or the reverse, in either flag order, workspace
 included) refuses to launch — a writable parent would re-grant and re-trust
 the read-only tree, and a nested writable bind stays writable regardless of
 the parent's `:ro`. Same-writability nesting is fine.
+**Sensitive host paths are refused** — as the primary workspace and as
+`--dir`/`--dir-ro` alike: `/` and system directories, your home directory and
+anything above it, credential directories (`~/.ssh`, `~/.config`, `~/.aws`,
+`~/.kube`, …), and tjor's own session root and config directory. A dotfiles
+repository whose work tree is `$HOME` is the common trap: launching from `~`,
+or from any non-repository directory under it, would otherwise mount your
+entire home writable and git-trusted, so tjor refuses and says how it
+resolved the workspace. `--unsafe-dir` is the one override, and it is loud.
+The cage itself re-checks only what it can see (a system-directory mount
+root); home, credential-dir and session-root sensitivity is a **launcher**
+guarantee, not an in-cage one.
 `tjor policy <url>` previews an
 egress verdict; `tjor down` removes a repo's topology.
 

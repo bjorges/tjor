@@ -4,7 +4,7 @@
      Regenerate: python3 python/gen_boundary_matrix.py
      Drift-checked by tests/doc_consistency.sh (`--check`). -->
 
-Each row is an adversarial guarantee the cage enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance` and `landlock` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". Generated from the suite sources (60 checks total; 38 adversarial guarantees below, the rest functional/config checks the suites also run).
+Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate` suite is launcher-side (a host guarantee the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (99 checks total; 44 adversarial guarantees below, the rest functional/config checks the suites also run).
 
 ## cage-network
 
@@ -71,5 +71,11 @@ Each row is an adversarial guarantee the cage enforces, the probe that proves it
 |---|---|---|
 | A hostile dir name is escape-sanitized in launch output | `hostile parent dir name announced escape-sanitized` | landlock |
 | A hostile dotenv filename is escape-sanitized in launch output | `hostile dotenv filename is announced escape-sanitized` | landlock |
+| A refused launch leaves no session state directory behind | `workspace gate: no state dir created after a refusal` | workspace-gate |
+| A workspace reached by git climbing to a sensitive toplevel is refused | `workspace gate: non-repo subdir of a home-rooted repo refused` | workspace-gate |
 | No raw terminal-escape byte on a dir-mask line | `no raw ESC byte on any dir-mask line` | landlock |
 | No raw terminal-escape byte on a dotenv-mask line | `no raw ESC byte on any dotenv-mask line` | landlock |
+| Sensitive host path refused as the primary workspace | `workspace gate: home-rooted dotfiles repo refused from the home dir` | workspace-gate |
+| The session state root is refused as a read-only extra mount | `extra-dir gate: session root refused via --dir-ro` | workspace-gate |
+| The session state root is refused as a writable extra mount | `extra-dir gate: session root refused via --dir` | workspace-gate |
+| The session state root is refused as the workspace | `workspace gate: session root refused as the workspace` | workspace-gate |

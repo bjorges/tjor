@@ -189,6 +189,10 @@ services:
       # is launcher-side (mounts).
       TJOR_LANDLOCK: ${TJOR_LANDLOCK:-auto}
       TJOR_PROXY_PORT: ${TJOR_PROXY_PORT:-8080}
+      # Sensitive-path gate override (#64): set by `tjor run --unsafe-dir`, so
+      # the entrypoint's system-directory root refusal downgrades to a warning
+      # exactly as the launcher's gate does — one override, end to end.
+      TJOR_UNSAFE_DIR: ${TJOR_UNSAFE_DIR:-}
     volumes:
       - ${TJOR_SESSION_DIR:?}/home:/home/agent
       - ${TJOR_WORKSPACE:-/dev/null}:${TJOR_WORKSPACE:-/tmp/.tjor-nows}
