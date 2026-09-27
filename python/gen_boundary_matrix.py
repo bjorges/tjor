@@ -206,6 +206,20 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
     "extra-dir gate: --unsafe-dir warns on an actually-overridden --dir": (WORKSPACE_GATE, "session-launch", "override: loud warning on --dir", False),
     "extra-dir gate: no override warning for an ordinary --dir": (WORKSPACE_GATE, "session-launch", "override: no spurious --dir warning", False),
     "help text names the workspace gate": (WORKSPACE_GATE, "session-launch", "launch-UX: help text", False),
+    # core.worktree redirect (#76): the reported toplevel must contain the launch dir
+    "core.worktree: redirect toward a harmless directory is refused":
+        (WORKSPACE_GATE, "session-launch", "A core.worktree redirect of the workspace is refused", True),
+    "core.worktree: refusal names the launch dir and the reported work tree": (WORKSPACE_GATE, "session-launch", "launch-UX: containment refusal names both paths", False),
+    "core.worktree: refusal names the setting and its config file": (WORKSPACE_GATE, "session-launch", "launch-UX: containment refusal names core.worktree", False),
+    "core.worktree: no state dir for the redirected path": (WORKSPACE_GATE, "session-launch", "gate: no state dir after a redirect refusal", False),
+    "core.worktree: lifecycle resolution refuses the redirect too": (WORKSPACE_GATE, "session-launch", "gate: lifecycle commands refuse a redirect", False),
+    "core.worktree: redirect toward an ancestor holding other repos is refused":
+        (WORKSPACE_GATE, "session-launch", "A core.worktree redirect toward an ancestor directory is refused", True),
+    "core.worktree: ancestor refusal names the nearest repository": (WORKSPACE_GATE, "session-launch", "launch-UX: ancestor refusal names the found repository", False),
+    "core.worktree: redirect toward the home directory is refused as a redirect": (WORKSPACE_GATE, "session-launch", "gate: home redirect refused", False),
+    "core.worktree: home redirect names core.worktree, not the not-a-repository wording": (WORKSPACE_GATE, "session-launch", "launch-UX: redirect wording precedes the climb wording", False),
+    "core.worktree: a linked worktree launches (containment holds)": (WORKSPACE_GATE, "session-launch", "functional: linked worktree", False),
+    "core.worktree: a subdirectory launch is unchanged": (WORKSPACE_GATE, "session-launch", "functional: subdirectory launch", False),
 
     # --- self-mount suite (#67, launcher-side): adversarial guarantees (rendered) ---
     "self-mount guard: the checkout as the workspace is refused":

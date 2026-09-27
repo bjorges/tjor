@@ -3,6 +3,37 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+### Security
+- **A planted `core.worktree` can no longer redirect the next launch (#76,
+  reproduced and closed).** tjor resolves the workspace on the host with
+  `git rev-parse --show-toplevel`. With `core.worktree = <path>` in a repo's
+  `.git/config`, git answers `<path>` from anywhere inside that repo — and a
+  session always has its workspace repo mounted writable, so it can plant
+  that line. On the operator's next `tjor run` from the same repo, tjor
+  silently adopted `<path>` as the workspace whenever it was not in the
+  sensitive set (another project, or a parent holding every repo): mounted
+  writable, git-trusted as a tree, under a session id derived from it. A
+  redirect toward `$HOME` was caught by the v0.19.0 gate but reported as a
+  git climb, and `down`/`status`/`reset` under any redirect acted on the
+  wrong session. The launcher now finds the repository on its own — the
+  nearest ancestor of the launch directory holding a `.git` entry — and
+  requires git's reported work tree to be that directory (both physical);
+  containment alone would not do, since a redirect to an ancestor still
+  contains the launch directory. Every honest resolution agrees: plain
+  repos, subdirectories, linked worktrees, submodules, nested repos,
+  symlinked spellings. Otherwise it refuses, on the launch path and on every
+  lifecycle path, naming the launch directory, the reported work tree, the
+  repository it found, the `core.worktree` value and its config file, and
+  the remedies. No override:
+  a repo whose work tree is elsewhere (a detached-git-dir layout) is never a
+  tjor workspace — launch from the real work tree; the qualified `--session`
+  id keeps working from any other directory. The reproduction is a permanent
+  regression section of the `workspace-gate` suite (one boundary-matrix
+  row). Companion: #72 (detecting other cage-written git metadata that runs
+  on the host).
+
 ## [0.20.1] — 2026-09-27 — gh in broker sessions + four broker regressions fixed (#65)
 
 Patch release: a small feature (`gh` authenticates through the broker) and

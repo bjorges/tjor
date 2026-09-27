@@ -78,7 +78,11 @@ entire home writable and git-trusted, so tjor refuses and says how it
 resolved the workspace. `--unsafe-dir` is the one override, and it is loud.
 The cage itself re-checks only what it can see (a system-directory mount
 root); home, credential-dir and session-root sensitivity is a **launcher**
-guarantee, not an in-cage one.
+guarantee, not an in-cage one. Git's answer is also cross-checked: the work
+tree it reports must be the nearest repository above the directory you
+launched from, so a `core.worktree` a session plants in a mounted repo cannot
+redirect the next launch to another directory — a sibling, a parent holding
+all your repos, or your home — or to another session.
 `tjor policy <url>` previews an
 egress verdict; `tjor down` removes a repo's topology.
 

@@ -848,6 +848,20 @@ verify_bind_source() {
 # lowercased>-<8 hex chars of the workspace-path hash>. The ONE derivation,
 # shared by resolve_session and cmd_attach — a second copy drifting would
 # reintroduce exactly the mismatch class #52 is about.
+# The repository tjor finds on its own (#76): the nearest ancestor of a
+# physical directory — itself included — that holds a .git entry (a dir for a
+# plain repo, a file for a linked worktree or submodule). Empty/false when
+# none. Compared against git's own toplevel so a planted core.worktree cannot
+# steer the workspace.
+nearest_git_root() { # $1 = physical directory
+    local d="$1"
+    while :; do
+        if [[ -e "${d}/.git" ]]; then printf '%s' "${d}"; return 0; fi
+        [[ "${d}" == "/" || -z "${d}" ]] && return 1
+        d="$(dirname "${d}")"
+    done
+}
+
 session_base_id() { # $1 = workspace path
     echo "$(basename "$1" | tr -cd 'a-zA-Z0-9_.-' | tr '[:upper:]' '[:lower:]')-$(printf %s "$1" | sha256 | cut -c1-8)"
 }
@@ -858,7 +872,7 @@ session_base_id() { # $1 = workspace path
 # material; under a kube broker source, session_setup would otherwise mint a
 # real short-TTL ServiceAccount token against the cluster just to resolve a path.
 resolve_session() { # $1 = harness, $2 = task id (optional), $3 = session name (optional), $4 = "launch" on the run path
-    local ws root sid in_repo="" cwd gitdir
+    local ws root sid in_repo="" cwd gitdir redirect found
     if ws="$(git rev-parse --show-toplevel 2>/dev/null)"; then in_repo=1; else
         # PHYSICAL path (pwd -P), matching git's own canonicalized toplevel
         # and the --dir/--dir-ro resolution: a logical (symlinked) spelling
@@ -867,6 +881,34 @@ resolve_session() { # $1 = harness, $2 = task id (optional), $3 = session name (
         # refusal (re-review of v0.17.1).
         ws="$(pwd -P)"
         warn "not inside a git repository — using ${ws} as the workspace"
+    fi
+    # Workspace integrity (#76, spec: session-launch): git's toplevel is
+    # trusted only if it is the repository tjor would find on its own — the
+    # nearest ancestor of the launch directory (itself included) holding a
+    # .git entry. A repo-local `core.worktree` — writable by any session that
+    # has the repo mounted, and the workspace always is — makes `rev-parse
+    # --show-toplevel` answer with an arbitrary path from anywhere inside the
+    # repo (a sibling, an ANCESTOR such as the directory holding every repo,
+    # or $HOME), so the next host-side launch would silently adopt THAT
+    # directory as the workspace (mounted writable, tree-trusted, a different
+    # session id), and lifecycle commands would act on the wrong session.
+    # Containment alone is not enough (an ancestor redirect contains the
+    # launch dir), hence the independent discovery. Every honest resolution
+    # — plain repo, subdirectory, linked worktree (.git file), submodule,
+    # nested repo, symlinked spelling (both sides physical) — agrees with the
+    # walk. Checked on EVERY resolution path and before the sensitive-path
+    # gate, so a redirect toward $HOME is reported as what it is. No
+    # override: a repo whose work tree is elsewhere is never a tjor
+    # workspace — fix the config or launch from the real work tree (the
+    # qualified --session id still works from any other directory).
+    if [[ -n "${in_repo}" ]]; then
+        cwd="$(pwd -P)"
+        found="$(nearest_git_root "${cwd}" || true)"
+        if [[ "${ws}" != "${found}" ]]; then
+            gitdir="$(git rev-parse --absolute-git-dir 2>/dev/null || echo '?')"
+            redirect="$(git config --get core.worktree 2>/dev/null || true)"
+            die "refusing: git reports the work tree of ${cwd} as ${ws}, but the nearest repository above the launch directory is ${found:-none}${redirect:+ — core.worktree = '${redirect}' in ${gitdir}/config (a session with this repo mounted can plant that)}; unset it (git config --unset core.worktree) or launch from the real work tree"
+        fi
     fi
     # Workspace gate (#64, spec: session-launch): the primary workspace goes
     # through the SAME sensitive-path refusal as --dir/--dir-ro — here, before

@@ -134,6 +134,34 @@ check "extra-dir gate: --unsafe-dir warns on an actually-overridden --dir" grep 
 run_from "${HOME}/proj" --dir "${HOME}/proj2" -- true || true
 check "extra-dir gate: no override warning for an ordinary --dir" no_gate_text
 
+# === 7. core.worktree redirect (#76 reproduction, kept as a regression test) =
+# A session always has its workspace repo writable, so it can plant
+# core.worktree; git then reports the planted path as the toplevel from
+# anywhere inside the repo. The launcher must refuse a toplevel that does not
+# CONTAIN the launch directory — on the launch path and on lifecycle paths.
+mkdir -p "${HOME}/wt/sub"; git -C "${HOME}/wt" init -q
+no_state_for() { local d; for d in "${STATE}/$1-"*; do [[ -e "${d}" ]] && return 1; done; return 0; }
+lifecycle_refused() { ! ( cd "$1" && resolve_session opencode "" "" ) >/dev/null 2>"${LAST_OUT}"; }
+git -C "${HOME}/wt" config core.worktree "${HOME}/proj2"
+check "core.worktree: redirect toward a harmless directory is refused" refused "${HOME}/wt/sub"
+check "core.worktree: refusal names the launch dir and the reported work tree" grep -qF "work tree of ${HOME}/wt/sub as ${HOME}/proj2" "${LAST_OUT}"
+check "core.worktree: refusal names the setting and its config file" grep -qF "core.worktree = '${HOME}/proj2' in ${HOME}/wt/.git/config" "${LAST_OUT}"
+check "core.worktree: no state dir for the redirected path" no_state_for proj2
+check "core.worktree: lifecycle resolution refuses the redirect too" lifecycle_refused "${HOME}/wt/sub"
+mkdir -p "${HOME}/all"; mv "${HOME}/wt" "${HOME}/all/wt"
+git -C "${HOME}/all/wt" config core.worktree "${HOME}/all"
+check "core.worktree: redirect toward an ancestor holding other repos is refused" refused "${HOME}/all/wt/sub"
+check "core.worktree: ancestor refusal names the nearest repository" grep -qF "nearest repository above the launch directory is ${HOME}/all/wt" "${LAST_OUT}"
+mv "${HOME}/all/wt" "${HOME}/wt"
+git -C "${HOME}/wt" config core.worktree "${HOME}"
+check "core.worktree: redirect toward the home directory is refused as a redirect" refused "${HOME}/wt/sub"
+check "core.worktree: home redirect names core.worktree, not the not-a-repository wording" bash -c "grep -q 'core.worktree' '${LAST_OUT}' && ! grep -q 'is not a repository' '${LAST_OUT}'"
+git -C "${HOME}/wt" config --unset core.worktree
+git -C "${HOME}/wt" -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m init
+git -C "${HOME}/wt" worktree add -q "${HOME}/wt-linked" >/dev/null 2>&1
+check "core.worktree: a linked worktree launches (containment holds)" launch_from "${HOME}/wt-linked"
+check "core.worktree: a subdirectory launch is unchanged" launch_from "${HOME}/wt/sub"
+
 # === 6. Help text names the workspace ======================================
 check "help text names the workspace gate" bash -c "'${ROOT}/bin/tjor' help | grep -qF 'sensitive paths refused as the workspace or as --dir/--dir-ro unless --unsafe-dir'"
 
