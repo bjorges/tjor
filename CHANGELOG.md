@@ -3,7 +3,11 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.19.0] — 2026-09-27 — Workspace sensitive-path gate (#64)
+
+Breaking by design (pre-1.0 minor bump): a workspace that resolves to a
+sensitive host path is now refused unless `--unsafe-dir` is given. Repository
+workspaces are unaffected.
 
 ### Security
 - **BREAKING (by design): the sensitive-path gate now covers the primary
