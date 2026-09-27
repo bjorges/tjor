@@ -29,8 +29,13 @@ $ tjor run                       # caged opencode session in this repo
 ```
 
 On first run an installed tjor pulls a prebuilt agent image (seconds), then
-drops you into a caged opencode session. The first time you need a private
-repo or a push, authenticate once inside the session: `gh auth login`.
+drops you into a caged opencode session. With a GitHub-covering credential
+broker (D2) configured, `git` **and** `gh` are already authenticated — through
+the proxy, with only a placeholder in the cage (`gh` gets it as `GH_TOKEN`; a
+stored in-cage login is superseded, and `gh auth login` refuses while it is
+set). Note: a GitHub App installation token cannot read `/user`, so `gh auth
+status` may report a failure while `gh pr`/`gh api repos/…` work. Without a
+broker, authenticate once inside the session: `gh auth login`.
 
 Sessions are per-repo: state (harness auth, history) persists under
 `~/.tjor/sessions/<session>/` across container restarts, while the container

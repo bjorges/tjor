@@ -178,7 +178,95 @@ class TestBrokerInjection:
             headers=Headers([(b"authorization", b"Basic cGxhY2Vob2xkZXI=")]),
         ))
         addon._apply_broker(flow)
+        # git sends Basic; GitHub's git endpoint accepts ONLY Basic
+        # (x-access-token:<token>) — the credential is re-issued in git's scheme (#65).
+        import base64
+        assert flow.request.headers["authorization"] == \
+            "Basic " + base64.b64encode(b"x-access-token:tok-123").decode()
+
+    def test_apply_broker_keeps_bearer_scheme(self):
+        pytest.importorskip("mitmproxy")
+        import types
+        from mitmproxy.http import Headers
+
+        addon = self.make(source_hosts="github.com,*.github.com")
+        flow = types.SimpleNamespace(request=types.SimpleNamespace(
+            host="api.github.com", port=443,
+            headers=Headers([(b"authorization", b"Bearer tjor-broker-placeholder")]),
+        ))
+        addon._apply_broker(flow)
+        assert flow.request.headers["authorization"] == "Bearer tok-123"
+
+    def test_apply_broker_no_incoming_header_defaults_to_token_scheme(self):
+        pytest.importorskip("mitmproxy")
+        import types
+        from mitmproxy.http import Headers
+
+        addon = self.make(source_hosts="github.com,*.github.com")
+        flow = types.SimpleNamespace(request=types.SimpleNamespace(
+            host="api.github.com", port=443, headers=Headers([]),
+        ))
+        addon._apply_broker(flow)
         assert flow.request.headers["authorization"] == "token tok-123"
+
+    def test_apply_broker_replaces_gh_token_scheme(self):
+        """gh sends `Authorization: token <placeholder>` (#65): toward a covered
+        host it is replaced exactly like git's Basic placeholder; toward a
+        non-destination it is untouched (scoping unchanged)."""
+        pytest.importorskip("mitmproxy")
+        import types
+        from mitmproxy.http import Headers
+
+        addon = self.make(source_hosts="github.com,*.github.com")
+        flow = types.SimpleNamespace(request=types.SimpleNamespace(
+            host="api.github.com", port=443,
+            headers=Headers([(b"authorization", b"token tjor-broker-placeholder")]),
+        ))
+        addon._apply_broker(flow)
+        assert flow.request.headers["authorization"] == "token tok-123"
+        other = types.SimpleNamespace(request=types.SimpleNamespace(
+            host="example.com", port=443,
+            headers=Headers([(b"authorization", b"token tjor-broker-placeholder")]),
+        ))
+        addon._apply_broker(other)
+        assert other.request.headers["authorization"] == "token tjor-broker-placeholder"
+
+    def test_apply_broker_matches_logical_host_after_pin(self):
+        """Regression (#65 end-to-end): after the #41 resolve-and-pin,
+        mitmproxy reports the PINNED IP in flow.request.host for tunneled
+        requests; the broker must key on the judged hostname (the verified
+        SNI), or every placeholder is forwarded unsubstituted."""
+        pytest.importorskip("mitmproxy")
+        import types
+        from mitmproxy.http import Headers
+
+        addon = self.make(source_hosts="github.com,*.github.com")
+        flow = types.SimpleNamespace(
+            server_conn=types.SimpleNamespace(sni="api.github.com"),
+            request=types.SimpleNamespace(
+                host="140.82.121.6", pretty_host="api.github.com", port=443,
+                headers=Headers([(b"authorization", b"token tjor-broker-placeholder")]),
+            ))
+        addon._apply_broker(flow)
+        assert flow.request.headers["authorization"] == "token tok-123"
+
+    def test_apply_broker_sni_governs_not_a_forged_host_header(self):
+        """The SNI is what the upstream certificate is verified against; a
+        Host header naming a broker host inside a tunnel to another server
+        must NOT attract the credential."""
+        pytest.importorskip("mitmproxy")
+        import types
+        from mitmproxy.http import Headers
+
+        addon = self.make(source_hosts="github.com,*.github.com")
+        flow = types.SimpleNamespace(
+            server_conn=types.SimpleNamespace(sni="files.pythonhosted.org"),
+            request=types.SimpleNamespace(
+                host="151.101.1.63", pretty_host="api.github.com", port=443,
+                headers=Headers([(b"authorization", b"token tjor-broker-placeholder")]),
+            ))
+        addon._apply_broker(flow)
+        assert flow.request.headers["authorization"] == "token tjor-broker-placeholder"
 
     def test_apply_broker_strips_when_no_credential(self, capsys):
         pytest.importorskip("mitmproxy")

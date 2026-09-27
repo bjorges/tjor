@@ -29,6 +29,10 @@ inject_hosts = []
 # login`, the pre-broker default). All broker material lives ONLY in the
 # proxy sidecar (egress side, unreachable from the agent network).
 source = ""                              # "" | "github-app" | "pat" | "kube"
+# Destination hosts the credential is injected toward (shared policy host
+# matcher; port-aware). `*.github.com` is what covers api.github.com — the
+# gh CLI (#65, GH_TOKEN placeholder) — and codeload.github.com (archives).
+# Naming only "github.com" wires git but leaves gh unauthenticated.
 hosts = ["github.com", "*.github.com", "codeload.github.com"]
 
 # For source = "pat": name of a host-side env var holding the token (never

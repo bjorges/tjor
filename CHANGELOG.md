@@ -3,6 +3,70 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+### Fixed
+- **`gh` works in broker sessions (#65).** With a GitHub-covering broker the
+  cage wired a placeholder git helper but gave the `gh` CLI nothing, so
+  `gh api` / `gh pr …` failed with "not logged in" in exactly the sessions
+  where GitHub access is brokered — and the only workaround was `gh auth
+  login`, minting a real long-lived token into the cage (the ADR 0007
+  limitation). The entrypoint now decides, with the same shared matcher and
+  independently of the git decision, whether the broker covers
+  `api.github.com:443`, and if so exports `GH_TOKEN=tjor-broker-placeholder`
+  into the agent environment; `gh` sends `Authorization: token <placeholder>`
+  and the proxy substitutes the real credential toward the covered host, as
+  it already did for git's Basic placeholder. Not covered (kube-only broker,
+  a host list naming `github.com` without a glob, no broker) leaves `GH_TOKEN`
+  unset. The default `*.github.com` covers it.
+
+### Security
+- **Behavior change, called out:** `gh` prefers `GH_TOKEN` over a stored
+  `hosts.yml`, so a token someone minted with `gh auth login` inside an
+  earlier session is no longer used in a broker session — the brokered
+  identity is the session's identity. And `gh auth login` refuses to run
+  while `GH_TOKEN` is set, which removes the easy in-cage path to minting a
+  real token in such sessions. Honest scope: the agent can unset the variable,
+  so the ADR 0007 limitation is narrowed, not closed (ADR amended).
+- Caveat: a GitHub App installation token cannot read `/user`, so `gh auth
+  status` may report a failure while repo-scoped commands work (README).
+- Tests: the proxy unit test now covers gh's `token` scheme; the live broker
+  integration test asserts the `GH_TOKEN` placeholder in a covered session
+  (secret scan unchanged) and the three coverage cases at direct invocation.
+- **Four regressions found by the real-token end-to-end, fixed here.**
+  (1) **Proxy host-scoped decisions were keyed on the pinned IP.** Since the
+  #41 resolve-and-pin (v0.17.4), mitmproxy reports the pinned upstream IP in
+  `flow.request.host` for every tunneled request, so the credential broker,
+  x-agent identity injection, the LLM-gateway key, the #62 secret scan and
+  the denial log compared an IP against hostnames and never matched a
+  DNS-resolved destination — git's and gh's placeholders were forwarded
+  unsubstituted and GitHub answered 401. The policy verdict used the
+  hostname, so requests were allowed and nothing looked denied; unit tests
+  model hostnames and the conformance broker probes run with the IP guard
+  off, so CI never saw it. Every such decision now keys on the client's SNI —
+  the hostname mitmproxy verifies the upstream certificate against, so a
+  forged `Host` header inside a tunnel to another server cannot attract a
+  credential (regression-tested both ways). (2) **cplt sets
+  `GIT_CONFIG_NOSYSTEM=1` for the sandboxed harness**, so under the
+  kernel-sandbox tier git ignored `/etc/gitconfig` — the placeholder helper,
+  the gh fallback, the SSH→HTTPS rewrites and `safe.directory` tree trust,
+  all of it; the uid alignment masked the trust half. The child's environment
+  is now corrected inside the sandbox. (3) **cplt's Landlock policy denies
+  reading `/etc/gitconfig`**; the wrap grants exactly that file read-only.
+  (4) **The injected scheme was wrong for git.** The proxy injected
+  `token <t>` toward every covered host; GitHub's git smart-HTTP endpoint
+  accepts only Basic (`x-access-token:<token>`) and answers 401 to `token`
+  and `Bearer`, while `api.github.com` accepts all three — so brokered git
+  auth never worked against real GitHub (ADR 0007's "GitHub accepts … as
+  `token <t>`" holds for the API only). The credential is now re-issued in
+  the scheme the client sent: git's Basic stays Basic, gh's `token` stays
+  `token`, Bearer stays Bearer. Verified end-to-end: `gh api user` and
+  `git ls-remote` on a private repository both succeed from inside the
+  wrapped harness with only the placeholder in the cage.
+  The live broker test now asserts git's and gh's view from inside the
+  wrapped harness. Follow-up (not done): a conformance probe for injection
+  with the IP guard on needs a publicly resolvable echo target.
+
 ## [0.20.0] — 2026-09-27 — Launcher self-mount guard + tjor self-install (#67)
 
 Breaking by design (pre-1.0 minor bump): the tree `bin/tjor` runs from is

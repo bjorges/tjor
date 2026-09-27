@@ -354,8 +354,14 @@ fi
 # sends an unsubstitutable placeholder to github.com — an intentional
 # no-GitHub-credential session behaves like a broker-less one there.
 broker_covers_github=""
+broker_covers_gh_api=""
 if [[ -n "${TJOR_BROKER_ENABLED:-}" ]]; then
-    if python3 - <<'PY'
+    # Two independent verdicts from ONE matcher run: git (github.com / gist)
+    # and the gh CLI (api.github.com, #65). A host list that names github.com
+    # without a glob covers git but not gh — correct scoping, not a bug: the
+    # proxy would never inject toward api.github.com for that list, so a gh
+    # placeholder would only send an unsubstitutable token.
+    _cov="$(python3 - <<'PY'
 import os
 import sys
 
@@ -363,16 +369,18 @@ sys.path.insert(0, "/opt/tjor/python")
 import tjor_identity
 
 pairs = tjor_identity.parse_broker_hosts(os.environ.get("TJOR_BROKER_HOSTS", ""))
-# Port-aware (#49): git talks to GitHub on 443 — a broker scoped to another
-# port would never have its credential injected there, so the placeholder
-# would only break git; coverage means github/gist on 443 specifically.
-covered = tjor_identity.broker_covers(pairs, "github.com", 443) \
+# Port-aware (#49): git and gh talk to GitHub on 443 — a broker scoped to
+# another port would never have its credential injected there, so a
+# placeholder would only break the client; coverage means :443 specifically.
+git = tjor_identity.broker_covers(pairs, "github.com", 443) \
     or tjor_identity.broker_covers(pairs, "gist.github.com", 443)
-sys.exit(0 if covered else 1)
+api = tjor_identity.broker_covers(pairs, "api.github.com", 443)
+print(("git " if git else "") + ("api" if api else ""))
 PY
-    then
-        broker_covers_github=1
-    fi
+    )" || _cov=""
+    if [[ "${_cov}" == *git* ]]; then broker_covers_github=1; fi
+    if [[ "${_cov}" == *api* ]]; then broker_covers_gh_api=1; fi
+    unset _cov
 fi
 if [[ -n "${broker_covers_github}" ]]; then
     # Credential broker (D2): git must ATTEMPT auth so the proxy can inject
@@ -389,6 +397,22 @@ else
     # `gh auth login`, git push/pull to private GitHub repos just works.
     git config --system credential."https://github.com".helper '!gh auth git-credential'
     git config --system credential."https://gist.github.com".helper '!gh auth git-credential'
+fi
+# 3a. gh CLI (#65, spec: credential-broker): when the broker covers
+#     api.github.com:443, hand gh the same fixed PLACEHOLDER via GH_TOKEN. gh
+#     then sends `Authorization: token tjor-broker-placeholder`, which the
+#     proxy overwrites toward the covered host exactly as it does git's Basic
+#     placeholder — no real token ever enters the cage. Not covered => left
+#     unset (gh keeps its ambient behavior; nothing sets GH_TOKEN otherwise).
+#     gh prefers GH_TOKEN over a stored hosts.yml, so an agent-minted token
+#     from an earlier session is not used here, and `gh auth login` refuses
+#     while GH_TOKEN is set — the easy in-cage path to minting a real token is
+#     gone in these sessions (the agent could still unset the variable: ADR
+#     0007's limitation is narrowed, not closed). The final exec's `env`
+#     carries this export into the harness.
+if [[ -n "${broker_covers_gh_api}" ]]; then
+    export GH_TOKEN="tjor-broker-placeholder"
+    echo "tjor-entrypoint: broker covers api.github.com — gh authenticates through the proxy (GH_TOKEN placeholder; no real token in the cage)" >&2
 fi
 
 # 3b. Kube broker (#26 single-cluster, #57 multi-cluster): render a PLACEHOLDER
@@ -548,7 +572,30 @@ elif [[ -n "${landlock_abi}" ]]; then
             fi
         done <<<"${SAFE_NORM}"
     fi
-    exec gosu agent env HOME="${AGENT_HOME}" USER=agent "${wrap[@]}" exec -- "$@"
+    # The sandboxed child's environment is corrected INSIDE the sandbox — an
+    # `env` in front of the harness runs as the sandboxed child, past cplt's
+    # env filter — for two things found end-to-end (#65):
+    #  1. cplt sets GIT_CONFIG_NOSYSTEM=1 for the child, which makes git
+    #     ignore /etc/gitconfig — where tjor wires EVERYTHING git-related
+    #     (the broker placeholder helper, the gh fallback, the SSH→HTTPS
+    #     rewrites, safe.directory tree trust). Under the kernel tier that
+    #     wiring was inert; the uid alignment masked the trust half (same
+    #     owner, no dubious-ownership refusal) and nothing exercised the auth
+    #     half. /etc/gitconfig is root-owned tjor cargo, not host state, so
+    #     it is load-bearing here: unset the override for the child.
+    #  2. cplt's filter drops GH_TOKEN even under --inherit-env and even with
+    #     --pass-env GH_TOKEN (PID 1 — cplt — had it, the harness did not).
+    #     It holds only the fixed PLACEHOLDER — nothing to protect from the
+    #     sandbox — and gh needs it, so set it here when exported.
+    # The unwrapped paths below inherit the entrypoint's environment directly
+    # and never see cplt's overrides.
+    # ...and cplt's Landlock policy denies reading /etc/gitconfig outright
+    # (found the same way: git reported "unable to access '/etc/gitconfig':
+    # Permission denied" under the wrap). Grant exactly that file, read-only.
+    wrap+=(--allow-read /etc/gitconfig)
+    child_env=(env -u GIT_CONFIG_NOSYSTEM)
+    if [[ -n "${GH_TOKEN:-}" ]]; then child_env+=("GH_TOKEN=${GH_TOKEN}"); fi
+    exec gosu agent env HOME="${AGENT_HOME}" USER=agent "${wrap[@]}" exec -- "${child_env[@]}" "$@"
 elif [[ "${TJOR_LANDLOCK}" == "require" ]]; then
     echo "tjor-entrypoint: FATAL: kernel-sandbox required (mode=require) but Landlock is unavailable (${landlock_err}) — refusing to start the harness." >&2
     exit "${TJOR_EXIT_BOUNDARY}"

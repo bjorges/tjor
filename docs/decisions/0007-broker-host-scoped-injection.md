@@ -47,6 +47,20 @@ change when the proxy-side exchange is tightened.
   wrapping `gh` — deferred; documented here so the "agent never holds a real
   secret" claim is read precisely (tjor-supplied credentials, not
   agent-minted ones).
+
+  *Amended (broker-gh-token-placeholder, #65):* when the broker covers
+  `api.github.com:443` the cage hands `gh` the placeholder as `GH_TOKEN`, so
+  `gh` works with no in-cage login, and `gh auth login` **refuses** while the
+  variable is set — the easy path to minting a real token is gone in those
+  sessions. The agent can still `unset GH_TOKEN` and run the device flow; the
+  limitation above is narrowed, not closed.
+  The same change corrected the injection itself: the proxy now keys its
+  host-scoped decisions on the client's SNI (the pinned upstream IP had
+  silently replaced the hostname since the #41 pin), the sandboxed harness
+  again sees `/etc/gitconfig`, and the credential is re-issued in the scheme
+  the client used — GitHub's git endpoint accepts only Basic
+  (`x-access-token:<token>`), so "GitHub accepts … as `token <t>`" above is
+  true for the API, not for git.
 - **Revocation depends on a graceful proxy shutdown.** `tjor down`/`gc` now
   stop the proxy with SIGTERM (grace period) *before* force-removal so the
   addon's `done()` hook revokes the credential; the ~1h installation-token

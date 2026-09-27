@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import concurrent.futures
 import ipaddress
+import base64
 import os
 import re
 import socket
@@ -263,7 +264,7 @@ def _scan_request_body(flow) -> None:
     can never reach the request hook's outer fail-closed guard and wrongly deny a
     legitimate inference request (the v0.18.9 lesson)."""
     try:
-        host = tjor_policy._canon_host(flow.request.host)
+        host = tjor_policy._canon_host(_logical_host(flow))
         if not SCAN_HOSTS or host not in SCAN_HOSTS:
             return
         body = flow.request.content   # None when streamed past stream_large_bodies
@@ -683,13 +684,35 @@ def identity_outcome(existing: dict[str, str], host: str) -> tuple[dict, dict]:
         return {}, dict(existing)
 
 
+def _logical_host(flow) -> str:
+    """The destination HOSTNAME the client asked for, surviving the #41 pin.
+
+    After `server_connect` pins the upstream address (`data.server.address =
+    (ip, port)`), mitmproxy reports that pinned IP in `flow.request.host` for
+    every request inside the tunnel — so any host-scoped decision keyed on it
+    (broker injection, identity injection, gateway key, the #62 scan, the
+    denial log) silently stopped matching for every DNS-resolved destination
+    (found end-to-end in #65: git's and gh's placeholders were forwarded
+    unsubstituted and GitHub answered 401). The hostname that was judged is
+    the client's SNI, which mitmproxy also verifies the upstream certificate
+    against — so, unlike the Host header, it cannot be forged to steer a
+    credential toward another server. Plain HTTP (no TLS, no SNI) falls back
+    to the request's own host (URL / Host header), which for a non-tunneled
+    request is also where the connection goes."""
+    sni = getattr(getattr(flow, "server_conn", None), "sni", None)
+    if sni:
+        return sni.decode() if isinstance(sni, bytes) else str(sni)
+    return getattr(flow.request, "pretty_host", None) or flow.request.host
+
+
 def _apply_identity(flow) -> None:
+    host = _logical_host(flow)
     existing = {
         name.lower(): value
         for name, value in flow.request.headers.items()
         if name.lower().startswith("x-agent-")
     }
-    final, stripped = identity_outcome(existing, flow.request.host)
+    final, stripped = identity_outcome(existing, host)
     # set, not list: mitmproxy's multidict yields a duplicated header name once
     # per occurrence, while del removes every occurrence — a second del on the
     # same name would raise outside the fail-closed wrapper.
@@ -698,7 +721,7 @@ def _apply_identity(flow) -> None:
     for name, value in final.items():
         flow.request.headers[name] = value
     if stripped:
-        _log_stripped(flow.request.host, stripped)
+        _log_stripped(host, stripped)
 
 
 # ---------------------------------------------------------- credential broker
@@ -725,13 +748,31 @@ def broker_authorization(host: str, port: int) -> str | None:
         return None
 
 
+def _reissue_authorization(incoming: str | None, auth: str) -> str:
+    """Re-issue the broker's credential in the SCHEME the client used (#65
+    end-to-end): GitHub's git smart-HTTP endpoint accepts ONLY Basic
+    (`x-access-token:<token>`) — `token …` and `Bearer …` get 401 there —
+    while api.github.com accepts Basic, Bearer and `token`. git sends Basic
+    with the placeholder, gh sends `token`; keeping each client's scheme
+    meets each endpoint's expectation. `auth` is the broker's canonical
+    `token <t>` form (the testable seam); anything unrecognized falls back
+    to it. Never logs or returns the placeholder."""
+    scheme = (incoming or "").partition(" ")[0].lower()
+    secret = auth.partition(" ")[2]
+    if scheme == "basic" and secret:
+        return "Basic " + base64.b64encode(f"x-access-token:{secret}".encode()).decode()
+    if scheme == "bearer" and secret:
+        return f"Bearer {secret}"
+    return auth
+
+
 def _apply_broker(flow) -> None:
     """Toward a broker destination host, replace Authorization with the real
     short-TTL credential. The agent only ever holds a placeholder; whatever
     it sent is overwritten. Fail-closed: if no credential is available, the
     placeholder is STRIPPED (never forwarded) so the upstream rejects rather
     than the agent's placeholder leaking or a stale token being used."""
-    host, port = flow.request.host, flow.request.port
+    host, port = _logical_host(flow), flow.request.port
     if KUBE_BROKER is not None:
         # kube: a destination is exactly a configured cluster origin (#49/#57).
         # Toward a non-cluster host, leave the request untouched. Toward a
@@ -752,10 +793,11 @@ def _apply_broker(flow) -> None:
     if BROKER is None or not tjor_identity.broker_covers(BROKER_HOSTS, host, port):
         return
     auth = broker_authorization(host, port)
+    incoming = flow.request.headers.get("authorization")
     if "authorization" in flow.request.headers:
         del flow.request.headers["authorization"]
     if auth is not None:
-        flow.request.headers["authorization"] = auth
+        flow.request.headers["authorization"] = _reissue_authorization(incoming, auth)
 
 
 def _apply_gateway(flow) -> None:
@@ -768,7 +810,7 @@ def _apply_gateway(flow) -> None:
     block list with only inference paths carved back in (host-block + paths.allow,
     NOT an admin-prefix denylist) — so this key only ever authenticates inference;
     the management API is unreachable by construction regardless."""
-    if not GATEWAY_HOST or tjor_policy._canon_host(flow.request.host) != GATEWAY_HOST:
+    if not GATEWAY_HOST or tjor_policy._canon_host(_logical_host(flow)) != GATEWAY_HOST:
         return
     if "authorization" in flow.request.headers:
         del flow.request.headers["authorization"]
@@ -876,14 +918,15 @@ class TjorPolicy:
         # throw in _apply_broker/_apply_gateway must deny, never forward the
         # request without the intended handling.
         try:
-            verdict = request_verdict(flow.request.pretty_url, flow.request.host)
+            host = _logical_host(flow)   # the judged hostname, not the pinned IP (see _logical_host)
+            verdict = request_verdict(flow.request.pretty_url, host)
             if verdict.allowed:
                 _apply_identity(flow)
                 _apply_broker(flow)
                 _apply_gateway(flow)
                 _scan_request_body(flow)   # #62 observe-only tripwire; self-guarded, never denies
                 return
-            _log_denial(flow.request.host, verdict.rule)  # operator log keeps the full reason
+            _log_denial(host, verdict.rule)  # operator log keeps the full reason
             agent_rule = _agent_rule(verdict.rule)         # agent gets the class only (#60)
             flow.response = http.Response.make(
                 403,
@@ -917,7 +960,7 @@ class TjorPolicy:
         # error is swallowed and the chunk is always returned unchanged, so a
         # counting failure can never corrupt a response.
         try:
-            pod = _pods_log_pod(flow.request.host, flow.request.path)
+            pod = _pods_log_pod(_logical_host(flow), flow.request.path)
             if pod is None:
                 return
             # Only real, successful log reads carry log content; a non-2xx (e.g.
