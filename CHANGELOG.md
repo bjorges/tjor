@@ -3,7 +3,11 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.20.1] — 2026-09-27 — gh in broker sessions + four broker regressions fixed (#65)
+
+Patch release: a small feature (`gh` authenticates through the broker) and
+four fixes that restore brokered authentication in real sessions — read the
+Security entry.
 
 ### Fixed
 - **`gh` works in broker sessions (#65).** With a GitHub-covering broker the
