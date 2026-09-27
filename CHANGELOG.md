@@ -3,7 +3,11 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.20.0] — 2026-09-27 — Launcher self-mount guard + tjor self-install (#67)
+
+Breaking by design (pre-1.0 minor bump): the tree `bin/tjor` runs from is
+refused as a writable mount unless `--allow-self-mount`; developing tjor
+inside tjor now goes through `tjor self-install`.
 
 ### Security
 - **BREAKING (by design): the running tjor tree is refused as a writable
