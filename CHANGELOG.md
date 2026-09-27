@@ -3,7 +3,10 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.21.0] — 2026-09-27 — Git hooks masked in writable mounts; opt-in .git/config pin (#71)
+
+Breaking by design (pre-1.0 minor bump): host-installed git hooks no longer
+fire on in-cage commits unless `[landlock] mask_git_hooks = false`.
 
 ### Security
 - **BREAKING (by design): git hooks directories are masked in every writable
