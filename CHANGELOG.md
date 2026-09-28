@@ -3,7 +3,7 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.21.3] — 2026-09-28 — Worktree mounts: native layout only, explicit approval; git-check walks every root (v0.21.2 review)
 
 Review follow-ups for v0.21.2 (external review; both Criticals confirmed
 against the code — one by running the resolver against the forged layout —
