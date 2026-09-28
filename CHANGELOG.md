@@ -3,7 +3,7 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
-## [Unreleased]
+## [0.21.2] — 2026-09-28 — Worktree workspaces (#79); review follow-ups for v0.20.4–v0.21.1
 
 ### Added
 - **A linked worktree works as the workspace or a `--dir`/`--dir-ro` (#79,
