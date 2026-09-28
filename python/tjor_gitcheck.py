@@ -233,6 +233,12 @@ def discover(roots: list[str], max_depth: int = MAX_DEPTH_DEFAULT) -> tuple[list
         base = Path(root)
         if not base.is_dir():
             continue
+        if (base / "HEAD").is_file() and (base / "objects").is_dir() and (base / "refs").is_dir():
+            # A root that IS a git directory (a worktree's common dir mounted
+            # alongside it, #79): its config, hooks and worktree pointers are
+            # recorded through the worktree that links to it; objects/ holds
+            # no repositories and is not worth a walk.
+            continue
         base_depth = len(base.parts)
         for dirpath, dirnames, filenames in os.walk(base, onerror=onerror, followlinks=False):
             d = Path(dirpath)

@@ -5,6 +5,27 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **A linked worktree works as the workspace or a `--dir`/`--dir-ro` (#79,
+  from the #77 reproduction).** Its `.git` file names a git directory under
+  the main repository, outside the worktree; git treats the missing target
+  as a hard error for every command, so the agent container died at the
+  entrypoint's first `git config` (exit 128) before the harness started.
+  The launcher now resolves the common directory through git and mounts it
+  alongside the worktree at its host path with the same writability —
+  validated by git's own linkage (a git directory whose worktree entry links
+  back to this checkout, or whose `core.worktree` names it), never by the
+  pointer alone: an unresolvable pointer, one that does not link back, a
+  symlinked `.git` or a sensitive target refuses the launch with the fix
+  named (no `--unsafe-dir` override for the last). The mounted common dir is
+  an ordinary root: git-trusted, kernel-granted, hooks masked (a bare-named
+  `repo.git` too), config pinned when opted in, judged by the nesting and
+  self-mount rules, baselined through the worktree without walking
+  `objects/`. Shared common dirs mount once, writable if any sharer is.
+  Tests: a daemon-free `worktree` suite (resolution, every refusal, list
+  wiring, the mask planner) and a live landlock section (status/log/commit
+  in-cage from a worktree, the main repository's hook masked).
+
 Review follow-ups for v0.20.4 → v0.21.1 (external review of the batch; every
 Critical and High below was confirmed against the code before fixing).
 

@@ -40,6 +40,8 @@ jobs:
         run: bash tests/integration/self_mount_test.sh
       - name: git tamper detection baseline/check/marker (no docker) (#72)
         run: bash tests/integration/gitcheck_test.sh
+      - name: worktree common-dir mounts (no docker) (#79)
+        run: bash tests/integration/worktree_test.sh
       - name: shellcheck
         # --severity=warning: fail on real bugs (warning/error), not info-level
         # findings like SC2317 (trap-invoked functions look "unreachable"),

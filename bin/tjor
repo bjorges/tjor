@@ -1308,6 +1308,100 @@ gate_sensitive_path() { # $1 = physical path, $2 = workspace | --dir | --dir-ro
     esac
 }
 
+# ------------------------------------------- worktree common dirs (#79)
+# A linked worktree's .git is a FILE naming its private git dir under the
+# main repository's common dir (`<main>/.git/worktrees/<name>`); a
+# --separate-git-dir checkout's names the git dir itself. Neither lies under
+# the worktree, so nothing in-cage could reach it, and git treats the missing
+# target as a hard error for EVERY command (#77: the entrypoint's first
+# `git config --system` died, exit 128, before the harness started). The
+# common dir is resolved through git and mounted alongside the root — on
+# GIT'S OWN LINKAGE, never on the pointer alone: it must be a git dir AND
+# point back at this root (the private dir's `gitdir` file, or the git dir's
+# core.worktree), so a planted `.git` file cannot mount an arbitrary host
+# path. A sensitive target is refused with no override (the pointer named
+# it, not the operator). The rev-parse reads config and runs nothing
+# configured (no hook, pager, fsmonitor, credential or ssh command there).
+root_covers_any() { # $1 = path; $2.. = roots → 0 when some root equals or contains it (component boundaries)
+    local p="$1" r; shift
+    for r in "$@"; do
+        [[ -n "${r}" ]] || continue
+        [[ "${p}" == "${r}" || "${p}" == "${r}/"* ]] && return 0
+    done
+    return 1
+}
+
+worktree_common_dir() { # $1 = mount root (physical) → echoes the validated common dir, or nothing when the root needs none; dies on a bad pointer
+    local root="$1" dotgit common private back back_dir
+    dotgit="${root}/.git"
+    if [[ -L "${dotgit}" ]]; then
+        die "refusing: ${dotgit} is a symbolic link (to $(safeprint "$(readlink "${dotgit}" 2>/dev/null || echo '?')")) — a worktree pointer is trusted only as a real file; replace the link, or launch from the main repository"
+    fi
+    [[ -f "${dotgit}" ]] || return 0   # a .git DIRECTORY (or no repository) needs nothing
+    if ! common="$(git -C "${root}" rev-parse --path-format=absolute --git-common-dir 2>&1)" \
+       || ! private="$(git -C "${root}" rev-parse --path-format=absolute --git-dir 2>&1)"; then
+        die "refusing: ${dotgit} is a worktree pointer git cannot resolve ('$(safeprint "$(head -c 200 "${dotgit}" | tr -d '\n')")': $(safeprint "${common}")) — repair the worktree (git worktree repair) or launch from the main repository"
+    fi
+    [[ -d "${common}" ]] && common="$(cd "${common}" && pwd -P)"
+    [[ -d "${private}" ]] && private="$(cd "${private}" && pwd -P)"
+    if [[ ! -f "${common}/HEAD" || ! -d "${common}/objects" || ! -d "${common}/refs" ]]; then
+        die "refusing: ${dotgit} names ${common}, which is not a git directory — repair the worktree (git worktree repair) or launch from the main repository"
+    fi
+    # The back-link: git's own record that THIS root belongs to that repository.
+    if [[ "${private}" != "${common}" ]]; then
+        back="$(head -n1 "${private}/gitdir" 2>/dev/null | tr -d '\r')"
+        back_dir=""
+        [[ -n "${back}" && -d "$(dirname "${back}")" ]] && back_dir="$(cd "$(dirname "${back}")" && pwd -P)"
+        if [[ -z "${back}" || "${back_dir}/$(basename "${back}")" != "${root}/.git" ]]; then
+            die "refusing: ${dotgit} names ${private}, but that worktree entry links back to '$(safeprint "${back:-nothing}")', not to ${root}/.git — the pointer does not belong to this directory (git worktree repair, or launch from the main repository)"
+        fi
+    else
+        back="$(git config --file "${common}/config" --get core.worktree 2>/dev/null || true)"
+        [[ -n "${back}" && "${back}" != /* ]] && back="${common}/${back}"
+        if [[ -z "${back}" || ! -d "${back}" || "$(cd "${back}" && pwd -P)" != "${root}" ]]; then
+            die "refusing: ${dotgit} names the separate git directory ${common}, whose core.worktree is '$(safeprint "${back:-unset}")', not ${root} — only git's own back-link is trusted, never the pointer alone; for a --separate-git-dir checkout set it once: git -C ${root} config core.worktree ${root}"
+        fi
+    fi
+    if dir_is_sensitive "${common}"; then
+        die "refusing: the git directory ${common} behind ${dotgit} is a sensitive host path and is not mounted — no override: the pointer named it, not you; launch from the main repository instead"
+    fi
+    printf '%s' "${common}"
+}
+
+# Resolve every root's common dir and append the new ones to the --dir /
+# --dir-ro lists, so the overlap rule, the self-mount guard, the mounts, the
+# git-trust list, the masks and the baseline all see an ordinary root.
+# Writable wins: a common dir shared by a writable and a read-only worktree
+# mounts once, writable. A writable worktree whose common dir lies under a
+# READ-ONLY root gets no extra mount and a warning (the operator chose that).
+worktree_common_dirs() { # reads/extends TJOR_WORKSPACE, TJOR_EXTRA_DIRS, TJOR_EXTRA_DIRS_RO
+    local common w_root seen
+    local -a rw=() ro=()
+    for w_root in "${TJOR_WORKSPACE:-}" "${TJOR_EXTRA_DIRS[@]:-}"; do
+        [[ -n "${w_root}" ]] || continue
+        common="$(worktree_common_dir "${w_root}")" || exit 1
+        [[ -n "${common}" ]] || continue
+        if root_covers_any "${common}" "${TJOR_WORKSPACE:-}" "${TJOR_EXTRA_DIRS[@]:-}" "${rw[@]:-}"; then continue; fi
+        if root_covers_any "${common}" "${TJOR_EXTRA_DIRS_RO[@]:-}"; then
+            warn "worktree ${w_root}: its common git directory ${common} lies under a READ-ONLY mount root — reads work, commits from this worktree will fail in-cage"
+            continue
+        fi
+        rw+=("${common}")
+        echo "tjor: + worktree common dir ${common} (for ${w_root}; mounted writable alongside it — the whole repository's history, refs and config; hooks masked)" >&2
+    done
+    for w_root in "${TJOR_EXTRA_DIRS_RO[@]:-}"; do
+        [[ -n "${w_root}" ]] || continue
+        common="$(worktree_common_dir "${w_root}")" || exit 1
+        [[ -n "${common}" ]] || continue
+        if root_covers_any "${common}" "${TJOR_WORKSPACE:-}" "${TJOR_EXTRA_DIRS[@]:-}" "${rw[@]:-}" "${TJOR_EXTRA_DIRS_RO[@]:-}" "${ro[@]:-}"; then continue; fi
+        ro+=("${common}")
+        echo "tjor: + worktree common dir ${common} (for ${w_root}; mounted read-only alongside it)" >&2
+    done
+    for seen in "${rw[@]:-}"; do [[ -n "${seen}" ]] && TJOR_EXTRA_DIRS+=("${seen}"); done
+    for seen in "${ro[@]:-}"; do [[ -n "${seen}" ]] && TJOR_EXTRA_DIRS_RO+=("${seen}"); done
+    return 0
+}
+
 cmd_run() {
     local harness="opencode" task="" name="" detach="" unsafe_dir="" allow_self_mount="" profile="" profile_dir=""
     local -a extra_dirs=() extra_dirs_ro=()
@@ -1369,6 +1463,11 @@ cmd_run() {
         gate_sensitive_path "${abs}" --dir-ro
         TJOR_EXTRA_DIRS_RO+=("${abs}")
     done
+    # Worktree common dirs (#79): after the gates (every root above is an
+    # approved path), before the overlap and self-mount rules (the extra
+    # roots are judged like any other — a worktree of the tjor checkout
+    # itself is refused as a writable self-mount, correctly).
+    worktree_common_dirs
     # Overlapping roots with DIFFERENT writability classes are refused, in
     # BOTH directions (release review of v0.16.0/v0.17.0): a writable child
     # bind under a :ro parent stays writable inside the container; a
@@ -1487,7 +1586,7 @@ refuse_git_symlink() { # $1 = path, $2 = what it is, $3 = what to replace it wit
 # command is reached on that path).
 # Reads run_agent's safe[], ro_dirs, empty_src, masked/dirmasked/mounts.
 plan_git_masks() {
-    local git_hooks_on git_cfg_pin dir entry gitdir hooks cfgfile under w
+    local git_hooks_on git_cfg_pin dir entry gitdir under w
     git_hooks_on="$(cfg landlock.mask_git_hooks --default true)"
     git_cfg_pin="$(cfg landlock.protect_git_config --default false)"
     [[ "${git_hooks_on}" != "false" || "${git_cfg_pin}" == "true" ]] || return 0
@@ -1498,6 +1597,10 @@ plan_git_masks() {
     for dir in "${safe[@]:-}"; do
         [[ -n "${dir}" ]] || continue
         if grep -qxF -- "${dir}" <<<"${ro_dirs}"; then continue; fi   # read-only root: unwritable already
+        # A root that IS a git directory — a worktree's common dir mounted
+        # alongside it (#79), named .git or bare like repo.git — is masked
+        # as one; find below only sees .git ENTRIES beneath roots.
+        if [[ -f "${dir}/HEAD" && -d "${dir}/objects" && -d "${dir}/refs" ]]; then mask_gitdir "${dir}"; fi
         while IFS= read -r -d '' entry; do
             if [[ -L "${entry}" ]]; then refuse_git_symlink "${entry}" "a .git entry" "directory or worktree file"; fi
             if [[ -d "${entry}" ]]; then
@@ -1515,27 +1618,32 @@ plan_git_masks() {
                 if [[ "${gitdir}" == "${w}" || "${gitdir}" == "${w}/"* ]]; then under=1; break; fi
             done
             [[ -n "${under}" ]] || continue
-            if [[ "${git_hooks_on}" != "false" ]]; then
-                hooks="${gitdir}/hooks"
-                if [[ -L "${hooks}" ]]; then refuse_git_symlink "${hooks}" "git hooks dir" "directory"; fi
-                if ! mask_covered "${hooks}"; then
-                    [[ -d "${hooks}" ]] || mkdir -p "${hooks}"   # a mountpoint for the mask
-                    masked["${hooks}"]=1; dirmasked["${hooks}"]=1
-                    mounts+=(--volume "${empty_src}:${hooks}:ro")
-                    echo "tjor: + dir mask $(safeprint "${hooks}") (git hooks)" >&2
-                fi
-            fi
-            if [[ "${git_cfg_pin}" == "true" ]]; then
-                cfgfile="${gitdir}/config"
-                if [[ -L "${cfgfile}" ]]; then refuse_git_symlink "${cfgfile}" "git config" "file"; fi
-                if [[ -f "${cfgfile}" ]] && ! mask_covered "${cfgfile}"; then
-                    masked["${cfgfile}"]=1
-                    mounts+=(--volume "${cfgfile}:${cfgfile}:ro")
-                    echo "tjor: + config pin $(safeprint "${cfgfile}") (protect_git_config)" >&2
-                fi
-            fi
+            mask_gitdir "${gitdir}"
         done < <(find "${dir}" \( -type d -o -type f -o -type l \) -name .git -print0 -prune 2>/dev/null)
     done
+}
+
+mask_gitdir() { # $1 = a git directory under a writable root; reads plan_git_masks' git_hooks_on/git_cfg_pin and run_agent's arrays
+    local gitdir="$1" hooks cfgfile
+    if [[ "${git_hooks_on}" != "false" ]]; then
+        hooks="${gitdir}/hooks"
+        if [[ -L "${hooks}" ]]; then refuse_git_symlink "${hooks}" "git hooks dir" "directory"; fi
+        if ! mask_covered "${hooks}"; then
+            [[ -d "${hooks}" ]] || mkdir -p "${hooks}"   # a mountpoint for the mask
+            masked["${hooks}"]=1; dirmasked["${hooks}"]=1
+            mounts+=(--volume "${empty_src}:${hooks}:ro")
+            echo "tjor: + dir mask $(safeprint "${hooks}") (git hooks)" >&2
+        fi
+    fi
+    if [[ "${git_cfg_pin}" == "true" ]]; then
+        cfgfile="${gitdir}/config"
+        if [[ -L "${cfgfile}" ]]; then refuse_git_symlink "${cfgfile}" "git config" "file"; fi
+        if [[ -f "${cfgfile}" ]] && ! mask_covered "${cfgfile}"; then
+            masked["${cfgfile}"]=1
+            mounts+=(--volume "${cfgfile}:${cfgfile}:ro")
+            echo "tjor: + config pin $(safeprint "${cfgfile}") (protect_git_config)" >&2
+        fi
+    fi
 }
 
 # Launch the agent DETACHED and persistent, then (unless --detach) attach to

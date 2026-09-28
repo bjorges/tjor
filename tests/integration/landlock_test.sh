@@ -308,6 +308,44 @@ check "config pin: host config file unchanged" test "$(hash8 "$(cat "${REPO}/.gi
 ( cd "${REPO}" && "${T}" down --session g3 >/dev/null 2>&1 )
 ( cd "${REPO}" && git worktree remove --force "${REPO}/wt" >/dev/null 2>&1 || true )
 
+# ---- A5. worktree workspace (#79): the common dir is mounted, masked, git works
+# Layout: a main repository OUTSIDE the workspace (carrying its own pre-commit
+# hook that writes a marker), and a linked worktree launched as the
+# workspace. Before #79 the agent container died at the entrypoint's first
+# git call (exit 128); now the common dir rides along, kernel-granted and
+# git-trusted, with its hooks masked.
+WTMAIN="${HOME}/.tjor/tmp/landlock-wtmain"; WTWS="${HOME}/.tjor/tmp/landlock-wt"
+rm -rf "${WTMAIN}" "${WTWS}"
+git init -q "${WTMAIN}"; ( cd "${WTMAIN}" && git -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m base )
+WTMARK="${WTMAIN}/hook-fired.txt"; mkdir -p "${WTMAIN}/.git/hooks"
+printf '#!/bin/sh\necho fired > "%s"\n' "${WTMARK}" > "${WTMAIN}/.git/hooks/pre-commit"; chmod +x "${WTMAIN}/.git/hooks/pre-commit"
+git -C "${WTMAIN}" worktree add -q "${WTWS}" -b feat
+cat > "${USERCFG}/tjor/config.toml" <<CFG
+[landlock]
+mode = "auto"
+CFG
+G5R="${WTWS}/g5-result.txt"
+( cd "${WTWS}" && XDG_CONFIG_HOME="${USERCFG}" "${T}" run --session g5 -- sh -c "
+    R='${G5R}'; : > \"\$R\"
+    (git status --short --branch >/dev/null 2>&1 && echo 'status=OK' || echo 'status=failed') >> \"\$R\"
+    (git log --oneline -1 >/dev/null 2>&1 && echo 'log=OK' || echo 'log=failed') >> \"\$R\"
+    (git -c user.name=t -c user.email=t@example.invalid commit -q --allow-empty -m incage-wt >/dev/null 2>&1 && echo 'commit=OK' || echo 'commit=failed') >> \"\$R\"
+    echo \"commonhooks=[\$(ls -A '${WTMAIN}/.git/hooks' 2>/dev/null | tr '\n' ' ')]\" >> \"\$R\"
+    echo \"common=\$(git rev-parse --path-format=absolute --git-common-dir 2>/dev/null)\" >> \"\$R\"
+" < /dev/null > "${SCRATCH}/g5.out" 2>&1 || true )
+g5field() { grep "^$1=" "${G5R}" 2>/dev/null | head -1 | cut -d= -f2-; }
+check "worktree: launch announced the common dir mount" grep -q "worktree common dir ${WTMAIN}/.git (for ${WTWS}" "${SCRATCH}/g5.out"
+check "worktree: launch announced the common dir hooks mask" grep -q "dir mask ${WTMAIN}/.git/hooks (git hooks)" "${SCRATCH}/g5.out"
+check "worktree: git status works in-cage from a worktree workspace" test "$(g5field status)" = "OK"
+check "worktree: git log works in-cage from a worktree workspace" test "$(g5field log)" = "OK"
+check "worktree: git commit works in-cage from a worktree workspace" test "$(g5field commit)" = "OK"
+check "worktree: the in-cage commit landed in the main repository" bash -c "git -C '${WTWS}' log --oneline -1 | grep -q incage-wt"
+check "worktree: the common dir's hooks list empty in-cage" test "$(g5field commonhooks)" = "[]"
+check "worktree: the main repository's pre-commit hook did not fire" test ! -e "${WTMARK}"
+check "worktree: git resolves the common dir at its host path in-cage" test "$(g5field common)" = "${WTMAIN}/.git"
+( cd "${WTWS}" && "${T}" down --session g5 >/dev/null 2>&1 )
+rm -rf "${WTWS}" "${WTMAIN}"
+
 # ---- B. handoff branches on the image, Landlock forced unavailable -----------
 # auto + unavailable: LOUD degradation, still runs.
 out="$(docker run --rm --security-opt seccomp="${DENY}" -e TJOR_LANDLOCK=auto \

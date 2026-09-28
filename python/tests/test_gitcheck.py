@@ -245,6 +245,18 @@ class TestSnapshotAndDiff:
         (wt / ".git").write_text("gitdir: /somewhere/else\n")
         assert any(x["kind"] == "worktree-pointer" for x in gc.diff(base, gc.snapshot([str(wt)])))
 
+    def test_git_dir_root_is_not_walked(self, tmp_path):
+        """#79: a worktree's common dir mounted alongside it is a root that IS a
+        git directory — not walked (objects/ holds no repositories); the
+        worktree entry records the common dir's config, hooks and pointers."""
+        main = _repo(tmp_path / "main"); wt = tmp_path / "wt"
+        _git(main, "worktree", "add", "-q", str(wt))
+        _git(main, "config", "core.hooksPath", ".h")
+        snap = gc.snapshot([str(wt), str(main / ".git")])
+        assert [r["worktree"] for r in snap["repos"]] == [str(wt)] and snap["incomplete"] == []
+        rec = snap["repos"][0]
+        assert rec["common"] == str(main / ".git") and rec["dangerous"]["core.hookspath"] == [".h"] and "wt" in rec["worktrees"]
+
     def test_repo_missing(self, tmp_path):
         ws = _repo(tmp_path / "ws"); base = gc.snapshot([str(ws)])
         import shutil; shutil.rmtree(ws / ".git")

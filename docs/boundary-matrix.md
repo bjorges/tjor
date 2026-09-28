@@ -4,7 +4,7 @@
      Regenerate: python3 python/gen_boundary_matrix.py
      Drift-checked by tests/doc_consistency.sh (`--check`). -->
 
-Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount` and `gitcheck` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (226 checks total; 80 adversarial guarantees below, the rest functional/config checks the suites also run).
+Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount` and `gitcheck` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (255 checks total; 90 adversarial guarantees below, the rest functional/config checks the suites also run).
 
 ## cage-network
 
@@ -56,6 +56,8 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | A masked dir lists empty in-cage | `masked .opencode lists empty in-cage` | landlock |
 | A masked dotenv cannot be unlinked in-cage | `masked .env cannot be unlinked in-cage` | landlock |
 | A masked git hooks directory cannot be written in-cage | `git hooks: write into the masked hooks dir refused` | landlock |
+| A mount root that is itself a git directory has its hooks masked | `git hooks: a bare-named git-dir root has its hooks masked` | worktree |
+| A mounted worktree common directory's hooks directory is masked in-cage | `worktree: the common dir's hooks list empty in-cage` | landlock |
 | A nested masked dir lists empty in-cage | `nested .opencode lists empty in-cage` | landlock |
 | A nested repository's hooks directory is masked | `git hooks: nested repo hooks dir lists empty in-cage` | landlock |
 | A pinned .git/config refuses writes in-cage (opt-in) | `config pin: git config write refused in-cage` | landlock |
@@ -68,6 +70,7 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | Outside-tree read is kernel-denied | `outside-tree read is kernel-denied` | landlock |
 | Outside-tree write is kernel-denied | `outside-tree write is kernel-denied` | landlock |
 | The dotenv secret is absent from the agent environment | `secret nowhere in the agent env` | landlock |
+| The main repository's host hook does not fire on an in-cage worktree commit | `worktree: the main repository's pre-commit hook did not fire` | landlock |
 | The secret is absent from the masked dotenv | `secret string is absent from the masked file` | landlock |
 | Workspace dotenv is masked (reads empty) | `workspace .env reads empty (masked)` | landlock |
 | auto mode degrades to INACTIVE (fail-safe) when Landlock is unavailable | `auto+unavailable degrades to INACTIVE` | landlock |
@@ -78,18 +81,25 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 
 | Guarantee | Probe | Suite |
 |---|---|---|
+| A .git pointer git cannot resolve refuses the launch instead of failing in-cage | `worktree: a pointer git cannot resolve is refused, naming the pointer` | worktree |
+| A .git pointer whose target does not link back to the root is refused, never mounted | `worktree: a planted pointer without a back-link is refused` | worktree |
 | A core.worktree redirect cannot steer attach to another session | `core.worktree: attach's short-name qualification refuses the redirect` | workspace-gate |
 | A core.worktree redirect of the workspace is refused | `core.worktree: redirect toward a harmless directory is refused` | workspace-gate |
 | A core.worktree redirect toward an ancestor directory is refused | `core.worktree: redirect toward an ancestor holding other repos is refused` | workspace-gate |
 | A hostile dir name is escape-sanitized in launch output | `hostile parent dir name announced escape-sanitized` | landlock |
 | A hostile dotenv filename is escape-sanitized in launch output | `hostile dotenv filename is announced escape-sanitized` | landlock |
+| A linked worktree's common git directory is resolved through git's own linkage | `worktree: a linked worktree resolves to its main repository's common dir` | worktree |
 | A refused extra dir leaves no minted credential behind | `extra-dir gate: a refused --dir minted no credential material` | workspace-gate |
 | A refused launch leaves no session state directory behind | `workspace gate: no state dir created after a refusal` | workspace-gate |
+| A sensitive common git directory is refused with no override | `worktree: a sensitive common dir is refused` | worktree |
 | A workspace inside an installed launcher tree is refused | `a workspace inside an installed tree is refused` | self-mount |
 | A workspace reached by git climbing to a sensitive toplevel is refused | `workspace gate: non-repo subdir of a home-rooted repo refused` | workspace-gate |
+| An in-cage commit from a worktree workspace succeeds | `worktree: git commit works in-cage from a worktree workspace` | landlock |
+| Git works inside a worktree workspace whose main repository lies outside it | `worktree: git status works in-cage from a worktree workspace` | landlock |
 | No raw terminal-escape byte on a dir-mask line | `no raw ESC byte on any dir-mask line` | landlock |
 | No raw terminal-escape byte on a dotenv-mask line | `no raw ESC byte on any dotenv-mask line` | landlock |
 | Sensitive host path refused as the primary workspace | `workspace gate: home-rooted dotfiles repo refused from the home dir` | workspace-gate |
+| The common directory is mounted alongside the worktree with its writability and announced | `worktree: the workspace's common dir is appended writable and announced` | worktree |
 | The session state root is refused as a read-only extra mount | `extra-dir gate: session root refused via --dir-ro` | workspace-gate |
 | The session state root is refused as a writable extra mount | `extra-dir gate: session root refused via --dir` | workspace-gate |
 | The session state root is refused as the workspace | `workspace gate: session root refused as the workspace` | workspace-gate |

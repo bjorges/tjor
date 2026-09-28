@@ -72,6 +72,23 @@ inside a writable one (or the reverse, in either flag order, workspace
 included) refuses to launch — a writable parent would re-grant and re-trust
 the read-only tree, and a nested writable bind stays writable regardless of
 the parent's `:ro`. Same-writability nesting is fine.
+**Worktrees work as the workspace** (or as a `--dir`/`--dir-ro`, #79): a
+linked `git worktree`'s `.git` is a file naming a git directory under the
+main repository, outside the worktree, so tjor mounts that **common
+directory** alongside the worktree at its host path, with the same
+writability, and announces it. Only git's own linkage is trusted, never the
+pointer alone: the target must be a git directory whose worktree entry links
+back to this checkout — or, for a `--separate-git-dir` checkout, whose
+`core.worktree` names it (set it once: `git config core.worktree "$PWD"`). A
+pointer git cannot resolve, one that does not link back, a symlinked `.git`,
+or a sensitive target refuses the launch with the fix named, and
+`--unsafe-dir` does not override the last: the pointer chose that path, not
+you. The mounted common directory is a mount root like any other —
+git-trusted, kernel-granted, its hooks masked (config pinned when opted in),
+judged by the nesting and self-mount rules, covered by the git-check baseline
+through the worktree. Stated plainly: the agent then sees the whole
+repository's history, refs and config, and every other worktree's private
+directory under it — what a worktree of that repository already implies.
 **Sensitive host paths are refused** — as the primary workspace and as
 `--dir`/`--dir-ro` alike: `/` and system directories, your home directory and
 anything above it, credential directories (`~/.ssh`, `~/.config`, `~/.aws`,
@@ -445,8 +462,9 @@ deny_paths = []        # extra files to mask (absolute; only ever ADDS)
 mask_dirs = []         # directories to mask structurally: absolute paths or bare
                        # names discovered in every mounted repo (no globs);
                        # independent of mask_dotenv; e.g. [".opencode"]
-mask_git_hooks = true  # mask every writable repo's .git/hooks (host hook
-                       # frameworks stop firing in-cage; false restores them)
+mask_git_hooks = true  # mask every writable repo's .git/hooks, a worktree's
+                       # mounted common dir included (host hook frameworks
+                       # stop firing in-cage; false restores them)
 protect_git_config = false  # opt-in: pin .git/config read-only (see the cost above)
 git_check_depth = 32   # how deep below each writable root git-check looks for
                        # repos; a spot where the walk stops is announced at

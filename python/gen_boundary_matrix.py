@@ -42,6 +42,7 @@ LANDLOCK_FILE = ROOT / "tests" / "integration" / "landlock_test.sh"
 WORKSPACE_GATE_FILE = ROOT / "tests" / "integration" / "workspace_gate_test.sh"
 SELF_MOUNT_FILE = ROOT / "tests" / "integration" / "self_mount_test.sh"
 GITCHECK_FILE = ROOT / "tests" / "integration" / "gitcheck_test.sh"
+WORKTREE_FILE = ROOT / "tests" / "integration" / "worktree_test.sh"
 MATRIX_FILE = ROOT / "docs" / "boundary-matrix.md"
 
 CONFORMANCE = "conformance"
@@ -49,6 +50,7 @@ LANDLOCK = "landlock"
 WORKSPACE_GATE = "workspace-gate"
 SELF_MOUNT = "self-mount"
 GITCHECK = "gitcheck"
+WORKTREE = "worktree"
 
 # name -> (suite, capability, guarantee, boundary)
 # boundary=True  -> an adversarial cage guarantee (rendered in the matrix)
@@ -383,6 +385,47 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
     "gitcheck: the extra repo's finding is attributed to it": (GITCHECK, "git-tamper-detection", "launch-UX: attribution", False),
     "gitcheck: a repo no session covers is refused clearly": (GITCHECK, "git-tamper-detection", "launch-UX: uncovered repo", False),
     "gitcheck: help text names git-check": (GITCHECK, "git-tamper-detection", "launch-UX: help text", False),
+    # --- worktree suite (#79): common-dir resolution, refusals, wiring, masks ---
+    "worktree: a linked worktree resolves to its main repository's common dir":
+        (WORKTREE, "session-launch", "A linked worktree's common git directory is resolved through git's own linkage", True),
+    "worktree: a .git directory root needs no common dir": (WORKTREE, "session-launch", "functional: .git dir needs nothing", False),
+    "worktree: a separate-git-dir checkout with core.worktree resolves to its git dir": (WORKTREE, "session-launch", "functional: separate git dir with back-link", False),
+    "worktree: a bare repository's worktree resolves to the bare common dir": (WORKTREE, "session-launch", "functional: bare common dir", False),
+    "worktree: a planted pointer without a back-link is refused":
+        (WORKTREE, "session-launch", "A .git pointer whose target does not link back to the root is refused, never mounted", True),
+    "worktree: the planted refusal names the mismatch": (WORKTREE, "session-launch", "launch-UX: planted refusal wording", False),
+    "worktree: a pointer git cannot resolve is refused, naming the pointer":
+        (WORKTREE, "session-launch", "A .git pointer git cannot resolve refuses the launch instead of failing in-cage", True),
+    "worktree: a separate-git-dir checkout without core.worktree is refused with the fix": (WORKTREE, "session-launch", "launch-UX: separate git dir without back-link", False),
+    "worktree: a symlinked .git is refused": (WORKTREE, "session-launch", "functional: symlinked .git refused", False),
+    "worktree: a sensitive common dir is refused":
+        (WORKTREE, "session-launch", "A sensitive common git directory is refused with no override", True),
+    "worktree: --unsafe-dir does not override a sensitive common dir": (WORKTREE, "session-launch", "functional: no override", False),
+    "worktree: a common dir under an existing root adds no mount": (WORKTREE, "session-launch", "functional: covered common dir", False),
+    "worktree: the workspace's common dir is appended writable and announced":
+        (WORKTREE, "session-launch", "The common directory is mounted alongside the worktree with its writability and announced", True),
+    "worktree: a shared common dir mounts once, writable": (WORKTREE, "session-launch", "functional: shared common dir", False),
+    "worktree: a read-only worktree's common dir is appended read-only": (WORKTREE, "session-launch", "functional: read-only worktree", False),
+    "worktree: a writable worktree under a read-only root warns and adds nothing": (WORKTREE, "session-launch", "functional: read-only parent warning", False),
+    "worktree: launch from a worktree passes the resolver (announce, then docker reached)": (WORKTREE, "session-launch", "functional: launch wiring", False),
+    "worktree: launch from a planted pointer is refused before docker": (WORKTREE, "session-launch", "gate: pointer refusals precede docker", False),
+    "git hooks: a bare-named git-dir root has its hooks masked":
+        (WORKTREE, "kernel-sandbox", "A mount root that is itself a git directory has its hooks masked", True),
+    "git hooks: a .git-named common dir root is masked exactly once": (WORKTREE, "kernel-sandbox", "functional: mask planner dedupes", False),
+    # --- landlock suite, section A5: the worktree workspace live ---
+    "worktree: launch announced the common dir mount": (LANDLOCK, "session-launch", "launch-UX: common dir mount announced", False),
+    "worktree: launch announced the common dir hooks mask": (LANDLOCK, "kernel-sandbox", "launch-UX: common dir hooks mask announced", False),
+    "worktree: git status works in-cage from a worktree workspace":
+        (LANDLOCK, "session-launch", "Git works inside a worktree workspace whose main repository lies outside it", True),
+    "worktree: git log works in-cage from a worktree workspace": (LANDLOCK, "session-launch", "functional: git log in a worktree workspace", False),
+    "worktree: git commit works in-cage from a worktree workspace":
+        (LANDLOCK, "session-launch", "An in-cage commit from a worktree workspace succeeds", True),
+    "worktree: the in-cage commit landed in the main repository": (LANDLOCK, "session-launch", "functional: commit reaches the main repository", False),
+    "worktree: the common dir's hooks list empty in-cage":
+        (LANDLOCK, "kernel-sandbox", "A mounted worktree common directory's hooks directory is masked in-cage", True),
+    "worktree: the main repository's pre-commit hook did not fire":
+        (LANDLOCK, "kernel-sandbox", "The main repository's host hook does not fire on an in-cage worktree commit", True),
+    "worktree: git resolves the common dir at its host path in-cage": (LANDLOCK, "session-launch", "functional: common dir at its host path", False),
 }
 
 # Order capabilities are grouped in the rendered matrix.
@@ -419,7 +462,8 @@ def parsed_names() -> list[str]:
             + parse_landlock(LANDLOCK_FILE.read_text())
             + parse_landlock(WORKSPACE_GATE_FILE.read_text())
             + parse_landlock(SELF_MOUNT_FILE.read_text())
-            + parse_landlock(GITCHECK_FILE.read_text()))
+            + parse_landlock(GITCHECK_FILE.read_text())
+            + parse_landlock(WORKTREE_FILE.read_text()))
 
 
 def cross_check(names: list[str]) -> list[str]:
