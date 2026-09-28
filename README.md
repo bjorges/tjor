@@ -74,21 +74,28 @@ the read-only tree, and a nested writable bind stays writable regardless of
 the parent's `:ro`. Same-writability nesting is fine.
 **Worktrees work as the workspace** (or as a `--dir`/`--dir-ro`, #79): a
 linked `git worktree`'s `.git` is a file naming a git directory under the
-main repository, outside the worktree, so tjor mounts that **common
-directory** alongside the worktree at its host path, with the same
-writability, and announces it. Only git's own linkage is trusted, never the
-pointer alone: the target must be a git directory whose worktree entry links
-back to this checkout — or, for a `--separate-git-dir` checkout, whose
-`core.worktree` names it (set it once: `git config core.worktree "$PWD"`). A
-pointer git cannot resolve, one that does not link back, a symlinked `.git`,
-or a sensitive target refuses the launch with the fix named, and
-`--unsafe-dir` does not override the last: the pointer chose that path, not
-you. The mounted common directory is a mount root like any other —
+main repository, outside the worktree, and git cannot run in the cage
+without it. tjor mounts only paths you named, so that **common directory**
+is mounted alongside the worktree — at its host path, with the same
+writability — only when you approve it: `--allow-worktree-mount`, or name it
+yourself with `--dir <path>`. Without either the launch refuses and prints
+the exact directory. Only git's native layout is trusted, never plaintext
+pointers: the pointer must name a `worktrees/<name>` entry *inside* the main
+repository's git directory whose own back-link names this checkout — a
+private directory forged inside the workspace with a `commondir` file aimed
+elsewhere is refused, as is a pointer git cannot resolve, a symlinked
+`.git`, or a sensitive target (`--unsafe-dir` does not override that one:
+the pointer chose the path, not you). A `--separate-git-dir` checkout needs
+its own back-link, `core.worktree` (set it once: `git config core.worktree
+"$PWD"`). The mounted common directory is a mount root like any other —
 git-trusted, kernel-granted, its hooks masked (config pinned when opted in),
-judged by the nesting and self-mount rules, covered by the git-check baseline
-through the worktree. Stated plainly: the agent then sees the whole
+judged by the nesting and self-mount rules, covered by the git-check
+baseline through the worktree. Stated plainly: the agent then sees the whole
 repository's history, refs and config, and every other worktree's private
-directory under it — what a worktree of that repository already implies.
+directory under it — what a worktree of that repository already implies —
+and two sessions that share one main repository (one from the main
+checkout, one from a worktree) coordinate only through git's own index and
+ref locks, as any two git worktrees do.
 **Sensitive host paths are refused** — as the primary workspace and as
 `--dir`/`--dir-ro` alike: `/` and system directories, your home directory and
 anything above it, credential directories (`~/.ssh`, `~/.config`, `~/.aws`,
@@ -393,9 +400,10 @@ What it does, in two independent mechanisms:
   repos under one writable parent are not isolated from each other. A
   `.git` entry, hooks directory or config file that is a **symbolic link** is
   refused at launch rather than masked through — a link a previous session
-  planted would steer the mask onto a path the agent chose — and the refusal
-  names the link, its target, the fix and the opt-out. `tjor git-check`
-  (below) detects the rest of the cage-writable git metadata.
+  planted would steer the mask onto a path the agent chose — regardless of
+  the mask settings, and the refusal names the link, its target and the fix.
+  `tjor git-check` (below) detects the rest of the cage-writable git
+  metadata.
 - **Git config pin (`protect_git_config`, opt-in).** Pins each repo's
   `.git/config` read-only with a bind of the real file over itself: reads
   work, every write fails (git replaces the file by rename, and a mountpoint
@@ -440,7 +448,10 @@ URL-shaped keys are redacted in both. **Acknowledging is bound to what you
 reviewed**: findings print a token, and only `tjor git-check --ack <token>`
 for exactly that state accepts it as the new baseline — a bare `--ack`, a
 wrong token or a stale one (the state moved on) shows the findings and
-refuses, so muscle memory or a script cannot bless a poisoned repo unseen. A
+refuses, so muscle memory cannot bless a poisoned repo unseen. The token
+binds the acknowledgement to a *state*, not to proof that a human read it: a
+script that pipes the token straight back defeats the point, so keep `--ack`
+in human hands. A
 session killed with `SIGKILL` or a closed terminal stays flagged, and `tjor
 ls` lists it as unchecked until you look. Honest limit: a write fires in host
 git the moment it lands; this narrows the window, it does not close it. To

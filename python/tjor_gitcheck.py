@@ -233,12 +233,12 @@ def discover(roots: list[str], max_depth: int = MAX_DEPTH_DEFAULT) -> tuple[list
         base = Path(root)
         if not base.is_dir():
             continue
-        if (base / "HEAD").is_file() and (base / "objects").is_dir() and (base / "refs").is_dir():
-            # A root that IS a git directory (a worktree's common dir mounted
-            # alongside it, #79): its config, hooks and worktree pointers are
-            # recorded through the worktree that links to it; objects/ holds
-            # no repositories and is not worth a walk.
-            continue
+        # Every root is walked, a root that IS a git directory included (a
+        # worktree's common dir mounted alongside it, #79): it holds no
+        # repositories of its own and yields nothing, and a shape test
+        # (HEAD + objects/ + refs/) would be three plantable artifacts that
+        # hide a whole subtree with no signal (v0.21.2 review) — the module's
+        # own rule is that nothing skipped is ever silent.
         base_depth = len(base.parts)
         for dirpath, dirnames, filenames in os.walk(base, onerror=onerror, followlinks=False):
             d = Path(dirpath)

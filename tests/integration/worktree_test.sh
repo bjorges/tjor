@@ -47,6 +47,15 @@ mkdir -p "${HOME}/dangling"; printf 'gitdir: %s/nowhere\n' "${HOME}" > "${HOME}/
 mkdir -p "${HOME}/linkgit"; ln -s "${HOME}/main/.git" "${HOME}/linkgit/.git"
 git init -q "${STATE}/smain"; commit "${STATE}/smain"; git -C "${STATE}/smain" worktree add -q "${HOME}/swt" -b sfeat   # main inside the session root
 mkdir -p "${HOME}/parent"; git init -q "${HOME}/parent/repo"; commit "${HOME}/parent/repo"; git -C "${HOME}/parent/repo" worktree add -q "${HOME}/parent/wt2" -b p2
+# The v0.21.2 review's forgery: a fully synthetic, self-consistent worktree
+# structure inside a writable root — pointer, back-link and a commondir file
+# aimed at another repository — with no `git worktree add` ever run.
+git init -q "${HOME}/victim"; commit "${HOME}/victim"
+mkdir -p "${HOME}/forged/evil/worktrees/x"
+printf 'gitdir: %s/forged/evil/worktrees/x\n' "${HOME}" > "${HOME}/forged/.git"
+printf '%s/forged/.git\n' "${HOME}" > "${HOME}/forged/evil/worktrees/x/gitdir"
+printf '%s/victim/.git\n' "${HOME}" > "${HOME}/forged/evil/worktrees/x/commondir"
+printf 'ref: refs/heads/main\n' > "${HOME}/forged/evil/worktrees/x/HEAD"
 
 # shellcheck source=/dev/null
 source "${ROOT}/bin/tjor"   # source-guard keeps main() from running
@@ -69,16 +78,22 @@ dangling_named() { refused_with "${HOME}/dangling" 'cannot resolve' && grep -q "
 check "worktree: a pointer git cannot resolve is refused, naming the pointer" dangling_named
 check "worktree: a separate-git-dir checkout without core.worktree is refused with the fix" refused_with "${HOME}/sep2" "git -C ${HOME}/sep2 config core.worktree ${HOME}/sep2"
 check "worktree: a symlinked .git is refused" refused_with "${HOME}/linkgit" 'symbolic link'
+forgery_refused() { refused_with "${HOME}/forged" 'inside its own common git directory' && grep -q "${HOME}/victim/.git" "${LAST_OUT}"; }
+check "worktree: a forged private dir with a commondir pointing elsewhere is refused (never mounted)" forgery_refused
+check "worktree: the forgery refusal names git's native layout as the only trusted linkage" grep -q "native worktree layout" "${LAST_OUT}"
 check "worktree: a sensitive common dir is refused" refused_with "${HOME}/swt" 'sensitive host path'
 unsafe_still_refused() { ! ( export TJOR_UNSAFE_DIR=1; worktree_common_dir "${HOME}/swt" ) >/dev/null 2>"${LAST_OUT}"; grep -q 'no override' "${LAST_OUT}"; }
 check "worktree: --unsafe-dir does not override a sensitive common dir" unsafe_still_refused
 
 # === 3. Wiring: the lists the mounts are built from =========================
 # shellcheck disable=SC2034  # the globals are read by worktree_common_dirs
-lists_after() { # $1 = workspace, $2 = --dir list (comma), $3 = --dir-ro list (comma) → prints "rw:<...>|ro:<...>"
-    ( TJOR_WORKSPACE="$1"; IFS=, read -r -a TJOR_EXTRA_DIRS <<<"$2"; IFS=, read -r -a TJOR_EXTRA_DIRS_RO <<<"$3"
+lists_after() { # $1 = workspace, $2 = --dir list (comma), $3 = --dir-ro list (comma), $4 = flag → prints "rw:<...>|ro:<...>"
+    ( TJOR_WORKSPACE="$1"; IFS=, read -r -a TJOR_EXTRA_DIRS <<<"$2"; IFS=, read -r -a TJOR_EXTRA_DIRS_RO <<<"$3"; TJOR_ALLOW_WORKTREE_MOUNT="${4-1}"   # unset → allowed; "" → the flag withheld
       worktree_common_dirs 2>"${LAST_OUT}"; printf 'rw:%s|ro:%s' "${TJOR_EXTRA_DIRS[*]:-}" "${TJOR_EXTRA_DIRS_RO[*]:-}" )
 }
+unlisted_refused() { ! lists_after "${HOME}/wt" "" "" "" >/dev/null; grep -q -- '--allow-worktree-mount' "${LAST_OUT}" && grep -q "${HOME}/main/.git" "${LAST_OUT}" && grep -q -- "--dir ${HOME}/main/.git" "${LAST_OUT}"; }
+check "worktree: without --allow-worktree-mount an unlisted common dir refuses the launch, naming the path and the remedies" unlisted_refused
+check "worktree: naming the common dir with --dir needs no flag" test "$(lists_after "${HOME}/wt" "${HOME}/main/.git" "" "")" = "rw:${HOME}/main/.git|ro:"
 check "worktree: a common dir under an existing root adds no mount" test "$(lists_after "${HOME}/parent" "" "")" = "rw:|ro:"
 ws_appended() { [[ "$(lists_after "${HOME}/wt" "" "")" == "rw:${HOME}/main/.git|ro:" ]] && grep -q "+ worktree common dir ${HOME}/main/.git (for ${HOME}/wt; mounted writable" "${LAST_OUT}"; }
 check "worktree: the workspace's common dir is appended writable and announced" ws_appended
@@ -90,9 +105,12 @@ check "worktree: a writable worktree under a read-only root warns and adds nothi
 # === 4. cmd_run: the resolver runs before docker ============================
 run_from() { ( cd "$1" && cmd_run "${@:2}" ) >/dev/null 2>"${LAST_OUT}" || true; }
 rm -f "${WORK}/docker_reached"; run_from "${HOME}/wt"
+launch_unlisted_refused() { grep -q -- '--allow-worktree-mount' "${LAST_OUT}" && test ! -e "${WORK}/docker_reached"; }
+check "worktree: launch from a worktree without the flag is refused before docker" launch_unlisted_refused
+rm -f "${WORK}/docker_reached"; run_from "${HOME}/wt" --allow-worktree-mount
 launch_passed() { grep -q "+ worktree common dir ${HOME}/main/.git" "${LAST_OUT}" && test -e "${WORK}/docker_reached"; }
-check "worktree: launch from a worktree passes the resolver (announce, then docker reached)" launch_passed
-rm -f "${WORK}/docker_reached"; run_from "${HOME}/planted"
+check "worktree: launch from a worktree with --allow-worktree-mount passes the resolver (announce, then docker reached)" launch_passed
+rm -f "${WORK}/docker_reached"; run_from "${HOME}/planted" --allow-worktree-mount
 launch_refused() { grep -q 'links back to' "${LAST_OUT}" && test ! -e "${WORK}/docker_reached"; }
 check "worktree: launch from a planted pointer is refused before docker" launch_refused
 

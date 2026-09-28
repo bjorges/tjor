@@ -372,7 +372,9 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
     "git hooks: an ordinary hooks dir is masked": (GITCHECK, "kernel-sandbox", "functional: mask planner masks hooks", False),
     "git hooks: a symlinked hooks dir refuses the launch instead of masking through the link":
         (GITCHECK, "kernel-sandbox", "A symlinked git hooks directory is refused at launch, never masked through", True),
-    "git hooks: the refusal names the fix (replace the link) and the opt-out": (GITCHECK, "kernel-sandbox", "launch-UX: symlink refusal wording", False),
+    "git hooks: the refusal names the fix (replace the link)": (GITCHECK, "kernel-sandbox", "launch-UX: symlink refusal wording", False),
+    "git hooks: a symlinked config is refused even with the pin off":
+        (GITCHECK, "kernel-sandbox", "A symlinked git config is refused at launch regardless of the pin setting", True),
     "git hooks: a symlinked .git entry is refused too":
         (GITCHECK, "kernel-sandbox", "A symlinked .git entry is refused at launch", True),
     "git hooks: with the real directories back the plan succeeds": (GITCHECK, "kernel-sandbox", "functional: mask planner control", False),
@@ -398,6 +400,13 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
         (WORKTREE, "session-launch", "A .git pointer git cannot resolve refuses the launch instead of failing in-cage", True),
     "worktree: a separate-git-dir checkout without core.worktree is refused with the fix": (WORKTREE, "session-launch", "launch-UX: separate git dir without back-link", False),
     "worktree: a symlinked .git is refused": (WORKTREE, "session-launch", "functional: symlinked .git refused", False),
+    "worktree: a forged private dir with a commondir pointing elsewhere is refused (never mounted)":
+        (WORKTREE, "session-launch", "A forged worktree structure inside a writable root cannot mount another host directory", True),
+    "worktree: the forgery refusal names git's native layout as the only trusted linkage": (WORKTREE, "session-launch", "launch-UX: forgery refusal wording", False),
+    "worktree: without --allow-worktree-mount an unlisted common dir refuses the launch, naming the path and the remedies":
+        (WORKTREE, "session-launch", "A common directory the operator did not name is never mounted without explicit approval", True),
+    "worktree: naming the common dir with --dir needs no flag": (WORKTREE, "session-launch", "functional: explicit --dir approval", False),
+    "worktree: launch from a worktree without the flag is refused before docker": (WORKTREE, "session-launch", "gate: unapproved common dir refusal precedes docker", False),
     "worktree: a sensitive common dir is refused":
         (WORKTREE, "session-launch", "A sensitive common git directory is refused with no override", True),
     "worktree: --unsafe-dir does not override a sensitive common dir": (WORKTREE, "session-launch", "functional: no override", False),
@@ -407,7 +416,7 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
     "worktree: a shared common dir mounts once, writable": (WORKTREE, "session-launch", "functional: shared common dir", False),
     "worktree: a read-only worktree's common dir is appended read-only": (WORKTREE, "session-launch", "functional: read-only worktree", False),
     "worktree: a writable worktree under a read-only root warns and adds nothing": (WORKTREE, "session-launch", "functional: read-only parent warning", False),
-    "worktree: launch from a worktree passes the resolver (announce, then docker reached)": (WORKTREE, "session-launch", "functional: launch wiring", False),
+    "worktree: launch from a worktree with --allow-worktree-mount passes the resolver (announce, then docker reached)": (WORKTREE, "session-launch", "functional: launch wiring", False),
     "worktree: launch from a planted pointer is refused before docker": (WORKTREE, "session-launch", "gate: pointer refusals precede docker", False),
     "git hooks: a bare-named git-dir root has its hooks masked":
         (WORKTREE, "kernel-sandbox", "A mount root that is itself a git directory has its hooks masked", True),

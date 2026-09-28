@@ -245,10 +245,11 @@ class TestSnapshotAndDiff:
         (wt / ".git").write_text("gitdir: /somewhere/else\n")
         assert any(x["kind"] == "worktree-pointer" for x in gc.diff(base, gc.snapshot([str(wt)])))
 
-    def test_git_dir_root_is_not_walked(self, tmp_path):
+    def test_git_dir_root_adds_no_entry_but_is_walked(self, tmp_path):
         """#79: a worktree's common dir mounted alongside it is a root that IS a
-        git directory — not walked (objects/ holds no repositories); the
-        worktree entry records the common dir's config, hooks and pointers."""
+        git directory — walked like any root, it yields no repository of its
+        own; the worktree entry records its config, hooks and pointers. A
+        repository planted INSIDE it is still seen."""
         main = _repo(tmp_path / "main"); wt = tmp_path / "wt"
         _git(main, "worktree", "add", "-q", str(wt))
         _git(main, "config", "core.hooksPath", ".h")
@@ -256,6 +257,17 @@ class TestSnapshotAndDiff:
         assert [r["worktree"] for r in snap["repos"]] == [str(wt)] and snap["incomplete"] == []
         rec = snap["repos"][0]
         assert rec["common"] == str(main / ".git") and rec["dangerous"]["core.hookspath"] == [".h"] and "wt" in rec["worktrees"]
+        _repo(main / ".git" / "planted")
+        assert any(x["kind"] == "repo-added" and x["repo"].endswith("/planted") for x in gc.diff(snap, gc.snapshot([str(wt), str(main / ".git")])))
+
+    def test_planted_git_dir_shape_hides_nothing(self, tmp_path):
+        """v0.21.2 review (Critical): HEAD + objects/ + refs/ planted at the top
+        of a scanned root must not make its subtree invisible."""
+        ws = _repo(tmp_path / "ws"); base = gc.snapshot([str(ws)])
+        (ws / "HEAD").write_text("ref: refs/heads/main\n"); (ws / "objects").mkdir(); (ws / "refs").mkdir()
+        _repo(ws / "vendor" / "nested")
+        f = gc.diff(base, gc.snapshot([str(ws)]))
+        assert any(x["kind"] == "nested-repo-added" and x["path"].endswith("/vendor/nested") for x in f)
 
     def test_repo_missing(self, tmp_path):
         ws = _repo(tmp_path / "ws"); base = gc.snapshot([str(ws)])

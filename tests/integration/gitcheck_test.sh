@@ -133,13 +133,16 @@ check "git hooks: an ordinary hooks dir is masked" plan_masks_hooks
 mv "${HOME}/proj/.git/hooks" "${WORK}/real-hooks"; ln -s "${WORK}/real-hooks" "${HOME}/proj/.git/hooks"
 symlink_refused() { ! plan_masks >/dev/null 2>"${LAST_OUT}"; grep -q 'symbolic link' "${LAST_OUT}" && grep -q "$1" "${LAST_OUT}"; }   # $1 = the path the refusal must name
 check "git hooks: a symlinked hooks dir refuses the launch instead of masking through the link" symlink_refused "${HOME}/proj/.git/hooks"
-check "git hooks: the refusal names the fix (replace the link) and the opt-out" bash -c "grep -q 'remove the link' '${LAST_OUT}' && grep -q 'mask_git_hooks = false' '${LAST_OUT}'"
+check "git hooks: the refusal names the fix (replace the link)" grep -q 'remove the link' "${LAST_OUT}"
 rm "${HOME}/proj/.git/hooks"; mv "${WORK}/real-hooks" "${HOME}/proj/.git/hooks"
 mv "${HOME}/proj/.git" "${WORK}/real-git"; ln -s "${WORK}/real-git" "${HOME}/proj/.git"
 check "git hooks: a symlinked .git entry is refused too" symlink_refused "${HOME}/proj/.git (a .git entry)"
 rm "${HOME}/proj/.git"; mv "${WORK}/real-git" "${HOME}/proj/.git"
 plan_ok() { plan_masks >/dev/null 2>&1; }
 check "git hooks: with the real directories back the plan succeeds" plan_ok
+mv "${HOME}/proj/.git/config" "${WORK}/real-config"; ln -s "${WORK}/real-config" "${HOME}/proj/.git/config"
+check "git hooks: a symlinked config is refused even with the pin off" symlink_refused "${HOME}/proj/.git/config"
+rm "${HOME}/proj/.git/config"; mv "${WORK}/real-config" "${HOME}/proj/.git/config"
 
 # === 7. Help text ===========================================================
 help_names() { usage | grep -qF 'git-check [<repo>' && usage | grep -qF -- '--ack [<token>]'; }

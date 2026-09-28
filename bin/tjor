@@ -1316,12 +1316,19 @@ gate_sensitive_path() { # $1 = physical path, $2 = workspace | --dir | --dir-ro
 # target as a hard error for EVERY command (#77: the entrypoint's first
 # `git config --system` died, exit 128, before the harness started). The
 # common dir is resolved through git and mounted alongside the root — on
-# GIT'S OWN LINKAGE, never on the pointer alone: it must be a git dir AND
-# point back at this root (the private dir's `gitdir` file, or the git dir's
-# core.worktree), so a planted `.git` file cannot mount an arbitrary host
-# path. A sensitive target is refused with no override (the pointer named
-# it, not the operator). The rev-parse reads config and runs nothing
-# configured (no hook, pager, fsmonitor, credential or ssh command there).
+# GIT'S NATIVE LAYOUT, never on plaintext pointers alone (v0.21.2 review:
+# a `.git` pointer plus forged `gitdir`/`commondir` files, all inside the
+# writable workspace, would otherwise "prove" any host directory): the
+# private dir must be `<common>/worktrees/<name>` INSIDE the common dir
+# git resolves, and its `gitdir` back-link — a file that lives inside the
+# target, out of reach of anyone who cannot already write there — must name
+# this root's `.git`; a separate git dir must name this root in its own
+# core.worktree. Even then the mount is not automatic: a common dir the
+# operator did not name needs --allow-worktree-mount (cmd_run), else the
+# launch refuses and prints the path so it can be approved with --dir. A
+# sensitive target is refused with no override (the pointer named it, not
+# the operator). The rev-parse reads config and runs nothing configured
+# (no hook, pager, fsmonitor, credential or ssh command on that path).
 root_covers_any() { # $1 = path; $2.. = roots → 0 when some root equals or contains it (component boundaries)
     local p="$1" r; shift
     for r in "$@"; do
@@ -1332,23 +1339,36 @@ root_covers_any() { # $1 = path; $2.. = roots → 0 when some root equals or con
 }
 
 worktree_common_dir() { # $1 = mount root (physical) → echoes the validated common dir, or nothing when the root needs none; dies on a bad pointer
-    local root="$1" dotgit common private back back_dir
+    local root="$1" dotgit common private back back_dir err
     dotgit="${root}/.git"
     if [[ -L "${dotgit}" ]]; then
         die "refusing: ${dotgit} is a symbolic link (to $(safeprint "$(readlink "${dotgit}" 2>/dev/null || echo '?')")) — a worktree pointer is trusted only as a real file; replace the link, or launch from the main repository"
     fi
     [[ -f "${dotgit}" ]] || return 0   # a .git DIRECTORY (or no repository) needs nothing
-    if ! common="$(git -C "${root}" rev-parse --path-format=absolute --git-common-dir 2>&1)" \
-       || ! private="$(git -C "${root}" rev-parse --path-format=absolute --git-dir 2>&1)"; then
-        die "refusing: ${dotgit} is a worktree pointer git cannot resolve ('$(safeprint "$(head -c 200 "${dotgit}" | tr -d '\n')")': $(safeprint "${common}")) — repair the worktree (git worktree repair) or launch from the main repository"
+    if ! common="$(git -C "${root}" rev-parse --path-format=absolute --git-common-dir 2>&1)"; then
+        err="${common}"
+        die "refusing: ${dotgit} is a worktree pointer git cannot resolve ('$(safeprint "$(head -c 200 "${dotgit}" | tr -d '\n')")': $(safeprint "${err}")) — repair the worktree (git worktree repair) or launch from the main repository"
+    fi
+    if ! private="$(git -C "${root}" rev-parse --path-format=absolute --git-dir 2>&1)"; then
+        err="${private}"
+        die "refusing: ${dotgit} is a worktree pointer whose git directory git cannot resolve ('$(safeprint "$(head -c 200 "${dotgit}" | tr -d '\n')")': $(safeprint "${err}")) — repair the worktree (git worktree repair) or launch from the main repository"
     fi
     [[ -d "${common}" ]] && common="$(cd "${common}" && pwd -P)"
     [[ -d "${private}" ]] && private="$(cd "${private}" && pwd -P)"
     if [[ ! -f "${common}/HEAD" || ! -d "${common}/objects" || ! -d "${common}/refs" ]]; then
         die "refusing: ${dotgit} names ${common}, which is not a git directory — repair the worktree (git worktree repair) or launch from the main repository"
     fi
-    # The back-link: git's own record that THIS root belongs to that repository.
     if [[ "${private}" != "${common}" ]]; then
+        # Git's native layout: the private dir is <common>/worktrees/<name>,
+        # INSIDE the common dir git resolves — a private dir that lies
+        # anywhere else (a forgery inside the workspace whose commondir file
+        # points at another repository) is refused before its back-link is
+        # even read.
+        if [[ "$(basename "$(dirname "${private}")")" != "worktrees" || "$(dirname "$(dirname "${private}")")" != "${common}" ]]; then
+            die "refusing: ${dotgit} names ${private}, which is not a worktrees/<name> entry inside its own common git directory (git resolves that to ${common}) — only git's native worktree layout is trusted, never a pointer or a commondir file alone; repair the worktree (git worktree repair) or launch from the main repository"
+        fi
+        # The back-link: git's own record, inside the main repository's git
+        # dir, that THIS root belongs to it.
         back="$(head -n1 "${private}/gitdir" 2>/dev/null | tr -d '\r')"
         back_dir=""
         [[ -n "${back}" && -d "$(dirname "${back}")" ]] && back_dir="$(cd "$(dirname "${back}")" && pwd -P)"
@@ -1368,13 +1388,22 @@ worktree_common_dir() { # $1 = mount root (physical) → echoes the validated co
     printf '%s' "${common}"
 }
 
+# tjor mounts only paths the operator named (v0.21.2 review): a common dir
+# outside every root is added on --allow-worktree-mount alone; without it the
+# launch refuses and prints the path, so it can be approved explicitly
+# (--dir <path>) or the flag given knowingly.
+worktree_mount_approved() { # $1 = worktree root, $2 = its resolved common dir; dies unless approved
+    [[ -n "${TJOR_ALLOW_WORKTREE_MOUNT:-}" ]] && return 0
+    die "refusing to launch: ${1} is a linked worktree whose main repository git directory ${2} lies outside every mount root, and tjor mounts only paths you named — git in the cage cannot work without it; approve it with --allow-worktree-mount (mounts it alongside the worktree, with the worktree's writability), name it yourself with --dir ${2} (or the main repository), or launch from the main repository"
+}
+
 # Resolve every root's common dir and append the new ones to the --dir /
 # --dir-ro lists, so the overlap rule, the self-mount guard, the mounts, the
 # git-trust list, the masks and the baseline all see an ordinary root.
 # Writable wins: a common dir shared by a writable and a read-only worktree
 # mounts once, writable. A writable worktree whose common dir lies under a
 # READ-ONLY root gets no extra mount and a warning (the operator chose that).
-worktree_common_dirs() { # reads/extends TJOR_WORKSPACE, TJOR_EXTRA_DIRS, TJOR_EXTRA_DIRS_RO
+worktree_common_dirs() { # reads/extends TJOR_WORKSPACE, TJOR_EXTRA_DIRS, TJOR_EXTRA_DIRS_RO; reads TJOR_ALLOW_WORKTREE_MOUNT
     local common w_root seen
     local -a rw=() ro=()
     for w_root in "${TJOR_WORKSPACE:-}" "${TJOR_EXTRA_DIRS[@]:-}"; do
@@ -1386,6 +1415,7 @@ worktree_common_dirs() { # reads/extends TJOR_WORKSPACE, TJOR_EXTRA_DIRS, TJOR_E
             warn "worktree ${w_root}: its common git directory ${common} lies under a READ-ONLY mount root — reads work, commits from this worktree will fail in-cage"
             continue
         fi
+        worktree_mount_approved "${w_root}" "${common}"
         rw+=("${common}")
         echo "tjor: + worktree common dir ${common} (for ${w_root}; mounted writable alongside it — the whole repository's history, refs and config; hooks masked)" >&2
     done
@@ -1394,6 +1424,7 @@ worktree_common_dirs() { # reads/extends TJOR_WORKSPACE, TJOR_EXTRA_DIRS, TJOR_E
         common="$(worktree_common_dir "${w_root}")" || exit 1
         [[ -n "${common}" ]] || continue
         if root_covers_any "${common}" "${TJOR_WORKSPACE:-}" "${TJOR_EXTRA_DIRS[@]:-}" "${rw[@]:-}" "${TJOR_EXTRA_DIRS_RO[@]:-}" "${ro[@]:-}"; then continue; fi
+        worktree_mount_approved "${w_root}" "${common}"
         ro+=("${common}")
         echo "tjor: + worktree common dir ${common} (for ${w_root}; mounted read-only alongside it)" >&2
     done
@@ -1403,7 +1434,7 @@ worktree_common_dirs() { # reads/extends TJOR_WORKSPACE, TJOR_EXTRA_DIRS, TJOR_E
 }
 
 cmd_run() {
-    local harness="opencode" task="" name="" detach="" unsafe_dir="" allow_self_mount="" profile="" profile_dir=""
+    local harness="opencode" task="" name="" detach="" unsafe_dir="" allow_self_mount="" allow_worktree_mount="" profile="" profile_dir=""
     local -a extra_dirs=() extra_dirs_ro=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -1414,6 +1445,7 @@ cmd_run() {
             --dir-ro) extra_dirs_ro+=("$2"); shift 2 ;;
             --unsafe-dir) unsafe_dir=1; shift ;;
             --allow-self-mount) allow_self_mount=1; shift ;;
+            --allow-worktree-mount) allow_worktree_mount=1; shift ;;
             --profile) profile="$2"; shift 2 ;;
             --profile-dir) profile_dir="$2"; shift 2 ;;
             --detach|-d) detach=1; shift ;;
@@ -1466,7 +1498,9 @@ cmd_run() {
     # Worktree common dirs (#79): after the gates (every root above is an
     # approved path), before the overlap and self-mount rules (the extra
     # roots are judged like any other — a worktree of the tjor checkout
-    # itself is refused as a writable self-mount, correctly).
+    # itself is refused as a writable self-mount, correctly). A common dir
+    # the operator did not name is mounted only on --allow-worktree-mount.
+    TJOR_ALLOW_WORKTREE_MOUNT="${allow_worktree_mount}"
     worktree_common_dirs
     # Overlapping roots with DIFFERENT writability classes are refused, in
     # BOTH directions (release review of v0.16.0/v0.17.0): a writable child
@@ -1562,7 +1596,7 @@ mask_covered() { # $1 = host path → 0 when a mask already covers it
 # the real thing, or opt out of git metadata masking; never mask through it.
 refuse_git_symlink() { # $1 = path, $2 = what it is, $3 = what to replace it with
     local target; target="$(readlink "$1" 2>/dev/null || echo '?')"
-    die "refusing: $(safeprint "$1") ($2) is a symbolic link to $(safeprint "${target}") — tjor masks git metadata by path and will not follow a link a previous session could have planted; replace it with a real $3 (remove the link, then recreate it), or set mask_git_hooks = false and protect_git_config = false under [landlock] to skip git metadata masking"
+    die "refusing: $(safeprint "$1") ($2) is a symbolic link to $(safeprint "${target}") — tjor masks git metadata by path and will not follow a link a previous session could have planted; replace it with a real $3 (remove the link, then recreate it)"
 }
 
 # Git metadata masks (#71, spec: kernel-sandbox): the hooks directory of
@@ -1589,8 +1623,10 @@ plan_git_masks() {
     local git_hooks_on git_cfg_pin dir entry gitdir under w
     git_hooks_on="$(cfg landlock.mask_git_hooks --default true)"
     git_cfg_pin="$(cfg landlock.protect_git_config --default false)"
-    [[ "${git_hooks_on}" != "false" || "${git_cfg_pin}" == "true" ]] || return 0
-    if [[ -z "${empty_src:-}" ]]; then
+    # Discovery and the symlink refusals run regardless of the two settings
+    # (v0.21.2 review: the config refusal was gated on the opt-in pin while
+    # documented as unconditional); only the masks themselves are optional.
+    if [[ "${git_hooks_on}" != "false" && -z "${empty_src:-}" ]]; then
         empty_src="${TJOR_SESSION_DIR}/mask-empty"
         rm -rf "${empty_src}"; mkdir -p "${empty_src}"
     fi
@@ -1624,25 +1660,19 @@ plan_git_masks() {
 }
 
 mask_gitdir() { # $1 = a git directory under a writable root; reads plan_git_masks' git_hooks_on/git_cfg_pin and run_agent's arrays
-    local gitdir="$1" hooks cfgfile
-    if [[ "${git_hooks_on}" != "false" ]]; then
-        hooks="${gitdir}/hooks"
-        if [[ -L "${hooks}" ]]; then refuse_git_symlink "${hooks}" "git hooks dir" "directory"; fi
-        if ! mask_covered "${hooks}"; then
-            [[ -d "${hooks}" ]] || mkdir -p "${hooks}"   # a mountpoint for the mask
-            masked["${hooks}"]=1; dirmasked["${hooks}"]=1
-            mounts+=(--volume "${empty_src}:${hooks}:ro")
-            echo "tjor: + dir mask $(safeprint "${hooks}") (git hooks)" >&2
-        fi
+    local gitdir="$1" hooks="$1/hooks" cfgfile="$1/config"
+    if [[ -L "${hooks}" ]]; then refuse_git_symlink "${hooks}" "git hooks dir" "directory"; fi
+    if [[ -L "${cfgfile}" ]]; then refuse_git_symlink "${cfgfile}" "git config" "file"; fi
+    if [[ "${git_hooks_on}" != "false" ]] && ! mask_covered "${hooks}"; then
+        [[ -d "${hooks}" ]] || mkdir -p "${hooks}"   # a mountpoint for the mask
+        masked["${hooks}"]=1; dirmasked["${hooks}"]=1
+        mounts+=(--volume "${empty_src}:${hooks}:ro")
+        echo "tjor: + dir mask $(safeprint "${hooks}") (git hooks)" >&2
     fi
-    if [[ "${git_cfg_pin}" == "true" ]]; then
-        cfgfile="${gitdir}/config"
-        if [[ -L "${cfgfile}" ]]; then refuse_git_symlink "${cfgfile}" "git config" "file"; fi
-        if [[ -f "${cfgfile}" ]] && ! mask_covered "${cfgfile}"; then
-            masked["${cfgfile}"]=1
-            mounts+=(--volume "${cfgfile}:${cfgfile}:ro")
-            echo "tjor: + config pin $(safeprint "${cfgfile}") (protect_git_config)" >&2
-        fi
+    if [[ "${git_cfg_pin}" == "true" && -f "${cfgfile}" ]] && ! mask_covered "${cfgfile}"; then
+        masked["${cfgfile}"]=1
+        mounts+=(--volume "${cfgfile}:${cfgfile}:ro")
+        echo "tjor: + config pin $(safeprint "${cfgfile}") (protect_git_config)" >&2
     fi
 }
 
@@ -2614,7 +2644,7 @@ tjor — run AI coding agents inside a portable, fail-closed container cage
 
 usage: tjor <command> [args]
 
-  run [--harness opencode|claude|copilot] [--task <id>] [--session <name>] [--dir <path>]... [--dir-ro <path>]... [--unsafe-dir] [--allow-self-mount] [--profile <name>|--profile-dir <path>] [--detach] [cmd...]
+  run [--harness opencode|claude|copilot] [--task <id>] [--session <name>] [--dir <path>]... [--dir-ro <path>]... [--unsafe-dir] [--allow-self-mount] [--allow-worktree-mount] [--profile <name>|--profile-dir <path>] [--detach] [cmd...]
                                                      launch a caged session (--dir: mount another repo at its host path; --dir-ro: same but READ-ONLY, container-wide — sensitive paths refused as the workspace or as --dir/--dir-ro unless --unsafe-dir; the running tjor tree is refused as a writable mount unless --allow-self-mount; --profile/--profile-dir: overlay host-defined agents/commands, credential-safe; --detach: start without attaching)
   ls                                                 list all sessions (and re-verify their boundaries)
   attach [session]                                   reattach to a running agent's terminal (short name or full id)

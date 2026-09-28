@@ -3,6 +3,43 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+Review follow-ups for v0.21.2 (external review; both Criticals confirmed
+against the code — one by running the resolver against the forged layout —
+before fixing).
+
+### Security
+- **A forged worktree structure can no longer mount an arbitrary host
+  directory (v0.21.2 review, Critical).** The #79 resolver verified that
+  the private git directory linked back to the root, but the private
+  directory itself could live inside the writable workspace with a
+  `commondir` file aimed at any repository on the host — three plaintext
+  files, all writable from the cage, "proving" a path the operator never
+  named. Two layers now: the private directory must be
+  `<common>/worktrees/<name>` *inside* the common directory git resolves, so
+  the back-link is a file inside the target that only someone who can
+  already write there could plant; and a common directory outside every
+  mount root is mounted only with `--allow-worktree-mount` (or named with
+  `--dir`), else the launch refuses and prints the exact path. tjor mounts
+  only paths the operator named, again.
+- **`git-check` no longer skips a root on its shape (v0.21.2 review,
+  Critical).** `HEAD` + `objects/` + `refs/` planted at the top of the
+  workspace made its whole subtree invisible to the baseline and every
+  check, silently. Every root is walked; a git-directory root simply yields
+  no repository of its own.
+- **A symlinked `.git/config` is refused regardless of the pin setting
+  (v0.21.2 review, Low):** the refusal was gated on `protect_git_config`
+  while documented as unconditional.
+
+### Changed
+- `worktree_common_dir` reports each `git rev-parse` failure with its own
+  error text. README: the acknowledgement token binds to a state, not to
+  proof of review — keep `--ack` in human hands; two sessions sharing a
+  main repository coordinate only through git's own locks. Tests: the
+  forged layout, the unapproved common dir, explicit `--dir` approval, the
+  planted git-dir shape, the config symlink with the pin off.
+
 ## [0.21.2] — 2026-09-28 — Worktree workspaces (#79); review follow-ups for v0.20.4–v0.21.1
 
 ### Added

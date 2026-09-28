@@ -4,7 +4,7 @@
      Regenerate: python3 python/gen_boundary_matrix.py
      Drift-checked by tests/doc_consistency.sh (`--check`). -->
 
-Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount` and `gitcheck` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (255 checks total; 90 adversarial guarantees below, the rest functional/config checks the suites also run).
+Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount` and `gitcheck` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (261 checks total; 93 adversarial guarantees below, the rest functional/config checks the suites also run).
 
 ## cage-network
 
@@ -62,6 +62,7 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | A nested repository's hooks directory is masked | `git hooks: nested repo hooks dir lists empty in-cage` | landlock |
 | A pinned .git/config refuses writes in-cage (opt-in) | `config pin: git config write refused in-cage` | landlock |
 | A symlinked .git entry is refused at launch | `git hooks: a symlinked .git entry is refused too` | gitcheck |
+| A symlinked git config is refused at launch regardless of the pin setting | `git hooks: a symlinked config is refused even with the pin off` | gitcheck |
 | A symlinked git hooks directory is refused at launch, never masked through | `git hooks: a symlinked hooks dir refuses the launch instead of masking through the link` | gitcheck |
 | A write into a masked dir is refused | `write into the masked dir refused` | landlock |
 | Git hooks directory is masked (lists empty) in a writable mount | `git hooks: workspace hooks dir lists empty in-cage` | landlock |
@@ -83,9 +84,11 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 |---|---|---|
 | A .git pointer git cannot resolve refuses the launch instead of failing in-cage | `worktree: a pointer git cannot resolve is refused, naming the pointer` | worktree |
 | A .git pointer whose target does not link back to the root is refused, never mounted | `worktree: a planted pointer without a back-link is refused` | worktree |
+| A common directory the operator did not name is never mounted without explicit approval | `worktree: without --allow-worktree-mount an unlisted common dir refuses the launch, naming the path and the remedies` | worktree |
 | A core.worktree redirect cannot steer attach to another session | `core.worktree: attach's short-name qualification refuses the redirect` | workspace-gate |
 | A core.worktree redirect of the workspace is refused | `core.worktree: redirect toward a harmless directory is refused` | workspace-gate |
 | A core.worktree redirect toward an ancestor directory is refused | `core.worktree: redirect toward an ancestor holding other repos is refused` | workspace-gate |
+| A forged worktree structure inside a writable root cannot mount another host directory | `worktree: a forged private dir with a commondir pointing elsewhere is refused (never mounted)` | worktree |
 | A hostile dir name is escape-sanitized in launch output | `hostile parent dir name announced escape-sanitized` | landlock |
 | A hostile dotenv filename is escape-sanitized in launch output | `hostile dotenv filename is announced escape-sanitized` | landlock |
 | A linked worktree's common git directory is resolved through git's own linkage | `worktree: a linked worktree resolves to its main repository's common dir` | worktree |

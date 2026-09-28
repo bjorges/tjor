@@ -325,7 +325,7 @@ cat > "${USERCFG}/tjor/config.toml" <<CFG
 mode = "auto"
 CFG
 G5R="${WTWS}/g5-result.txt"
-( cd "${WTWS}" && XDG_CONFIG_HOME="${USERCFG}" "${T}" run --session g5 -- sh -c "
+( cd "${WTWS}" && XDG_CONFIG_HOME="${USERCFG}" "${T}" run --session g5 --allow-worktree-mount -- sh -c "
     R='${G5R}'; : > \"\$R\"
     (git status --short --branch >/dev/null 2>&1 && echo 'status=OK' || echo 'status=failed') >> \"\$R\"
     (git log --oneline -1 >/dev/null 2>&1 && echo 'log=OK' || echo 'log=failed') >> \"\$R\"
