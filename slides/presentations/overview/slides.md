@@ -108,7 +108,7 @@ What the agent can talk to. The network boundary is the cage's primary guarantee
 ---
 layout: problem
 title: The agent can reach any host
-specs: [cage-network@8, egress-policy@5]
+specs: [cage-network@b36c84fa, egress-policy@6f18b695]
 adrs: ['0004']
 ---
 
@@ -133,7 +133,7 @@ adrs: ['0004']
 layout: default
 title: The cage, as compose builds it
 eyebrow: Topology
-specs: [cage-network@8]
+specs: [cage-network@b36c84fa]
 ---
 
 <CageTopology />
@@ -141,7 +141,7 @@ specs: [cage-network@8]
 ---
 layout: problem
 title: DNS is an egress channel too
-specs: [cage-network@8]
+specs: [cage-network@b36c84fa]
 ---
 
 ::problem::
@@ -163,7 +163,7 @@ specs: [cage-network@8]
 ---
 layout: problem
 title: A policy that can be bent
-specs: [egress-policy@5]
+specs: [egress-policy@6f18b695]
 ---
 
 ::problem::
@@ -183,7 +183,7 @@ specs: [egress-policy@5]
 ---
 layout: problem
 title: Blocked, and no idea why
-specs: [policy-ergonomics@4]
+specs: [policy-ergonomics@1774a891]
 ---
 
 ::problem::
@@ -215,7 +215,7 @@ Use, never possess. A credential the agent can read is a credential the content 
 ---
 layout: problem
 title: The agent holds the secret
-specs: [credential-broker@17]
+specs: [credential-broker@036bd52a]
 adrs: ['0007']
 ---
 
@@ -238,7 +238,7 @@ adrs: ['0007']
 ---
 layout: problem
 title: Letting an agent operate a cluster
-specs: [credential-broker@17]
+specs: [credential-broker@036bd52a]
 ---
 
 ::problem::
@@ -260,7 +260,7 @@ specs: [credential-broker@17]
 ---
 layout: problem
 title: One LLM endpoint, no admin hole
-specs: [llm-gateway@4]
+specs: [llm-gateway@8a0193e8]
 adrs: ['0009']
 ---
 
@@ -308,7 +308,7 @@ What the cage can do to your machine. The network boundary holds; these are the 
 ---
 layout: problem
 title: Inside the container is still a lot
-specs: [kernel-sandbox@11]
+specs: [kernel-sandbox@51127809]
 ---
 
 ::problem::
@@ -329,7 +329,7 @@ specs: [kernel-sandbox@11]
 ---
 layout: problem
 title: Git metadata that runs on your host
-specs: [git-tamper-detection@4]
+specs: [git-tamper-detection@2d035d89]
 ---
 
 ::problem::
@@ -350,7 +350,7 @@ specs: [git-tamper-detection@4]
 ---
 layout: problem
 title: Mounting the wrong directory
-specs: [session-launch@18]
+specs: [session-launch@a38b1ce7]
 ---
 
 ::problem::
@@ -368,7 +368,7 @@ specs: [session-launch@18]
 ---
 layout: problem
 title: The launcher's own tree
-specs: [launcher-integrity@5]
+specs: [launcher-integrity@a945b515]
 ---
 
 ::problem::
@@ -393,7 +393,7 @@ What travels with the code, what you bring from home, and what you did not build
 ---
 layout: problem
 title: Config that travels with the repo
-specs: [repo-config-trust@2]
+specs: [repo-config-trust@c5f17655]
 ---
 
 ::problem::
@@ -415,7 +415,7 @@ $ tjor trust --show  # review only
 ---
 layout: problem
 title: Your tooling, not your credentials
-specs: [agent-profiles@4]
+specs: [agent-profiles@7ab80e54]
 ---
 
 ::problem::
@@ -437,7 +437,7 @@ specs: [agent-profiles@4]
 ---
 layout: problem
 title: An image you didn't build
-specs: [image-distribution@4, cage-image@7]
+specs: [image-distribution@c9dbc811, cage-image@b791d30d]
 adrs: ['0008']
 ---
 
@@ -464,7 +464,7 @@ Sessions as first-class objects, identity on the wire, and evidence instead of c
 ---
 layout: problem
 title: Which session did what
-specs: [session-identity@6]
+specs: [session-identity@ddbbcf56]
 adrs: ['0004']
 ---
 
@@ -483,7 +483,7 @@ adrs: ['0004']
 ---
 layout: problem
 title: Sessions you can find, reattach, and clean up
-specs: [session-lifecycle@7, session-launch@18]
+specs: [session-lifecycle@eb604e7d, session-launch@a38b1ce7]
 adrs: ['0006']
 ---
 

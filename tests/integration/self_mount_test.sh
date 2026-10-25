@@ -98,6 +98,18 @@ check "self-install: marker holds the sha" bash -c "[ \"\$(cat '${INST}/.tjor-so
 # link can write to is its target, and every target in the tree is walked.
 # The committed tree carries links (slides/presentations/*/{components,layouts,public}).
 check "self-install: nothing under the tree is writable" bash -c "[ -z \"\$(find '${INST}' ! -type l -perm -200 | head -1)\" ]"
+# `git archive | tar -x` keeps a committed symlink as a link (never dereferenced,
+# never dropped) and every link's target lies inside the installed tree.
+links_kept_inside() {
+    local l t n=0
+    while IFS= read -r l; do
+        n=$((n + 1))
+        t="$(cd "$(dirname "${l}")" && cd "$(readlink "${l}")" 2>/dev/null && pwd -P)" || return 1
+        [[ "${t}" == "${INST}/"* ]] || return 1
+    done < <(find "${INST}" -type l)
+    [[ "${n}" -gt 0 ]]   # the committed tree carries links; zero found = archive dropped them
+}
+check "self-install: symbolic links are kept as links resolving inside the tree" links_kept_inside
 check "self-install: current points at the sha" bash -c "[ \"\$(readlink '${TJOR_INSTALL_ROOT}/current')\" = '${HEAD_SHA}' ]"
 check "self-install: output names the launcher path" grep -qF "point launchers at: ${TJOR_INSTALL_ROOT}/current/bin/tjor" "${si_out}"
 check "self-install: output says uncommitted changes are excluded" grep -qF "uncommitted changes" "${si_out}"

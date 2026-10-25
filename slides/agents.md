@@ -7,13 +7,13 @@ human or coding agent: the rules are tables and invariants, not taste.
 ## Keeping the deck in sync (the contract)
 
 **The `overview` deck explains every capability tjor ships, one or more slides per problem, and
-is updated whenever functionality is added or changed.** This is enforced, not hoped for:
+is reviewed whenever a capability's spec changes.** This is enforced, not hoped for:
 
 | Invariant                                                            | Enforced by                                                                                                                         |
 | -------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------- |
 | Every `openspec/specs/<capability>/` is tagged by at least one slide | `tests/slides_consistency.sh` (runs in `ci.yml` **unit** and in `slides.yml`)                                                       |
 | Every tag names an existing capability                               | same                                                                                                                                |
-| Every tag's pin equals the spec's current `### Requirement:` count   | same — a changed spec fails CI until the slide is reviewed and the pin bumped                                                       |
+| Every tag's pin equals the spec file's current hash                  | same — any change to the spec file fails CI until the slide is reviewed and the pin updated                                         |
 | Every `adrs:` reference names an existing `docs/decisions/NNNN-*.md` | same                                                                                                                                |
 | Version, guarantee and check counts shown in the deck are current    | read from `VERSION`, `docs/boundary-matrix.md`, `openspec/specs`, `docs/decisions` at build time (`shared/build/project-facts.mjs`) |
 
@@ -23,25 +23,25 @@ A slide is tagged in its frontmatter:
 ---
 layout: problem
 title: The agent holds the secret
-specs: [credential-broker@17] # <capability>@<requirement count when last reviewed>
+specs: [credential-broker@3f9a2c1e] # <capability>@<first 8 hex of sha256(spec.md) when last reviewed>
 adrs: ['0007'] # optional
 ---
 ```
 
 **When you add or change functionality:**
 
-1. New capability (new `openspec/specs/<cap>/`): add a `problem` slide tagged `specs: [<cap>@N]`
-   where N is its requirement count, and add the problem to the map slide's `groups:`.
-2. Changed capability (requirement added/removed/renamed): CI prints
-   `'<cap>' now has N requirements; a slide was reviewed against M`. Re-read the spec, update the
-   slide's bullets so they still describe what ships, then set the pin to `@N`.
+1. New capability (new `openspec/specs/<cap>/`): add a `problem` slide tagged `specs: [<cap>@<pin>]`
+   (the check prints the pin) and add the problem to the map slide's `groups:`.
+2. Changed capability (anything in its `spec.md`): CI prints
+   `openspec/specs/<cap>/spec.md changed since its slide was reviewed (pin …, now …)`. Re-read the
+   spec, update the slide's bullets so they still describe what ships, then set the printed pin.
 3. New ADR that changes behaviour: reference it with `adrs:` on the slide it affects.
-4. Run `tests/slides_consistency.sh` (no node needed), then `cd slides && pnpm check && pnpm build`.
+4. Run `tests/slides_consistency.sh` (bash ≥ 4, no node needed), then
+   `cd slides && pnpm check && pnpm build`.
 
-The pin is deliberately a count, not a hash: a human can read it, and fixing it is one edit after
-the review it exists to force. It does not catch a reworded requirement with the same count; that
-review happens when the spec changes, as part of the OpenSpec change that reworded it (see
-`openspec/config.yaml` rules).
+Honest scope: the pin proves a slide was looked at after its spec changed; a human sets it, so
+the quality of that review is the reviewer's. Tags are read only from Slidev frontmatter blocks,
+never from slide bodies or fenced code.
 
 ## Layout
 

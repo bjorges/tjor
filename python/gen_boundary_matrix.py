@@ -293,6 +293,7 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
     "self-mount guard: read-only self-mount is allowed with a notice": (SELF_MOUNT, "launcher-integrity", "functional: read-only overlap notice", False),
     "self-mount guard: read-only self-mount is not refused": (SELF_MOUNT, "launcher-integrity", "functional: read-only overlap allowed", False),
     "self-mount guard: --allow-self-mount proceeds with a loud warning": (SELF_MOUNT, "launcher-integrity", "override: loud warning", False),
+    "self-install: symbolic links are kept as links resolving inside the tree": (SELF_MOUNT, "launcher-integrity", "functional: archive keeps relative links", False),
     "image label: a checkout build carries tjor.source-sha=HEAD (dirty-aware)": (SELF_MOUNT, "launcher-integrity", "provenance: checkout label", False),
     "self-install: installs the committed HEAD tree": (SELF_MOUNT, "launcher-integrity", "functional: self-install runs", False),
     "self-install: tree contains the launcher, compose, config, python, images, VERSION": (SELF_MOUNT, "launcher-integrity", "functional: tree contents", False),

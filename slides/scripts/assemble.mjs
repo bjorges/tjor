@@ -1,9 +1,10 @@
 #!/usr/bin/env node
 // Assemble every built deck into one static site for GitHub Pages:
-//   slides/dist/<deck>/   ← presentations/<deck>/dist/
-//   slides/dist/index.html  generated landing page (one card per deck, from
-//                           each deck's package.json name + description)
-//   slides/dist/.nojekyll   so Pages serves Slidev's _assets/ untouched
+//   slides/dist/<deck>/        ← presentations/<deck>/dist/
+//   slides/dist/index.html     generated landing page (one card per deck, from
+//                              each deck's package.json name + description)
+//   slides/dist/tjor-mark.svg  shared assets copied from shared/public/, so the
+//   slides/dist/favicon.svg    landing page depends on no particular deck
 // The landing page is generated, not hand-maintained — the playbook's own
 // "known drift" item — so a new deck can never be missing from it.
 import {
@@ -24,6 +25,7 @@ const slidesRoot = resolve(here, '..')
 const presentations = join(slidesRoot, 'presentations')
 const out = join(slidesRoot, 'dist')
 const base = (process.env.PAGES_BASE ?? '').replace(/\/$/, '')
+const sharedPublic = join(slidesRoot, 'shared', 'public')
 
 const facts = projectFacts()
 
@@ -36,6 +38,10 @@ const decks = readdirSync(presentations, { withFileTypes: true })
   })
   .sort((a, b) => a.name.localeCompare(b.name))
 
+if (decks.length === 0) {
+  console.error('assemble: no decks under presentations/')
+  process.exit(1)
+}
 const missing = decks.filter((d) => !existsSync(join(d.dist, 'index.html')))
 if (missing.length) {
   console.error(
@@ -49,7 +55,9 @@ mkdirSync(out, { recursive: true })
 for (const d of decks) {
   cpSync(d.dist, join(out, d.name), { recursive: true })
 }
-writeFileSync(join(out, '.nojekyll'), '')
+for (const asset of ['tjor-mark.svg', 'favicon.svg']) {
+  cpSync(join(sharedPublic, asset), join(out, asset))
+}
 
 const esc = (s) =>
   String(s).replace(
@@ -74,7 +82,7 @@ const html = `<!doctype html>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
 <title>tjor slides</title>
-<link rel="icon" href="${base}/${esc(decks[0]?.name ?? '')}/favicon.svg">
+<link rel="icon" href="${base}/favicon.svg">
 <style>
   :root { --ground:#0b1020; --surface:#131a2c; --line:#2a3553; --ink:#eef2fa; --muted:#9aa6c2; --accent:#f2b84b; --teal:#3dd6c3; }
   @media (prefers-color-scheme: light) {
@@ -101,7 +109,7 @@ const html = `<!doctype html>
 <body>
 <div class="wrap">
   <header>
-    <img src="${base}/${esc(decks[0]?.name ?? '')}/tjor-mark.svg" alt="">
+    <img src="${base}/tjor-mark.svg" alt="">
     <div>
       <p class="eyebrow">tjor · v${esc(facts.version)}</p>
       <h1>tjor slides</h1>

@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // Chips linking a slide to the OpenSpec capability (and ADR) it describes.
-// A spec tag is `<capability>@<requirement count>` — the count is the pin
+// A spec tag is `<capability>@<pin>` — the pin is the spec file's hash prefix that
 // tests/slides_consistency.sh checks (see slides/agents.md); only the name shows.
 import { computed } from 'vue'
 
@@ -29,10 +29,24 @@ const adrChips = computed(() =>
 
 <template>
   <div v-if="specChips.length || adrChips.length" class="tjor-chips">
-    <a v-for="c in specChips" :key="c.href" class="tjor-chip spec" :href="c.href" target="_blank">
+    <a
+      v-for="c in specChips"
+      :key="c.href"
+      class="tjor-chip spec"
+      :href="c.href"
+      target="_blank"
+      rel="noopener noreferrer"
+    >
       {{ c.name }}
     </a>
-    <a v-for="c in adrChips" :key="c.href" class="tjor-chip adr" :href="c.href" target="_blank">
+    <a
+      v-for="c in adrChips"
+      :key="c.href"
+      class="tjor-chip adr"
+      :href="c.href"
+      target="_blank"
+      rel="noopener noreferrer"
+    >
       {{ c.name }}
     </a>
   </div>
