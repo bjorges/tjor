@@ -1,0 +1,419 @@
+/* tjor slide design system — tokens and the layout frame every deck shares.
+   Dark-first: the deck is designed on deep night ground; light is derived.
+   The same hex values live in shared/uno.config.ts for markdown utilities. */
+
+:root {
+  --tjor-ground: #0b1020;
+  --tjor-surface: #131a2c;
+  --tjor-surface-2: #1c2540;
+  --tjor-line: #2a3553;
+  --tjor-line-soft: #1f2942;
+  --tjor-ink: #eef2fa;
+  --tjor-muted: #9aa6c2;
+  --tjor-accent: #f2b84b; /* the tether: warm rope amber */
+  --tjor-teal: #3dd6c3; /* the boundary */
+  --tjor-problem: #ff7b8a;
+  --tjor-solution: #5fe3a1;
+  --tjor-code-bg: #0a0f1d;
+  --tjor-shadow: 0 1px 2px rgba(2, 6, 23, 0.5);
+}
+
+html:not(.dark) {
+  --tjor-ground: #f5f7fc;
+  --tjor-surface: #ffffff;
+  --tjor-surface-2: #e8edf7;
+  --tjor-line: #cfd8ea;
+  --tjor-line-soft: #e1e8f3;
+  --tjor-ink: #0f172a;
+  --tjor-muted: #4c5a74;
+  --tjor-accent: #9a6400;
+  --tjor-teal: #0b8f82;
+  --tjor-problem: #c0243a;
+  --tjor-solution: #0f8a4a;
+  --tjor-code-bg: #0f172a;
+  --tjor-shadow: 0 1px 3px rgba(15, 23, 42, 0.08);
+}
+
+.slidev-layout {
+  background: var(--tjor-ground);
+  color: var(--tjor-ink);
+  padding: 0;
+  font-size: 1.02rem;
+  line-height: 1.45;
+}
+
+.slidev-layout h1,
+.slidev-layout h2,
+.slidev-layout h3 {
+  color: var(--tjor-ink);
+  letter-spacing: -0.01em;
+}
+
+.slidev-layout a {
+  color: var(--tjor-teal);
+  border-bottom: none;
+}
+
+.slidev-layout code {
+  font-size: 0.86em;
+  background: var(--tjor-surface-2);
+  color: var(--tjor-ink);
+  padding: 0.05em 0.35em;
+  border-radius: 4px;
+}
+
+.slidev-layout pre.shiki,
+.slidev-layout .slidev-code {
+  background: var(--tjor-code-bg) !important;
+  border: 1px solid var(--tjor-line-soft);
+  border-left: 3px solid var(--tjor-teal);
+  border-radius: 8px;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.slidev-layout ul {
+  padding-left: 1.05rem;
+  margin: 0;
+}
+
+.slidev-layout li {
+  margin: 0.28rem 0;
+}
+
+.slidev-layout li::marker {
+  color: var(--tjor-muted);
+}
+
+.slidev-layout strong {
+  color: var(--tjor-ink);
+  font-weight: 600;
+}
+
+.slidev-layout p {
+  margin: 0 0 0.6rem;
+}
+
+/* ---------- the frame: 5rem header / flexible content / 2.5rem footer ---------- */
+
+.tjor-frame {
+  display: grid;
+  grid-template-rows: 5rem minmax(0, 1fr) 2.5rem;
+  height: 100%;
+  padding: 0 2.6rem;
+}
+
+.tjor-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 1.5rem;
+  border-bottom: 1px solid var(--tjor-line);
+}
+
+.tjor-header h1 {
+  font-size: 1.55rem;
+  font-weight: 700;
+  margin: 0;
+  line-height: 1.15;
+  text-wrap: balance;
+}
+
+.tjor-eyebrow {
+  font-family: var(--slidev-code-font-family, 'JetBrains Mono', monospace);
+  font-size: 0.64rem;
+  letter-spacing: 0.14em;
+  text-transform: uppercase;
+  color: var(--tjor-accent);
+  margin: 0 0 0.25rem;
+}
+
+.tjor-content {
+  padding: 0.9rem 0 0.5rem;
+  min-height: 0;
+  overflow: hidden;
+}
+
+.tjor-footer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  border-top: 1px solid var(--tjor-line-soft);
+  font-family: var(--slidev-code-font-family, 'JetBrains Mono', monospace);
+  font-size: 0.66rem;
+  color: var(--tjor-muted);
+}
+
+/* ---------- problem / solution panels ---------- */
+
+.tjor-cols {
+  display: grid;
+  grid-template-columns: 1fr 1.3fr;
+  gap: 1.1rem;
+  height: 100%;
+  min-height: 0;
+}
+
+.tjor-panel {
+  background: var(--tjor-surface);
+  border: 1px solid var(--tjor-line-soft);
+  border-left: 3px solid var(--tjor-line);
+  border-radius: 10px;
+  padding: 0.8rem 1rem 0.7rem;
+  box-shadow: var(--tjor-shadow);
+  min-height: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+.tjor-panel.problem {
+  border-left-color: var(--tjor-problem);
+}
+
+.tjor-panel.solution {
+  border-left-color: var(--tjor-solution);
+}
+
+.tjor-panel .tjor-eyebrow {
+  margin-bottom: 0.4rem;
+}
+
+.tjor-panel.problem .tjor-eyebrow {
+  color: var(--tjor-problem);
+}
+
+.tjor-panel.solution .tjor-eyebrow {
+  color: var(--tjor-solution);
+}
+
+.tjor-panel li {
+  font-size: 0.86rem;
+  line-height: 1.38;
+  margin: 0.22rem 0;
+}
+
+.tjor-panel p {
+  font-size: 0.86rem;
+}
+
+/* Denser prose for a framed slide that carries a full column of bullets. */
+.tjor-compact li,
+.tjor-compact p {
+  font-size: 0.88rem;
+  line-height: 1.4;
+}
+.tjor-compact li {
+  margin: 0.25rem 0;
+}
+
+/* ---------- chips ---------- */
+
+.tjor-chips {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: flex-end;
+  gap: 0.35rem;
+  flex: none;
+  max-width: 42%;
+}
+
+.tjor-chip {
+  font-family: var(--slidev-code-font-family, 'JetBrains Mono', monospace);
+  font-size: 0.62rem;
+  letter-spacing: 0.04em;
+  padding: 0.18rem 0.5rem;
+  border-radius: 999px;
+  border: 1px solid var(--tjor-line);
+  color: var(--tjor-muted);
+  background: var(--tjor-surface);
+  white-space: nowrap;
+  text-decoration: none;
+}
+
+.tjor-chip.spec {
+  color: var(--tjor-teal);
+  border-color: color-mix(in srgb, var(--tjor-teal) 45%, transparent);
+}
+
+.tjor-chip.adr {
+  color: var(--tjor-accent);
+  border-color: color-mix(in srgb, var(--tjor-accent) 45%, transparent);
+}
+
+/* ---------- callouts ---------- */
+
+.tjor-callout {
+  margin-top: auto;
+  padding: 0.5rem 0.75rem;
+  border-radius: 0 8px 8px 0;
+  border-left: 3px solid var(--tjor-accent);
+  background: var(--tjor-surface-2);
+  font-size: 0.78rem;
+  line-height: 1.35;
+}
+
+.tjor-callout .tag {
+  display: block;
+  font-family: var(--slidev-code-font-family, 'JetBrains Mono', monospace);
+  font-size: 0.6rem;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+  color: var(--tjor-accent);
+  margin-bottom: 0.15rem;
+}
+
+.tjor-callout.proof {
+  border-left-color: var(--tjor-teal);
+}
+
+.tjor-callout.proof .tag {
+  color: var(--tjor-teal);
+}
+
+.tjor-callout p {
+  margin: 0;
+  font-size: 0.78rem;
+}
+
+/* ---------- layout-specific rules ----------
+   Layouts carry no <style> block of their own: Slidev's build does not emit
+   a layout's scoped CSS (components' is fine), so every layout rule lives
+   here, namespaced by the layout's class on .slidev-layout. */
+
+.slidev-layout.cover {
+  display: grid;
+  grid-template-rows: 1fr auto;
+  padding: 3rem 4rem 2rem;
+  background:
+    radial-gradient(
+      50rem 28rem at 0% 0%,
+      color-mix(in srgb, var(--tjor-accent) 12%, transparent),
+      transparent 60%
+    ),
+    var(--tjor-ground);
+}
+.slidev-layout.cover .grid {
+  display: flex;
+  align-items: center;
+  gap: 3rem;
+}
+.slidev-layout.cover .mark {
+  width: 11rem;
+  height: 11rem;
+  flex: none;
+}
+.slidev-layout.cover h1 {
+  font-size: 3rem;
+  font-weight: 700;
+  line-height: 1.08;
+  margin: 0 0 0.8rem;
+  text-wrap: balance;
+}
+.slidev-layout.cover .lede {
+  color: var(--tjor-muted);
+  font-size: 1.15rem;
+  max-width: 36rem;
+}
+.slidev-layout.cover .lede p {
+  margin: 0 0 0.4rem;
+}
+.slidev-layout.cover .lede strong {
+  color: var(--tjor-ink);
+}
+.slidev-layout.cover .foot {
+  border-top: 1px solid var(--tjor-line-soft);
+  padding-top: 0.8rem;
+  font-size: 0.78rem;
+  color: var(--tjor-muted);
+}
+
+.slidev-layout.section {
+  display: flex;
+  align-items: center;
+  padding: 0 4rem;
+  background:
+    radial-gradient(
+      60rem 30rem at 85% 110%,
+      color-mix(in srgb, var(--tjor-teal) 14%, transparent),
+      transparent 60%
+    ),
+    var(--tjor-ground);
+}
+.slidev-layout.section .wrap {
+  display: flex;
+  align-items: center;
+  gap: 2.5rem;
+}
+.slidev-layout.section .num {
+  font-family: var(--slidev-code-font-family, monospace);
+  font-size: 6rem;
+  font-weight: 700;
+  line-height: 1;
+  color: var(--tjor-accent);
+  letter-spacing: -0.04em;
+}
+.slidev-layout.section h1 {
+  font-size: 2.6rem;
+  font-weight: 700;
+  margin: 0 0 0.6rem;
+}
+.slidev-layout.section .lede {
+  color: var(--tjor-muted);
+  font-size: 1.1rem;
+  max-width: 34rem;
+}
+.slidev-layout.section .lede p {
+  margin: 0;
+}
+
+.slidev-layout.end {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  background:
+    radial-gradient(
+      50rem 28rem at 50% 120%,
+      color-mix(in srgb, var(--tjor-teal) 14%, transparent),
+      transparent 60%
+    ),
+    var(--tjor-ground);
+}
+.slidev-layout.end .wrap {
+  max-width: 44rem;
+}
+.slidev-layout.end .mark {
+  width: 5rem;
+  height: 5rem;
+  margin: 0 auto 1rem;
+}
+.slidev-layout.end h1 {
+  font-size: 2.4rem;
+  font-weight: 700;
+  margin: 0 0 1rem;
+  text-wrap: balance;
+}
+.slidev-layout.end .body {
+  color: var(--tjor-muted);
+  font-size: 1rem;
+}
+.slidev-layout.end .body pre {
+  text-align: left;
+  display: inline-block;
+  margin: 0.6rem auto;
+}
+.slidev-layout.end .foot {
+  margin-top: 1.4rem;
+  font-family: var(--slidev-code-font-family, monospace);
+  font-size: 0.7rem;
+  color: var(--tjor-muted);
+}
+
+.slidev-layout.two-cols .cols {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 1.4rem;
+  height: 100%;
+  min-height: 0;
+}

@@ -2,33 +2,23 @@ schema: spec-driven
 githubCopilot:
   cloudAgent: false
 
-# Project context (optional)
-# This is shown to AI when creating artifacts.
-# Add your tech stack, conventions, style guides, domain knowledge, etc.
-# Example:
-#   context: |
-#     Tech stack: TypeScript, React, Node.js
-#     We use conventional commits
-#     Domain: e-commerce platform
+context: |
+  tjor runs AI coding agents inside a fail-closed container cage. Specs under
+  openspec/specs/ are the unit of shipped functionality; docs/decisions/ holds ADRs.
+  An overview slide deck (slides/presentations/overview/slides.md, published to
+  GitHub Pages) explains every capability: one or more slides per problem, each
+  tagged `specs: [<capability>@<requirement count>]`. tests/slides_consistency.sh
+  fails CI when a capability has no slide or its requirement count moved without
+  the slide being reviewed. See slides/agents.md ("Keeping the deck in sync").
 
-# Per-artifact rules (optional)
-# Add custom rules for specific artifacts.
-# Example:
-#   rules:
-#     proposal:
-#       - Keep proposals under 500 words
-#       - Always include a "Non-goals" section
-#     tasks:
-#       - Break tasks into chunks of max 2 hours
-
-# Per-operation guidance (optional)
-# Add advisory guidance for how apply and archive work should be conducted.
-# This is separate from artifact rules above.
-# Example:
-#   operations:
-#     apply:
-#       guidance:
-#         - Keep test summaries concise
-#     archive:
-#       guidance:
-#         - Summarize the archive outcome before finishing
+rules:
+  specs:
+    - >-
+      A new capability needs a `problem` slide in slides/presentations/overview/slides.md
+      tagged "specs: [<capability>@N]" (N = its "### Requirement:" count) and an entry on
+      the map slide; a changed capability needs its slide re-read and the pin bumped.
+  tasks:
+    - >-
+      When a change adds or alters user-visible functionality, include a task to update
+      the overview deck (slides/agents.md, "Keeping the deck in sync") and to run
+      tests/slides_consistency.sh.

@@ -49,6 +49,8 @@ jobs:
         run: shellcheck --severity=warning bin/tjor images/agent/entrypoint.sh proxy/entrypoint.sh tests/*.sh tests/integration/*.sh
       - name: doc-consistency (README shipped markers vs roadmap table)
         run: tests/doc_consistency.sh
+      - name: slides-consistency (every spec capability has a reviewed slide)
+        run: tests/slides_consistency.sh
 
   agent-image:
     name: agent image (${{ matrix.harness }})

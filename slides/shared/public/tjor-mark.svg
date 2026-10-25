@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 120 120" role="img" aria-label="tjor mark: a tether point and the radius it allows">
+  <!-- the safe radius -->
+  <circle cx="60" cy="60" r="50" fill="none" stroke="#3dd6c3" stroke-width="3" stroke-dasharray="6 7" stroke-linecap="round"/>
+  <!-- the tether -->
+  <path d="M60 60 C 70 48, 82 44, 95 38" fill="none" stroke="#f2b84b" stroke-width="4" stroke-linecap="round"/>
+  <!-- the stake -->
+  <circle cx="60" cy="60" r="7" fill="#f2b84b"/>
+  <circle cx="60" cy="60" r="3" fill="#0b1020"/>
+  <!-- the agent, grazing at the end of the rope -->
+  <circle cx="95" cy="38" r="8" fill="#eef2fa"/>
+</svg>

@@ -1,0 +1,18 @@
+{
+  "compilerOptions": {
+    "target": "ESNext",
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "strict": true,
+    "jsx": "preserve",
+    "skipLibCheck": true,
+    "types": ["@slidev/types"]
+  },
+  "include": [
+    "**/*.ts",
+    "**/*.vue",
+    "../../shared/**/*.ts",
+    "../../shared/**/*.vue",
+    "../../shared/facts.d.ts"
+  ]
+}

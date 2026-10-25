@@ -1,0 +1,21 @@
+{
+  "name": "tjor-slides",
+  "private": true,
+  "description": "Slide decks for tjor, built with Slidev and published to GitHub Pages (see agents.md).",
+  "packageManager": "pnpm@10.28.0",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "scripts": {
+    "dev": "pnpm --filter overview dev",
+    "build": "pnpm -r build",
+    "assemble": "node scripts/assemble.mjs",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "consistency": "bash ../tests/slides_consistency.sh",
+    "check": "pnpm format:check && pnpm consistency"
+  },
+  "devDependencies": {
+    "prettier": "^3.9.10"
+  }
+}
