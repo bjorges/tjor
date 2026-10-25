@@ -93,7 +93,11 @@ install_head() { cmd_self_install >/dev/null 2>"${si_out}"; }
 check "self-install: installs the committed HEAD tree" install_head
 check "self-install: tree contains the launcher, compose, config, python, images, VERSION" bash -c "test -x '${INST}/bin/tjor' && test -f '${INST}/compose.yaml' && test -d '${INST}/config' && test -d '${INST}/python' && test -d '${INST}/images' && test -f '${INST}/VERSION'"
 check "self-install: marker holds the sha" bash -c "[ \"\$(cat '${INST}/.tjor-source-sha')\" = '${HEAD_SHA}' ]"
-check "self-install: nothing under the tree is writable" bash -c "[ -z \"\$(find '${INST}' -perm -200 | head -1)\" ]"
+# Symbolic links are skipped: on Linux a link's own mode is always 0777 and
+# cannot be changed (no lchmod), so `chmod -R a-w` leaves it as is; what a
+# link can write to is its target, and every target in the tree is walked.
+# The committed tree carries links (slides/presentations/*/{components,layouts,public}).
+check "self-install: nothing under the tree is writable" bash -c "[ -z \"\$(find '${INST}' ! -type l -perm -200 | head -1)\" ]"
 check "self-install: current points at the sha" bash -c "[ \"\$(readlink '${TJOR_INSTALL_ROOT}/current')\" = '${HEAD_SHA}' ]"
 check "self-install: output names the launcher path" grep -qF "point launchers at: ${TJOR_INSTALL_ROOT}/current/bin/tjor" "${si_out}"
 check "self-install: output says uncommitted changes are excluded" grep -qF "uncommitted changes" "${si_out}"
