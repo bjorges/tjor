@@ -538,6 +538,10 @@ All four roadmap deltas (D1–D4) are now shipped.
 
 See [`docs/clean-room-charter.md`](docs/clean-room-charter.md) for the operational lessons this build is grounded in, and the provenance rules it is built under.
 
+## Contributing and security
+
+Changes land through pull requests with green CI; see [CONTRIBUTING.md](CONTRIBUTING.md). Report a vulnerability privately as described in [SECURITY.md](SECURITY.md).
+
 ## License
 
 [MIT](LICENSE)
