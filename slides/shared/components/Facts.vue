@@ -2,7 +2,9 @@
 // Build-time repository facts for use inside markdown: <Facts kind="version" />.
 import { computed } from 'vue'
 
-const props = defineProps<{ kind: 'version' | 'checks' | 'guarantees' | 'specs' | 'adrs' }>()
+const props = defineProps<{
+  kind: 'version' | 'checks' | 'guarantees' | 'probed' | 'specs' | 'adrs'
+}>()
 
 const text = computed(() => {
   switch (props.kind) {
@@ -12,6 +14,8 @@ const text = computed(() => {
       return String(__TJOR_CHECKS__)
     case 'guarantees':
       return String(__TJOR_GUARANTEES__)
+    case 'probed':
+      return String(__TJOR_PROBED_CAPS__)
     case 'specs':
       return String(__TJOR_SPECS__.length)
     case 'adrs':

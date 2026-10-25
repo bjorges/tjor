@@ -155,8 +155,8 @@ specs: [egress-policy@5]
 | `CageTopology` | —                            | inline SVG of the compose topology; colors from tokens                                                             |
 
 Build-time constants available in component `<script>` blocks: `__TJOR_VERSION__`,
-`__TJOR_CHECKS__`, `__TJOR_GUARANTEES__`, `__TJOR_SPECS__` (names), `__TJOR_ADR_COUNT__`,
-`__TJOR_ADR_FILES__`. They are **not** visible in markdown template expressions (Vue compiles
+`__TJOR_CHECKS__`, `__TJOR_GUARANTEES__`, `__TJOR_PROBED_CAPS__`, `__TJOR_SPECS__` (names),
+`__TJOR_ADR_COUNT__`, `__TJOR_ADR_FILES__`. They are **not** visible in markdown template expressions (Vue compiles
 those to `_ctx.X`, which Vite's `define` does not touch): in `slides.md` use `<Facts kind="…" />`
 or `<Stat fact="…" />`. Never type a number that one of these can supply.
 
@@ -167,12 +167,18 @@ renders as nothing.
 ## Content rules
 
 - One problem per `problem` slide. Left panel: 2–4 bullets stating the problem in the reader's
-  terms. Right panel: 3–5 bullets naming the mechanism, then `Plainly` for the residual.
+  terms. Right panel: 3–5 bullets naming the mechanism (or a command block plus two), then
+  `Plainly` for the residual.
+- Claims are only as strong as the README, spec or ADR behind them. Scope words matter: "with a
+  broker covering GitHub", "when the guard is on", "exempt hosts connect unpinned". Every exemption
+  the spec names goes in the residual.
+- The map slide's `groups:` items are the problem slides' exact titles; the gate checks both
+  directions. Its heading is derived from the data, never typed.
 - Use the repo's own words for mechanisms (README, specs, ADRs). Bold the mechanism's name once.
 - State limits the way the README does. A slide without a residual should have none, not hide one.
 - No numbers in prose that the build can supply. No marketing adjectives.
 - Commands go in ` ```console ` blocks, with a short trailing comment per line.
-- Max ~110 words per panel; the frame does not scroll.
+- At most ~100 words of bullets per panel plus a residual of ~50; the frame does not scroll.
 
 ## Add a deck (≈5 minutes)
 

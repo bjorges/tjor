@@ -17,6 +17,8 @@
 #       fails until the slide is reviewed and the pin set to the value this
 #       check prints).
 #   ADR references (`adrs: ['0010']`) must name an existing decision record.
+#   The map slide (`groups:` in its frontmatter) must list every `layout: problem`
+#   slide by its exact title, and every item it lists must be a slide title.
 #
 # Honest scope: the pin proves the slide was *looked at* after the spec
 # changed, not that the review was thorough — a human sets the pin. A spec
@@ -64,13 +66,25 @@ spec_pin() {
 declare -A tagged_pins=()    # capability -> space-separated pins seen
 declare -A tagged_lines=()   # capability -> line numbers
 declare -a adr_refs=()       # "line:id"
-line_no=0; in_fence=0; in_fm=0; after_sep=0
+declare -A slide_titles=()   # title -> 1 (every slide with a title)
+declare -A problem_titles=() # title -> 1 (slides with layout: problem)
+declare -A map_items=()      # title -> line (the map slide's groups[].items[])
+line_no=0; in_fence=0; in_fm=0; after_sep=0; fm_layout=""; fm_title=""; in_groups=0
 while IFS= read -r line || [[ -n "${line}" ]]; do
     line_no=$((line_no + 1))
     if (( ! in_fm )) && [[ "${line}" == '```'* ]]; then in_fence=$((1 - in_fence)); continue; fi
     (( in_fence )) && continue
     if [[ "${line}" == "---" ]]; then
-        if (( in_fm )); then in_fm=0; after_sep=0; else after_sep=1; fi
+        if (( in_fm )); then
+            # a frontmatter block closed: record what it declared
+            if [[ -n "${fm_title}" ]]; then
+                slide_titles["${fm_title}"]=1
+                [[ "${fm_layout}" == "problem" ]] && problem_titles["${fm_title}"]=1
+            fi
+            in_fm=0; after_sep=0; fm_layout=""; fm_title=""; in_groups=0
+        else
+            after_sep=1
+        fi
         continue
     fi
     if (( after_sep )); then
@@ -78,6 +92,21 @@ while IFS= read -r line || [[ -n "${line}" ]]; do
         if [[ "${line}" =~ ^[A-Za-z_][A-Za-z0-9_-]*: ]]; then in_fm=1; fi
     fi
     (( in_fm )) || continue
+
+    # top-level keys of this block (layout, title, groups), and the map's items
+    if [[ "${line}" =~ ^layout:[[:space:]]*(.*)$ ]]; then fm_layout="${BASH_REMATCH[1]}"; in_groups=0
+    elif [[ "${line}" =~ ^title:[[:space:]]*(.*)$ ]]; then
+        fm_title="${BASH_REMATCH[1]}"; fm_title="${fm_title#\'}"; fm_title="${fm_title%\'}"; in_groups=0
+    elif [[ "${line}" == "groups:" ]]; then in_groups=1
+    elif [[ "${line}" =~ ^[A-Za-z_] ]]; then in_groups=0
+    elif (( in_groups )) && [[ "${line}" =~ ^[[:space:]]+-[[:space:]]+([^[:space:]].*)$ ]]; then
+        item="${BASH_REMATCH[1]}"
+        # "- title: Reach" opens a group; "- The agent can reach any host" is an item
+        if [[ ! "${item}" =~ ^title: ]]; then
+            item="${item#\'}"; item="${item%\'}"
+            map_items["${item}"]="${line_no}"
+        fi
+    fi
 
     if [[ "${line}" =~ ^specs:[[:space:]]*(.*)$ ]]; then
         body="${BASH_REMATCH[1]}"
@@ -139,6 +168,24 @@ for ref in "${adr_refs[@]:-}"; do
     fi
 done
 
+# --- the map slide lists every problem slide by its exact title, and nothing else ---
+if (( ${#map_items[@]} == 0 )); then
+    say "FAILED — no map slide: a frontmatter block with 'groups:' listing the problem titles (see slides/agents.md)"
+    fail=1
+fi
+for t in "${!problem_titles[@]}"; do
+    if [[ -z "${map_items[${t}]:-}" ]]; then
+        say "FAILED — problem slide '${t}' is missing from the map slide's groups (add it with its exact title)"
+        fail=1
+    fi
+done
+for t in "${!map_items[@]}"; do
+    if [[ -z "${slide_titles[${t}]:-}" ]]; then
+        say "FAILED — ${DECK_REL}:${map_items[${t}]}: map item '${t}' matches no slide title (titles must match exactly)"
+        fail=1
+    fi
+done
+
 # --- the shared design system reaches every deck through symlinks ---
 for deck_dir in "${ROOT_DIR}"/slides/presentations/*/; do
     for link in components layouts public; do
@@ -162,4 +209,4 @@ if ((fail)); then
     exit 1
 fi
 caps=$(ls -d "${SPECS_DIR}"/*/ | wc -l | tr -d ' ')
-echo "slides-consistency: every one of ${caps} spec capabilities has a slide reviewed at its current spec; all tags and ADR references resolve"
+echo "slides-consistency: every one of ${caps} spec capabilities has a slide reviewed at its current spec; ${#problem_titles[@]} problem slides all on the map; all tags and ADR references resolve"

@@ -7,7 +7,7 @@ defineProps<{
 </script>
 
 <template>
-  <div class="map">
+  <div class="map" :style="{ gridTemplateColumns: `repeat(${groups.length}, minmax(0, 1fr))` }">
     <div v-for="(g, i) in groups" :key="g.title" class="group">
       <div class="head">
         <span class="num">{{ String(i + 1).padStart(2, '0') }}</span>
@@ -23,7 +23,6 @@ defineProps<{
 <style scoped>
 .map {
   display: grid;
-  grid-template-columns: repeat(5, minmax(0, 1fr));
   gap: 0.8rem;
   height: 100%;
   align-content: center;

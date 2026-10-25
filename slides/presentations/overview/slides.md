@@ -18,9 +18,9 @@ mdc: true
 layout: cover
 ---
 
-**AI coding agents, at full speed, inside a boundary they cannot talk their way out of.**
+**The agent works at full speed inside the boundary, and the boundary, not the prompt, is the policy.**
 
-Prompt rules are advisory. Harness permissions are harness-specific. The only guarantees that hold for _any_ agent are structural: what the process can physically reach.
+Prompt text is advisory. Harness permissions are harness-specific. Only the structural boundary holds for any harness, including one running with its own permission checks disabled.
 
 ---
 layout: default
@@ -29,7 +29,7 @@ eyebrow: Premise
 ---
 
 <div class="grid grid-cols-2 gap-6 h-full">
-<div>
+<div class="tjor-compact">
 
 **A useful coding agent needs three dangerous things**
 
@@ -39,22 +39,22 @@ eyebrow: Premise
 
 **Every rule you give it is advisory**
 
-- a prompt can be argued with, forgotten, or injected over
-- harness permission systems differ per harness, and can be disabled
-- the agent is not the adversary you design for; the content it reads is
+- prompt text can be argued with, forgotten, or injected over by what the agent reads: repo content, tool output, a pasted issue
+- harness permission systems are harness-specific, and can be switched off
+- whatever enters the model context reaches every allowed egress destination, by design (ADR 0011)
 
 </div>
-<div>
+<div class="tjor-compact">
 
 **tjor's stance: restrict the environment, not the agent**
 
-- the agent runs **inside** a container cage — opencode, Claude Code or Copilot CLI, unchanged
+- the agent runs **inside** a container cage: opencode, Claude Code or Copilot CLI, unchanged
 - what it can reach is decided by **topology and mounts**, not by instructions
-- what it can authenticate as is decided **at the boundary**, never handed inside
-- every guarantee is **probed by an adversarial suite** on your runtime, and every limit is stated plainly
+- credentials tjor brokers are applied **at the boundary**, never placed inside; what the agent logs into on its own is its own (ADR 0007)
+- the guarantees are **probed by an adversarial suite**: in CI on the Linux engine, and by `tjor conformance` on your runtime; every limit is stated plainly
 
 <Plainly proof>
-<p>A design corroborated by independent production systems that converged on the same conclusion: restrict the environment, not the agent. See <code>docs/clean-room-charter.md</code>.</p>
+<p>The charter's thesis, reached independently by every production system it draws on: the environment is the policy. See <code>docs/clean-room-charter.md</code>.</p>
 </Plainly>
 
 </div>
@@ -62,19 +62,20 @@ eyebrow: Premise
 
 ---
 layout: default
-title: Eighteen problems, five themes
+title: Problems and themes
 eyebrow: Map
 groups:
   - title: Reach
     items:
       - The agent can reach any host
-      - DNS is an egress channel
+      - Policy has to see the request, not just the host
+      - DNS is an egress channel too
       - A policy that can be bent
       - Blocked, and no idea why
   - title: Secrets
     items:
       - The agent holds the secret
-      - Operating a cluster safely
+      - Letting an agent operate a cluster
       - One LLM endpoint, no admin hole
       - Secrets the agent discovers
   - title: Host
@@ -90,10 +91,17 @@ groups:
       - An image you didn't build
   - title: Operate & prove
     items:
+      - A launch that behaves the same every time
       - Which session did what
-      - Sessions you can find and clean up
+      - Sessions you can find, reattach, and clean up
       - Does it hold on my machine?
 ---
+
+::header::
+
+<h1>{{ $frontmatter.groups.reduce((n, g) => n + g.items.length, 0) }} problems, {{ $frontmatter.groups.length }} themes</h1>
+
+::default::
 
 <ProblemMap :groups="$frontmatter.groups" />
 
@@ -120,10 +128,10 @@ adrs: ['0004']
 
 ::solution::
 
-- The agent container sits on an **internal-only network**. No route off it exists, so bypassing the proxy is not a policy violation, it is impossible.
+- The agent container sits on an **internal-only network** the launcher creates. No route off it exists, so bypassing the proxy is not a policy violation, it is impossible.
 - A **dual-homed egress proxy** in explicit mode is the only crossing: a fail-closed host and path allowlist, default deny.
 - Raw TCP tunnels are disabled, so a `CONNECT` cannot smuggle non-HTTP bytes.
-- Sidecar admin surfaces (proxy, DNS, gateway) are unreachable from the agent network; sidecar config cannot drift silently.
+- The proxy's web UI and the gateway's admin API are unreachable from the agent network; sidecar config cannot drift silently.
 
 <Plainly proof>
 <p>Conformance probes: "direct egress bypassing the proxy is impossible", "strict-allow default-deny holds for unknown hosts", "raw TCP passthrough is disabled".</p>
@@ -131,12 +139,34 @@ adrs: ['0004']
 
 ---
 layout: default
-title: The cage, as compose builds it
+title: The cage topology
 eyebrow: Topology
 specs: [cage-network@b36c84fa]
 ---
 
 <CageTopology />
+
+---
+layout: problem
+title: Policy has to see the request, not just the host
+specs: [cage-network@b36c84fa, egress-policy@6f18b695]
+adrs: ['0007']
+---
+
+::problem::
+
+- A `CONNECT` tunnel shows the proxy a hostname and nothing else. Path-level rules, credential injection and identity headers all need the request.
+- Inside TLS, a vendor endpoint and its admin route look the same.
+
+::solution::
+
+- The proxy **terminates TLS** with a per-session CA that only the cage trusts, so every request is seen in the clear at the boundary and policy applies to the path, not just the host.
+- That is what lets the proxy **overwrite a placeholder with a brokered credential**, **strip forged identity headers**, and carve inference paths out of a blocked gateway host.
+- Server-name verification toward the real host is still done against the hostname, never against a pinned address. `tjor reset creds` discards the session CA.
+
+<Plainly>
+<p>The proxy is the session's most-trusted component (ADR 0007): it holds the CA key and the brokered secrets and sees every body. It lives on the egress side, reachable from the agent only as the chokepoint.</p>
+</Plainly>
 
 ---
 layout: problem
@@ -153,11 +183,11 @@ specs: [cage-network@b36c84fa]
 ::solution::
 
 - A **DNS sidecar** forwards only zones derived from the allow-policy. Every other name is answered **NXDOMAIN locally** and never leaves the cage.
-- The proxy **resolves and pins**: it connects only to the addresses it validated, re-evaluated per request, so redirects and rebinding cannot widen scope.
+- With the resolved-address guard on, the proxy **resolves, validates and pins** the upstream address, so an answer that changes between check and connect cannot redirect to an address the guard never judged.
 - Resolution is time-bounded and fails closed; a guard denial never discloses the resolved address to the agent.
 
 <Plainly>
-<p>The DNS sidecar is not a second policy engine. It mirrors the allowlist; the proxy remains the sole network boundary.</p>
+<p>The gateway host and configured kube API hosts are exempt from the guard (private endpoints) and connect unpinned; guard-off mode pins nothing. The sidecar mirrors the allowlist; the proxy stays the sole network boundary.</p>
 </Plainly>
 
 ---
@@ -222,17 +252,17 @@ adrs: ['0007']
 ::problem::
 
 - A GitHub token in the cage is readable by every tool the agent runs, lives as long as the token does, and leaks through `env`, logs or a pasted prompt.
-- "Don't print your token" is a prompt rule. See slide 2.
+- "Don't print your token" is a prompt rule, and prompt rules are advisory.
 
 ::solution::
 
 - A **credential broker**: the real, short-TTL credential lives only in the **proxy sidecar**, on the egress side. The agent holds a fixed **placeholder**.
 - The proxy overwrites the placeholder only toward the credential's **destination host** (optionally `host:port`); any other allowed host sees no credential.
-- Refreshed in the proxy, **revoked at teardown**, expiring as the backstop. Fail-closed: a broker that cannot provision disables loudly, never silently downgrades.
-- Sources: `github-app` (installation token, ~1 h, repo-scoped), `pat`, `kube`. `git` and `gh` are already authenticated when the session starts.
+- Refreshed in the proxy, **revoked at teardown**, expiring as the backstop; a broker that cannot provision disables loudly, never silently.
+- Sources: `github-app` (installation token, ~1 h, repo-scoped), `pat`, `kube`. With a broker covering GitHub, `git` and `gh` are authenticated at start; without one, `gh auth login` is the agent's own token.
 
 <Plainly proof>
-<p>A CI test scans a live agent container, filesystem, environment and process list, for the token value: absent. ADR 0007 states the gap: injection is host-scoped, not call-bound.</p>
+<p>A CI test scans a live agent container for the token value: absent. Precisely (ADR 0007): tjor places no secret inside; the agent can still mint its own via the device flow. Injection is host-scoped, not call-bound.</p>
 </Plainly>
 
 ---
@@ -248,13 +278,13 @@ specs: [credential-broker@036bd52a]
 
 ::solution::
 
-- `[broker] source = "kube"`: at launch tjor mints a **short-TTL ServiceAccount token** with _your_ kubeconfig; the proxy injects it toward that cluster's API origin **only**. The agent gets a placeholder kubeconfig.
+- `[broker] source = "kube"`: at launch tjor mints a **short-TTL ServiceAccount token** with _your_ kubeconfig; the proxy injects it toward that cluster's exact API origin **only**; the agent gets a placeholder kubeconfig.
 - **RBAC is the boundary**: bind the SA to the Role the task needs; a mutating call is rejected by the cluster, by construction.
-- `[[broker.kube_clusters]]`: one context per cluster, each token origin-scoped, each API host guarded and pinned, provisioning **all-or-nothing**.
-- A pinned API host must match the active context; the kube host is exempt from the SSRF IP guard, deliberately.
+- `[[broker.kube_clusters]]`: one context per cluster, each token origin-scoped, provisioning **all-or-nothing**. A pinned API host must match the active context.
+- Cluster API hosts are **exempt** from the resolved-address guard and connect unpinned (private control planes); every other host stays guarded.
 
 <Plainly>
-<p>Granting <code>pods/log</code> is the read most likely to pull secrets into the session. It is a documented, conscious trade-off (<code>docs/investigation-profiles.md</code>), and log read volume is observable per session.</p>
+<p>No in-cage refresh: a session outliving <code>kube_duration</code> re-launches. Needs <code>kubectl</code> on the host and the right to mint the SA's token. <code>pods/log</code> is the read most likely to pull secrets in: a documented trade-off (<code>docs/investigation-profiles.md</code>).</p>
 </Plainly>
 
 ---
@@ -276,6 +306,10 @@ adrs: ['0009']
 - The proxy allows **only inference paths** toward it; the gateway host is default-denied with those paths carved back in, so the entire management API, including routes LiteLLM adds later, is unreachable by construction.
 - A per-install **master key is injected by the proxy** and never enters the agent; provider keys reach the gateway sidecar only. `tjor gateway rotate-key` rotates it.
 
+<Plainly>
+<p>Keys reach the gateway and proxy sidecars as container env, visible to <code>docker inspect</code>, inside the docker-socket-trusted threat model (ADR 0009). The gateway host is exempt from the resolved-address guard. A live provider round-trip is a manual check; CI has no keys.</p>
+</Plainly>
+
 ---
 layout: problem
 title: Secrets the agent discovers
@@ -290,11 +324,11 @@ adrs: ['0010', '0011']
 
 ::solution::
 
-- **Design first** (ADR 0010): a conservative **known-shape detector** (AWS key ids, GitHub, Slack and Google tokens, PEM blocks). No entropy guessing, so SHAs and UUIDs pass untouched. Matches become `[redacted:<kind>]` in tjor-owned sinks such as the denial log.
-- **Egress tripwire** (ADR 0011): a bounded prefix of inference bodies toward configured hosts is scanned, **observe-only**. The request is forwarded byte-for-byte; the signal records kinds, never values, and `tjor down` reports it.
+- **Design first** (ADR 0010): a conservative **known-shape detector** (AWS key ids, GitHub, Slack and Google tokens, PEM blocks). No entropy guessing, so SHAs and UUIDs pass untouched. Wired into one tjor-owned sink today, the denial log, as `[redacted:<kind>]`; it rarely fires there, the proof is the wiring.
+- **Egress tripwire** (ADR 0011): for hosts listed in `secrets.scan_hosts` (the gateway host when enabled), the first `scan_max_bytes` of an inference body are scanned, **observe-only**. The request is forwarded byte-for-byte; the signal records kinds, never values, and `tjor down` reports it.
 
 <Plainly>
-<p>Trivially evadable by a hostile agent, and the recap line says so. It catches accidents and produces the signal that would justify enforcement, or not.</p>
+<p>Trivially evadable by a hostile agent, and the recap line says so. Beyond the size cap, or toward unlisted hosts, nothing is scanned. It catches accidents and produces the signal that would justify enforcement, or not.</p>
 </Plainly>
 
 ---
@@ -318,12 +352,13 @@ specs: [kernel-sandbox@51127809]
 
 ::solution::
 
-- **Landlock**: the harness process tree runs under a kernel allowlist (workspace, `--dir` repos, its own state, system paths). Outside is denied by the kernel, irrevocably. Availability is **probed in the enforcement context**, never inferred from a kernel version.
-- Landlock cannot subtract inside a granted tree, so **masks** do: `.env*` files, `mask_dirs` (e.g. `.opencode`), every repo's `.git/hooks` by default, `deny_paths`, and an opt-in read-only pin of `.git/config`.
-- `mode = auto | require | off`; the tier states its status in one greppable line, in both directions; it is strictly additive to the network boundary.
+- Compose baseline: `cap_drop: ALL` plus a minimal `cap_add`, `no-new-privileges`, memory and pid limits; AppArmor where the runtime supports it.
+- **Landlock**: the harness process tree runs under a kernel allowlist (workspace, `--dir` repos, its state, system paths); outside is denied, irrevocably. Availability is **probed in the enforcement context**, not inferred from a kernel version.
+- Landlock cannot subtract inside a granted tree, so **masks** do: `.env*`, `mask_dirs` (e.g. `.opencode`), every repo's `.git/hooks`, `deny_paths`, an opt-in read-only pin of `.git/config`.
+- `mode = auto | require | off`; the tier states its status in one greppable line.
 
 <Plainly>
-<p>Masking is a launch-time snapshot: a dotenv file, directory or repo created mid-session is not masked. <code>tjor git-check</code> covers the rest.</p>
+<p>Masking is a launch-time snapshot: anything created mid-session is unmasked. Hook masking stops host hook frameworks in-cage on purpose (<code>mask_git_hooks = false</code> restores them); <code>core.hooksPath</code> bypasses it unless the config pin is on.</p>
 </Plainly>
 
 ---
@@ -360,7 +395,7 @@ specs: [session-launch@a38b1ce7]
 
 ::solution::
 
-- **Sensitive paths are refused** as workspace, `--dir` and `--dir-ro`: `/` and system dirs, home and above, `~/.ssh` `~/.aws` `~/.kube` `~/.config`, tjor's own state and config. `--unsafe-dir` is the one override, and it is loud.
+- **Sensitive paths are refused** as workspace, `--dir` and `--dir-ro`: `/` and system dirs, home and above, `~/.ssh` `~/.aws` `~/.kube` `~/.config`, tjor's own state and config. `--unsafe-dir` is the one override, loud, and it does not cover a sensitive worktree-pointer target.
 - The resolved workspace must be the **nearest repository above the launch directory**, cross-checked against git's answer.
 - Mount roots of **different writability never nest**; writable mounts are git-trusted as trees, read-only ones exact-path.
 - A worktree's common git directory is mounted only with `--allow-worktree-mount` or an explicit `--dir`, validated by git's native layout, never by a plaintext pointer.
@@ -428,10 +463,10 @@ specs: [agent-profiles@7ab80e54]
 
 - `--profile <name>` / `--profile-dir <path>`: opt in, per launch. Selecting your own directory is the consent.
 - A **structural allow-list** of definition subdirectories (`agent`, `command`, `skill`, `prompt`, `mode`) is staged host-side; only the staging area is mounted. Credential filenames and key extensions are skipped inside them too.
-- A profile's `managed/opencode.json` is deployed **root-owned** to opencode's managed-settings path before the privilege drop: it loads last and cannot be overridden by any repo config. An invalid managed file refuses the launch.
+- A profile's `managed/opencode.json` is deployed **root-owned** to opencode's managed-settings path before the privilege drop: it loads last and its keys cannot be overridden by any repo config.
 
 <Plainly>
-<p>tjor cannot tell a definition from a secret by its content. A profile is instructions the agent runs: treat it as trusted content you authored.</p>
+<p>tjor cannot tell a definition from a secret by its content: a profile is instructions the agent runs. Managed settings override keys; they do not stop a repo's project config from adding plugins or local MCP servers, so pair them with <code>mask_dirs = [".opencode"]</code>.</p>
 </Plainly>
 
 ---
@@ -449,7 +484,7 @@ adrs: ['0008']
 ::solution::
 
 - A **git checkout always builds locally** and never pulls. Installed copies pull the release's image, **by digest** when pinned; a bare-tag pull prints an integrity notice.
-- Every tool download is **SHA256-gated**; CI proves a tampered checksum fails the build. The build context is an allowlist, so a state dir or credential can never leak into it.
+- Every tool download is **SHA256-gated**; CI proves a tampered checksum fails the build. The build context is **deny-by-default**: only listed `COPY` sources enter it, so a state dir or credential beside the Dockerfile stays out unless someone allowlists it.
 - Images are **uid-agnostic and multi-arch**; the agent is **non-root** with its uid aligned to yours at start.
 - Harness **self-update is disabled**; instructions are **image cargo**, re-deployed on every start in each harness's dialect.
 
@@ -459,7 +494,30 @@ number: '05'
 title: Operate & prove
 ---
 
-Sessions as first-class objects, identity on the wire, and evidence instead of claims.
+Launches that behave the same every time, sessions as first-class objects, identity on the wire, and evidence instead of claims.
+
+---
+layout: problem
+title: A launch that behaves the same every time
+specs: [session-launch@a38b1ce7]
+---
+
+::problem::
+
+- Two entry points merging different subsets of the config silently drop an override (charter L19).
+- A missing host dependency found halfway through a launch; a hardening tier absent without a word.
+- Sessions found by parsing container names break the day a name changes.
+
+::solution::
+
+- **One config merge path** for every entry point: packaged default → user → trusted repo config.
+- **Host preflight** with clear errors before anything starts (`tjor doctor`); `--dir` and `--dir-ro` roots are each verified before mounting.
+- **Tiered guarantees degrade loudly**: a boundary that cannot be established exits 90; an absent add-on is announced and exits 0.
+- A **per-session state root** holds everything durable, so the container holds nothing; the launcher derives the identity set and hands it to cage and proxy; containers carry **discovery labels**; sessions start detached with a PTY allocated at creation.
+
+<Plainly>
+<p>"Degraded but safe" is a judgement the launcher makes for you: Landlock in <code>auto</code> mode missing is exit 0. Set <code>mode = require</code> to make it a boundary.</p>
+</Plainly>
 
 ---
 layout: problem
@@ -503,9 +561,12 @@ $ tjor gc --dry-run           # reap what tjor labelled, never state
 $ tjor reset cache --dry-run  # cache | sessions | creds | all
 ```
 
-- Containers are **detached and persistent**; durable state lives in a **per-session state root** on the host, so a container can be recreated without loss.
+- Containers are **detached and persistent**; durable state lives in the per-session state root, so a container can be recreated without loss.
 - `tjor ls` re-verifies each session's internal-only network and flags a tampered one **DEGRADED**.
-- Exit code **90** means a required boundary could not be established, so a wrapper can fail closed without parsing stderr.
+
+<Plainly>
+<p>A persistent container lingers until <code>tjor down</code> or <code>gc</code>: a longer compromise window, accepted because the boundary is time-invariant (ADR 0006). <code>gc</code> deletes only what tjor labelled.</p>
+</Plainly>
 
 ---
 layout: default
@@ -520,7 +581,8 @@ eyebrow: Proof
 
 - `tjor conformance` runs the **adversarial suite inside the cage on your runtime** and prints an attestation line.
 - `docs/boundary-matrix.md` is **generated from the suites**: every guarantee, the probe that proves it, the spec it backs. A stale matrix or an unmapped probe fails CI.
-- `docs/conformance-matrix.md` says on which runtimes it has been proven, and honestly where it has not.
+- Adversarial probes cover <Facts kind="probed" /> of <Facts kind="specs" /> capabilities; the rest are held by functional CI tests, not by probes.
+- `docs/conformance-matrix.md` says on which runtimes the suite has been run: the Linux engine in CI, Colima by attestation, Docker Desktop and WSL2 not yet.
 - **Tiered guarantees**: a core that holds on any Docker runtime, and add-ons that degrade **loudly** when absent. `tjor doctor` reports both.
 
 </div>
@@ -533,7 +595,7 @@ eyebrow: Proof
 
 <div class="col-span-2">
 <Plainly proof>
-<p>These figures are read from the repository at build time, so this deck cannot quote a stale count. Each problem slide links to the spec that backs it.</p>
+<p>These figures are read from the repository at build time, so this deck cannot quote a stale count. Each problem slide links to the spec or ADR that backs it.</p>
 </Plainly>
 </div>
 

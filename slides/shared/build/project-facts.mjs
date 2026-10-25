@@ -29,6 +29,9 @@ export function projectFacts() {
     )
   }
 
+  // One "## <capability>" section per capability that has at least one probe.
+  const probedCaps = (matrix.match(/^## [a-z0-9-]+$/gm) ?? []).length
+
   const specs = readdirSync(resolve(repoRoot, 'openspec/specs'), { withFileTypes: true })
     .filter((d) => d.isDirectory())
     .map((d) => d.name)
@@ -41,6 +44,7 @@ export function projectFacts() {
     version,
     checks: Number(m[1]),
     guarantees: Number(m[2]),
+    probedCaps,
     specs,
     adrs,
     adrCount: adrs.length,
@@ -55,6 +59,7 @@ export function defineFacts() {
     __TJOR_CHECKS__: JSON.stringify(f.checks),
     __TJOR_GUARANTEES__: JSON.stringify(f.guarantees),
     __TJOR_SPECS__: JSON.stringify(f.specs),
+    __TJOR_PROBED_CAPS__: JSON.stringify(f.probedCaps),
     __TJOR_ADR_COUNT__: JSON.stringify(f.adrCount),
     __TJOR_ADR_FILES__: JSON.stringify(f.adrs),
   }
