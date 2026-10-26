@@ -2,9 +2,10 @@
 // The cage topology. The launcher creates the internal-only agent network
 // (compose marks it external) and attaches the sidecars: a dual-homed explicit
 // proxy as the only crossing, a dual-homed DNS sidecar that forwards allowed
-// zones and answers NXDOMAIN for the rest, an optional gateway on the egress
-// side; brokered credentials and identity applied at the proxy, never inside
-// the agent. Colors come from the shared tokens.
+// zones to an upstream resolver and answers NXDOMAIN for the rest, an optional
+// gateway on the egress side; brokered credentials and identity applied at the
+// proxy, never inside the agent. Colors come from the shared tokens. Every
+// text must fit its box: the render check measures them (slides/agents.md).
 </script>
 
 <template>
@@ -55,14 +56,14 @@
       <text x="416" y="142" class="line small">dual-homed · terminates TLS</text>
       <text x="416" y="160" class="line small">host → path → default deny</text>
       <text x="416" y="178" class="line small">injects brokered credential</text>
-      <text x="416" y="196" class="line small">strips forged identity, injects real</text>
+      <text x="416" y="196" class="line small">forged identity out, real in</text>
     </g>
 
     <!-- dns sidecar, dual-homed like the proxy -->
     <g class="box side">
       <rect x="400" y="250" width="210" height="80" rx="10" />
       <text x="416" y="274" class="title small">DNS sidecar · dual-homed</text>
-      <text x="416" y="294" class="line small">allowed zones: forwarded upstream</text>
+      <text x="416" y="294" class="line small">allowed zones: forwarded</text>
       <text x="416" y="312" class="line small">anything else: NXDOMAIN, locally</text>
     </g>
 
@@ -77,29 +78,35 @@
 
     <!-- gateway, egress side only -->
     <g class="box side">
-      <rect x="700" y="330" width="220" height="56" rx="10" />
-      <text x="716" y="352" class="title small">LLM gateway (optional)</text>
-      <text x="716" y="372" class="line small">inference paths only · admin denied</text>
+      <rect x="700" y="250" width="220" height="56" rx="10" />
+      <text x="716" y="272" class="title small">LLM gateway (optional)</text>
+      <text x="716" y="292" class="line small">inference paths only · admin denied</text>
     </g>
 
-    <!-- arrows -->
+    <!-- the DNS sidecar's upstream -->
+    <g class="box side">
+      <rect x="700" y="330" width="220" height="56" rx="10" />
+      <text x="716" y="352" class="title small">upstream resolver</text>
+      <text x="716" y="372" class="line small">forwarded allowed-zone queries</text>
+    </g>
+
+    <!-- arrows: agent → proxy, proxy → hosts, agent → DNS, DNS → upstream,
+         proxy → gateway, gateway → providers; none crosses a box or another -->
     <g class="edges">
       <path d="M312 150 H398" marker-end="url(#arrow)" />
       <path d="M610 150 H698" marker-end="url(#arrow)" />
       <path d="M312 290 H398" marker-end="url(#arrow)" />
-      <path d="M610 290 H 760" class="dashed" marker-end="url(#arrow)" />
-      <text x="618" y="277" class="edge">upstream resolver · allowed zones only</text>
+      <path d="M610 300 C 650 300, 650 358, 698 358" class="dashed" marker-end="url(#arrow)" />
       <path
-        d="M505 216 V 240 M 560 216 C 560 236, 660 236, 660 358 H 698"
+        d="M560 216 C 560 236, 660 236, 660 278 H 698"
         class="dashed"
         marker-end="url(#arrow)"
       />
-      <text x="668" y="322" class="edge">inference only</text>
-      <path d="M880 328 V 218" class="dashed" marker-end="url(#arrow)" />
-      <text x="888" y="300" class="edge">providers</text>
+      <path d="M880 248 V 218" class="dashed" marker-end="url(#arrow)" />
+      <text x="872" y="238" class="edge" text-anchor="end">providers</text>
       <!-- the impossible path -->
-      <path d="M170 292 C 170 425, 940 425, 940 226" class="blocked" />
-      <text x="300" y="418" class="edge blocked">direct egress: no route exists</text>
+      <path d="M170 292 V 410 Q 170 420 180 420 H 940 Q 950 420 950 410 V 150" class="blocked" />
+      <text x="300" y="413" class="edge blocked">direct egress: no route exists</text>
     </g>
 
     <!-- host -->

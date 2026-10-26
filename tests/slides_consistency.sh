@@ -25,8 +25,11 @@
 # that changes without touching its file (none today) is not seen.
 #
 # Tags are read from Slidev frontmatter blocks only (the headmatter and each
-# slide's `---`-fenced block), never from slide bodies or fenced code, so a
-# code sample showing the tag syntax cannot be mistaken for a tag.
+# slide's `---`-fenced block), never from slide bodies or fenced code (backtick
+# or tilde fences, closed by a fence of the same character at least as long),
+# so a code sample showing the tag syntax cannot be mistaken for a tag. A YAML
+# comment after the list (`specs: [...] # note`) is allowed; a block-style
+# list is refused rather than silently ignored.
 #
 # Needs bash >= 4 (associative arrays) like tests/doc_consistency.sh, the
 # integration tests and bin/tjor itself (README: bash >= 4.4); the stock
@@ -56,24 +59,47 @@ spec_pin() {
     if command -v sha256sum >/dev/null 2>&1; then sha256sum "$1"; else shasum -a 256 "$1"; fi | cut -c1-8
 }
 
+# The value of a frontmatter key with a trailing YAML comment (" # ...") and
+# trailing whitespace removed. Our lists never contain '#', so the first
+# whitespace-then-hash starts the comment.
+yaml_value() {
+    local s="$1"
+    s="${s%%[[:space:]]#*}"
+    s="${s%"${s##*[![:space:]]}"}"
+    printf '%s' "${s}"
+}
+
 [[ -f "${DECK}" ]] || { say "FAILED — deck missing: ${DECK_REL}"; exit 1; }
 
 # --- collect tags from frontmatter blocks only ---------------------------------
 # Slidev: the file opens with a `---` headmatter block; every later slide starts
 # at a `---` separator, optionally followed at once by a `---`-closed frontmatter
-# block whose first line is a YAML key. Fenced code (```) is skipped so a `---`
-# or a `specs:` sample inside it is never parsed.
+# block whose first line is a YAML key. Fenced code (``` or ~~~, CommonMark:
+# up to three leading spaces, closed by the same character at least as long)
+# is skipped so a `---` or a `specs:` sample inside it is never parsed.
+fence_open_re='^[[:space:]]{0,3}(`{3,}|~{3,})'
+fence_close_re='^[[:space:]]{0,3}(`{3,}|~{3,})[[:space:]]*$'
 declare -A tagged_pins=()    # capability -> space-separated pins seen
 declare -A tagged_lines=()   # capability -> line numbers
 declare -a adr_refs=()       # "line:id"
 declare -A slide_titles=()   # title -> 1 (every slide with a title)
 declare -A problem_titles=() # title -> 1 (slides with layout: problem)
 declare -A map_items=()      # title -> line (the map slide's groups[].items[])
-line_no=0; in_fence=0; in_fm=0; after_sep=0; fm_layout=""; fm_title=""; in_groups=0
+line_no=0; fence=""; in_fm=0; after_sep=0; fm_layout=""; fm_title=""; in_groups=0
 while IFS= read -r line || [[ -n "${line}" ]]; do
     line_no=$((line_no + 1))
-    if (( ! in_fm )) && [[ "${line}" == '```'* ]]; then in_fence=$((1 - in_fence)); continue; fi
-    (( in_fence )) && continue
+    if (( ! in_fm )); then
+        if [[ -n "${fence}" ]]; then
+            if [[ "${line}" =~ ${fence_close_re} ]] \
+               && [[ "${BASH_REMATCH[1]:0:1}" == "${fence:0:1}" ]] \
+               && (( ${#BASH_REMATCH[1]} >= ${#fence} )); then
+                fence=""
+            fi
+            continue
+        elif [[ "${line}" =~ ${fence_open_re} ]]; then
+            fence="${BASH_REMATCH[1]}"; continue
+        fi
+    fi
     if [[ "${line}" == "---" ]]; then
         if (( in_fm )); then
             # a frontmatter block closed: record what it declared
@@ -109,9 +135,9 @@ while IFS= read -r line || [[ -n "${line}" ]]; do
     fi
 
     if [[ "${line}" =~ ^specs:[[:space:]]*(.*)$ ]]; then
-        body="${BASH_REMATCH[1]}"
+        body="$(yaml_value "${BASH_REMATCH[1]}")"
         if [[ ! "${body}" =~ ^\[(.*)\]$ ]]; then
-            say "FAILED — ${DECK_REL}:${line_no}: specs must be an inline list: specs: [cap@pin, ...] (got: ${body})"
+            say "FAILED — ${DECK_REL}:${line_no}: specs must be an inline list: specs: [cap@pin, ...] (got: '${body}')"
             fail=1; continue
         fi
         IFS=',' read -ra entries <<< "${BASH_REMATCH[1]}"
@@ -125,11 +151,21 @@ while IFS= read -r line || [[ -n "${line}" ]]; do
             tagged_pins["${BASH_REMATCH[1]}"]+="${BASH_REMATCH[2]} "
             tagged_lines["${BASH_REMATCH[1]}"]+="${line_no} "
         done
-    elif [[ "${line}" =~ ^adrs:[[:space:]]*\[(.*)\]$ ]]; then
+    elif [[ "${line}" =~ ^adrs:[[:space:]]*(.*)$ ]]; then
+        body="$(yaml_value "${BASH_REMATCH[1]}")"
+        if [[ ! "${body}" =~ ^\[(.*)\]$ ]]; then
+            say "FAILED — ${DECK_REL}:${line_no}: adrs must be an inline list: adrs: ['0007', ...] (got: '${body}')"
+            fail=1; continue
+        fi
         IFS=',' read -ra ids <<< "${BASH_REMATCH[1]}"
         for raw in "${ids[@]}"; do
             id="$(echo "${raw}" | tr -d "[:space:]'\"")"
-            [[ -n "${id}" ]] && adr_refs+=("${line_no}:${id}")
+            [[ -z "${id}" ]] && continue
+            if [[ ! "${id}" =~ ^[0-9]{4}$ ]]; then
+                say "FAILED — ${DECK_REL}:${line_no}: ADR reference '${id}' is not a four-digit id like '0007'"
+                fail=1; continue
+            fi
+            adr_refs+=("${line_no}:${id}")
         done
     fi
 done < "${DECK}"

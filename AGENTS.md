@@ -5,8 +5,9 @@ itself are made. The README says what tjor does; `docs/clean-room-charter.md` sa
 
 ## Landing a change
 
-- Work on a branch and open a pull request. Never commit to or push `main`; the branch rules
-  refuse it and CI is the merge gate. Details: `CONTRIBUTING.md`.
+- Work on a branch and open a pull request. Never commit to or push `main`; the pull request's
+  CI is the merge gate. Details, including the repository settings that enforce this:
+  `CONTRIBUTING.md`.
 - Substantial capabilities go through OpenSpec (`openspec/`, the `/opsx:*` commands): the spec
   is the source of truth; project-level decisions become ADRs in `docs/decisions/`.
 - Before you say a change is done, run and report the local gates:
@@ -36,4 +37,4 @@ itself are made. The README says what tjor does; `docs/clean-room-charter.md` sa
 - `slides/presentations/overview/slides.md` explains every capability, one or more slides per
   problem, each tagged with the spec it describes. A changed spec fails CI until its slide is
   re-read and the pin updated (`slides/agents.md`, "Keeping the deck in sync").
-- `CHANGELOG.md` is the release notes: every user-visible change, under the next version.
+- `CHANGELOG.md` is the release notes: every user-visible change, under `## [Unreleased]`.

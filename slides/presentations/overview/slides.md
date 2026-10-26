@@ -18,9 +18,9 @@ mdc: true
 layout: cover
 ---
 
-**The agent works at full speed inside the boundary, and the boundary, not the prompt, is the policy.**
+tjor runs AI coding agents inside a portable, fail-closed container cage: an internal-only network, one explicit egress proxy, brokered credentials, a kernel sandbox.
 
-Prompt text is advisory. Harness permissions are harness-specific. Only the structural boundary holds for any harness, including one running with its own permission checks disabled.
+The clean-room charter's thesis, **the environment is the policy**: prompt text is advisory, harness permissions are harness-specific, and only the structural boundary holds for any harness, including one running with its own permission checks disabled.
 
 ---
 layout: default
@@ -256,10 +256,10 @@ adrs: ['0007']
 
 ::solution::
 
-- A **credential broker**: the real, short-TTL credential lives only in the **proxy sidecar**, on the egress side. The agent holds a fixed **placeholder**.
-- The proxy overwrites the placeholder only toward the credential's **destination host** (optionally `host:port`); any other allowed host sees no credential.
-- Refreshed in the proxy, **revoked at teardown**, expiring as the backstop; a broker that cannot provision disables loudly, never silently.
-- Sources: `github-app` (installation token, ~1 h, repo-scoped), `pat`, `kube`. With a broker covering GitHub, `git` and `gh` are authenticated at start; without one, `gh auth login` is the agent's own token.
+- A **credential broker**: the real credential lives only in the **proxy sidecar**, on the egress side. The agent holds a fixed **placeholder**.
+- The proxy overwrites the placeholder only toward the credential's **destination host** (optionally `host:port`); every other host sees none.
+- Lifetime by source: a `github-app` token (~1 h, repo-scoped) is **refreshed** in the proxy and **revoked** at proxy shutdown, best-effort; a `pat` is static, kept out of the cage, forgotten at teardown; a `kube` token expires on its own, unrefreshed.
+- A broker that cannot provision disables loudly. With one covering GitHub, `git` and `gh` are authenticated at start; otherwise `gh auth login` is the agent's own.
 
 <Plainly proof>
 <p>A CI test scans a live agent container for the token value: absent. Precisely (ADR 0007): tjor places no secret inside; the agent can still mint its own via the device flow. Injection is host-scoped, not call-bound.</p>
@@ -278,13 +278,13 @@ specs: [credential-broker@036bd52a]
 
 ::solution::
 
-- `[broker] source = "kube"`: at launch tjor mints a **short-TTL ServiceAccount token** with _your_ kubeconfig; the proxy injects it toward that cluster's exact API origin **only**; the agent gets a placeholder kubeconfig.
-- **RBAC is the boundary**: bind the SA to the Role the task needs; a mutating call is rejected by the cluster, by construction.
-- `[[broker.kube_clusters]]`: one context per cluster, each token origin-scoped, provisioning **all-or-nothing**. A pinned API host must match the active context.
+- `source = "kube"`: at launch tjor mints a **short-TTL ServiceAccount token** with _your_ kubeconfig; the proxy injects it toward that cluster's exact API origin **only**; the agent gets a placeholder kubeconfig.
+- **RBAC is the boundary**: bound to a read-only Role, the cluster rejects every mutating call, whatever the agent attempts. A Role that grants writes grants them.
+- `[[broker.kube_clusters]]`: one context per cluster, each token origin-scoped, provisioned **all-or-nothing**; a pinned API host must match the active context.
 - Cluster API hosts are **exempt** from the resolved-address guard and connect unpinned (private control planes); every other host stays guarded.
 
 <Plainly>
-<p>No in-cage refresh: a session outliving <code>kube_duration</code> re-launches. Needs <code>kubectl</code> on the host and the right to mint the SA's token. <code>pods/log</code> is the read most likely to pull secrets in: a documented trade-off (<code>docs/investigation-profiles.md</code>).</p>
+<p>No in-cage refresh: a session outliving <code>kube_duration</code> re-launches. Needs host <code>kubectl</code> and the right to mint the SA's token. <code>pods/log</code> is the read most likely to pull secrets in: a documented trade-off.</p>
 </Plainly>
 
 ---
@@ -352,7 +352,7 @@ specs: [kernel-sandbox@51127809]
 
 ::solution::
 
-- Compose baseline: `cap_drop: ALL` plus a minimal `cap_add`, `no-new-privileges`, memory and pid limits; AppArmor where the runtime supports it.
+- Compose baseline: `cap_drop: ALL` plus a minimal `cap_add`, `no-new-privileges`, memory and pid limits. AppArmor is detected and announced; its profiles ship in a later release.
 - **Landlock**: the harness process tree runs under a kernel allowlist (workspace, `--dir` repos, its state, system paths); outside is denied, irrevocably. Availability is **probed in the enforcement context**, not inferred from a kernel version.
 - Landlock cannot subtract inside a granted tree, so **masks** do: `.env*`, `mask_dirs` (e.g. `.opencode`), every repo's `.git/hooks`, `deny_paths`, an opt-in read-only pin of `.git/config`.
 - `mode = auto | require | off`; the tier states its status in one greppable line.
@@ -379,7 +379,7 @@ specs: [git-tamper-detection@2d035d89]
 - A **pending marker** written before the agent starts survives crashes; `tjor ls` shows unchecked sessions. `--ack <token>` accepts exactly the reviewed state and nothing else.
 
 <Plainly>
-<p>Detection, not prevention: a write fires in host git the moment it lands. This narrows the window; it does not close it. Keep <code>--ack</code> in human hands.</p>
+<p>Detection, not prevention: a write fires in host git the moment it lands; this narrows the window, not closes it. Discovery stops <code>git_check_depth</code> levels down (32) or at an unreadable directory, announces each spot, and a repository planted below one is invisible. Keep <code>--ack</code> in human hands.</p>
 </Plainly>
 
 ---
@@ -455,18 +455,18 @@ specs: [agent-profiles@7ab80e54]
 
 ::problem::
 
-- The cage isolates from host config by design, so your `~/.opencode` agents, commands and skills do not reach it.
+- The cage isolates host config by design: your `~/.opencode` agents, commands and skills do not reach it.
 - Mounting that directory would also bring the `auth.json` and API keys sitting beside them.
 - A repo's own `opencode.json` can override the permission policy a hardened session relies on.
 
 ::solution::
 
 - `--profile <name>` / `--profile-dir <path>`: opt in, per launch. Selecting your own directory is the consent.
-- A **structural allow-list** of definition subdirectories (`agent`, `command`, `skill`, `prompt`, `mode`) is staged host-side; only the staging area is mounted. Credential filenames and key extensions are skipped inside them too.
+- A **structural allow-list** of definition subdirectories (`agent`, `command`, `skill`, `prompt`, `mode`) is staged host-side and only the staging area is mounted; credential filenames and key extensions are skipped.
 - A profile's `managed/opencode.json` is deployed **root-owned** to opencode's managed-settings path before the privilege drop: it loads last and its keys cannot be overridden by any repo config.
 
 <Plainly>
-<p>tjor cannot tell a definition from a secret by its content: a profile is instructions the agent runs. Managed settings override keys; they do not stop a repo's project config from adding plugins or local MCP servers, so pair them with <code>mask_dirs = [".opencode"]</code>.</p>
+<p>tjor cannot tell a definition from a secret by content: a profile is instructions the agent runs. Managed settings override keys but do not stop a repo config from adding plugins or local MCP servers; pair them with <code>mask_dirs = [".opencode"]</code>.</p>
 </Plainly>
 
 ---
@@ -513,7 +513,7 @@ specs: [session-launch@a38b1ce7]
 - **One config merge path** for every entry point: packaged default → user → trusted repo config.
 - **Host preflight** with clear errors before anything starts (`tjor doctor`); `--dir` and `--dir-ro` roots are each verified before mounting.
 - **Tiered guarantees degrade loudly**: a boundary that cannot be established exits 90; an absent add-on is announced and exits 0.
-- A **per-session state root** holds everything durable, so the container holds nothing; the launcher derives the identity set and hands it to cage and proxy; containers carry **discovery labels**; sessions start detached with a PTY allocated at creation.
+- A **per-session state root** holds everything durable; the launcher derives the identity set for cage and proxy; containers carry **discovery labels**; sessions start detached, PTY allocated at creation.
 
 <Plainly>
 <p>"Degraded but safe" is a judgement the launcher makes for you: Landlock in <code>auto</code> mode missing is exit 0. Set <code>mode = require</code> to make it a boundary.</p>
@@ -561,7 +561,7 @@ $ tjor gc --dry-run           # reap what tjor labelled, never state
 $ tjor reset cache --dry-run  # cache | sessions | creds | all
 ```
 
-- Containers are **detached and persistent**; durable state lives in the per-session state root, so a container can be recreated without loss.
+- Containers are **detached and persistent**; durable state lives in the state root, so a container can be recreated without loss.
 - `tjor ls` re-verifies each session's internal-only network and flags a tampered one **DEGRADED**.
 
 <Plainly>

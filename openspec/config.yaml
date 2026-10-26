@@ -33,7 +33,7 @@ operations:
       - Before finishing, run the local gates (python -m pytest python/tests -q,
         tests/doc_consistency.sh, tests/slides_consistency.sh, shellcheck on changed
         shell files) and regenerate docs/boundary-matrix.md when a probe changed.
-      - A user-visible change gets a CHANGELOG.md entry under the next version's heading
+      - A user-visible change gets a CHANGELOG.md entry under the `## [Unreleased]` heading
         and, when a spec changed, a reviewed slide (slides/agents.md).
   archive:
     guidance:

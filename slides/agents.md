@@ -41,7 +41,8 @@ adrs: ['0007'] # optional
 
 Honest scope: the pin proves a slide was looked at after its spec changed; a human sets it, so
 the quality of that review is the reviewer's. Tags are read only from Slidev frontmatter blocks,
-never from slide bodies or fenced code.
+never from slide bodies or fenced code (backtick or tilde fences). Both keys take an inline list;
+a trailing `# comment` is fine, a block-style list fails the check rather than being ignored.
 
 ## Layout
 

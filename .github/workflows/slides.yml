@@ -92,8 +92,9 @@ jobs:
 
   deploy:
     name: deploy to GitHub Pages
-    # Only main ships; PRs stop at build.
-    if: github.event_name != 'pull_request'
+    # Only main ships. PRs stop at build, and so does a workflow_dispatch run
+    # on any other branch (the event alone would let one through).
+    if: github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
     needs: [build]
     permissions:
