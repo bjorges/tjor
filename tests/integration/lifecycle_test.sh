@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # Lifecycle integration test (add-session-lifecycle): two concurrent named
 # sessions, label-driven discovery, degradation detection, attach, gc with
-# state survival, and every reset tier including a symlink-escape attempt.
+# state survival, relaunch of a stopped session with a changed --dir list (#78),
+# and every reset tier including a symlink-escape attempt.
 set -euo pipefail
 
 T="${TJOR_BIN:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/bin/tjor}"
 REPO="${HOME}/.tjor/tmp/lifecycle-repo"
 OUTSIDE="${HOME}/.tjor/tmp/lifecycle-outside"
+EXTRA="${HOME}/.tjor/tmp/lifecycle-extra"     # a repo added by --dir on relaunch (#78)
 FAKE_SID="fakedeg"
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/tjor-lifecycle.XXXXXX")"
 PASS=0; FAIL=0
@@ -34,7 +36,7 @@ cleanup() {
         docker network rm "tjor-${sid}_internal" >/dev/null 2>&1
     done
     docker network rm "tjor-${FAKE_SID}_internal" >/dev/null 2>&1
-    rm -rf "${REPO}" "${OUTSIDE}" "${SCRATCH}" "${HOME}"/.tjor/sessions/lifecycle-repo-*
+    rm -rf "${REPO}" "${OUTSIDE}" "${EXTRA}" "${SCRATCH}" "${HOME}"/.tjor/sessions/lifecycle-repo-*
 }
 trap cleanup EXIT
 
@@ -168,6 +170,32 @@ check "gc never touches state dirs" test -f "${HOME}/.tjor/sessions/${SID_A}/gc-
 ( cd "${REPO}" && "${T}" run --session a true >/dev/null 2>&1 )
 check "session resumes after gc, state intact" test -f "${HOME}/.tjor/sessions/${SID_A}/gc-survivor"
 ( cd "${REPO}" && "${T}" down --session a >/dev/null 2>&1 )
+
+# ---- 4b. relaunch of a STOPPED session applies the current --dir list (#78) ----
+# Every `tjor run` creates the agent container afresh from its own command
+# line (the only collision guard is against a RUNNING agent), so adding a
+# --dir and relaunching the same session mounts it — no --restart needed. The
+# exited container stays until gc/down; the session is listed once.
+mkdir -p "${EXTRA}" && ( cd "${EXTRA}" && git init -q 2>/dev/null && echo extra > canary )
+( cd "${REPO}" && "${T}" run --detach --session a sleep 600 >/dev/null 2>&1 )
+CTR_A2="$(wait_for_agent "${SID_A}")"
+check "before relaunch: the extra repo is not mounted" \
+    docker exec "${CTR_A2}" sh -c "! test -e '${EXTRA}'"
+docker stop -t 2 "${CTR_A2}" >/dev/null 2>&1
+( cd "${REPO}" && "${T}" run --detach --session a --dir "${EXTRA}" sleep 600 >/dev/null 2>&1 )
+CTR_A3="$(wait_for_agent "${SID_A}")"
+check "relaunch of a stopped session creates a new agent container (#78)" \
+    test -n "${CTR_A3}" -a "${CTR_A3}" != "${CTR_A2}"
+check "relaunch applies the added --dir: mounted and writable in-cage (#78)" \
+    docker exec "${CTR_A3}" sh -c "test -f '${EXTRA}/canary' && touch '${EXTRA}/written-in-cage'"
+check "relaunch hands the cage an allowlist that names the added --dir (#78)" \
+    docker exec "${CTR_A3}" sh -c "printf '%s' \"\$TJOR_SAFE_DIRS\" | grep -qx '${EXTRA}'"
+check "the stopped container stays for gc; ls lists the session once, RUNNING (#78)" bash -c \
+    "[ \"\$(docker ps -aq --filter label=tjor.role=agent --filter 'label=tjor.session=${SID_A}' | wc -l)\" -eq 2 ] \
+     && [ \"\$('${T}' ls 2>/dev/null | grep -c '${SID_A}')\" -eq 1 ] && '${T}' ls 2>/dev/null | grep '${SID_A}' | grep -q RUNNING"
+( cd "${REPO}" && "${T}" down --session a >/dev/null 2>&1 )
+check "down after relaunch removes both agent containers" bash -c \
+    "! docker ps -aq --filter 'label=tjor.session=${SID_A}' | grep -q ."
 
 # ---- 5. reset ------------------------------------------------------------------
 SDIR="${HOME}/.tjor/sessions/${SID_A}"

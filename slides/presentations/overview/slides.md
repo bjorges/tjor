@@ -385,7 +385,7 @@ specs: [git-tamper-detection@2d035d89]
 ---
 layout: problem
 title: Mounting the wrong directory
-specs: [session-launch@a38b1ce7]
+specs: [session-launch@04a11994]
 ---
 
 ::problem::
@@ -499,7 +499,7 @@ Launches that behave the same every time, sessions as first-class objects, ident
 ---
 layout: problem
 title: A launch that behaves the same every time
-specs: [session-launch@a38b1ce7]
+specs: [session-launch@04a11994]
 ---
 
 ::problem::
@@ -541,7 +541,7 @@ adrs: ['0004']
 ---
 layout: problem
 title: Sessions you can find, reattach, and clean up
-specs: [session-lifecycle@eb604e7d, session-launch@a38b1ce7]
+specs: [session-lifecycle@eb604e7d, session-launch@04a11994]
 adrs: ['0006']
 ---
 
@@ -561,7 +561,7 @@ $ tjor gc --dry-run           # reap what tjor labelled, never state
 $ tjor reset cache --dry-run  # cache | sessions | creds | all
 ```
 
-- Containers are **detached and persistent**; durable state lives in the state root, so a container can be recreated without loss.
+- Containers are **detached and persistent**; durable state lives in the state root, so a container can be recreated without loss: relaunching a stopped session builds a new one from the current command line, and a changed `--dir` list applies.
 - `tjor ls` re-verifies each session's internal-only network and flags a tampered one **DEGRADED**.
 
 <Plainly>

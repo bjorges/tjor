@@ -146,3 +146,29 @@ if ! awk '/^  agent:/{f=1; next} /^  [A-Za-z0-9_-]+:/{f=0} f' "${ROOT_DIR}/compo
     exit 1
 fi
 echo "doc-consistency: agent pids_limit wired in compose"
+
+# Release bookkeeping: VERSION and CHANGELOG.md must agree. A release PR that
+# bumps VERSION but forgets to turn "## [Unreleased]" into the version heading
+# (or renames the heading without the bump) fails here, not at tag time, where
+# publish-images.yml would cut a GitHub Release with empty notes. Invariants:
+#   - the first "## [" heading is "## [Unreleased]" (contributors add entries
+#     there; the release PR renames it and leaves a fresh empty one above);
+#   - the newest "## [X.Y.Z]" heading names VERSION, in the
+#     "## [X.Y.Z] — YYYY-MM-DD — title" form the release workflow parses.
+CHANGELOG="${ROOT_DIR}/CHANGELOG.md"
+version="$(tr -d '[:space:]' < "${ROOT_DIR}/VERSION")"
+first_heading="$(grep -m1 -E '^## \[' "${CHANGELOG}" || true)"
+if [[ "${first_heading}" != "## [Unreleased]" ]]; then
+    echo "doc-consistency: FAILED — CHANGELOG.md must open with '## [Unreleased]' (first heading: '${first_heading}')" >&2
+    exit 1
+fi
+newest_release="$(grep -m1 -E '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' "${CHANGELOG}" || true)"
+if [[ "${newest_release}" != "## [${version}] — "* ]]; then
+    echo "doc-consistency: FAILED — VERSION is ${version} but the newest CHANGELOG release heading is '${newest_release}' (a release PR renames '## [Unreleased]' to '## [${version}] — YYYY-MM-DD — title')" >&2
+    exit 1
+fi
+if [[ ! "${newest_release}" =~ ^##\ \[[0-9.]+\]\ —\ [0-9]{4}-[0-9]{2}-[0-9]{2}\ —\ .+$ ]]; then
+    echo "doc-consistency: FAILED — release heading '${newest_release}' is not '## [X.Y.Z] — YYYY-MM-DD — title' (publish-images.yml parses that form)" >&2
+    exit 1
+fi
+echo "doc-consistency: CHANGELOG opens with [Unreleased] and its newest release heading names VERSION ${version}"

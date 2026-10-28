@@ -141,6 +141,10 @@ When `--session <name>` is given (name matching `[A-Za-z0-9._-]{1,32}`), the ses
 - **WHEN** a session is launched with and without `--dir` from the same primary workspace
 - **THEN** the session id, `x-agent-repo`, and the harness cwd are identical in both cases
 
+#### Scenario: Relaunch applies the current --dir list
+- **WHEN** a session whose agent container has exited or was stopped is relaunched with `--session <name>` and a `--dir` it did not have before
+- **THEN** a new agent container is created from the current command line, so the added repository is mounted writable, named in the sandbox allowlist handed to the cage, and covered by the git-check baseline; the exited container remains until `tjor gc` or `tjor down`, and `tjor ls` lists the session once
+
 ### Requirement: Read-only additional repositories via repeatable --dir-ro
 
 `tjor run` SHALL accept a repeatable `--dir-ro <path>` option. Each given path
