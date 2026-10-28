@@ -150,25 +150,37 @@ echo "doc-consistency: agent pids_limit wired in compose"
 # Release bookkeeping: VERSION and CHANGELOG.md must agree. A release PR that
 # bumps VERSION but forgets to turn "## [Unreleased]" into the version heading
 # (or renames the heading without the bump) fails here, not at tag time, where
-# publish-images.yml would cut a GitHub Release with empty notes. Invariants:
-#   - the first "## [" heading is "## [Unreleased]" (contributors add entries
-#     there; the release PR renames it and leaves a fresh empty one above);
-#   - the newest "## [X.Y.Z]" heading names VERSION, in the
-#     "## [X.Y.Z] — YYYY-MM-DD — title" form the release workflow parses.
+# publish-images.yml would cut a GitHub Release with empty notes. Invariants,
+# over the level-two headings in order (so a malformed heading is caught where
+# it stands, never skipped in favour of an older well-formed one):
+#   - the first is "## [Unreleased]" (contributors add entries there; the
+#     release PR renames it and leaves a fresh empty one above);
+#   - the second — the newest release — names VERSION and has the full
+#     "## [X.Y.Z] — YYYY-MM-DD — title" form the release workflow parses
+#     (the title becomes the GitHub Release's);
+#   - every heading after the first is "## [X.Y.Z] — YYYY-MM-DD", optionally
+#     "— title" (the oldest entries predate titles; history is not rewritten).
 CHANGELOG="${ROOT_DIR}/CHANGELOG.md"
 version="$(tr -d '[:space:]' < "${ROOT_DIR}/VERSION")"
-first_heading="$(grep -m1 -E '^## \[' "${CHANGELOG}" || true)"
-if [[ "${first_heading}" != "## [Unreleased]" ]]; then
-    echo "doc-consistency: FAILED — CHANGELOG.md must open with '## [Unreleased]' (first heading: '${first_heading}')" >&2
+mapfile -t headings < <(grep -E '^## ' "${CHANGELOG}")
+if [[ "${headings[0]:-}" != "## [Unreleased]" ]]; then
+    echo "doc-consistency: FAILED — CHANGELOG.md must open with '## [Unreleased]' (first heading: '${headings[0]:-<none>}')" >&2
     exit 1
 fi
-newest_release="$(grep -m1 -E '^## \[[0-9]+\.[0-9]+\.[0-9]+\]' "${CHANGELOG}" || true)"
+newest_release="${headings[1]:-}"
 if [[ "${newest_release}" != "## [${version}] — "* ]]; then
-    echo "doc-consistency: FAILED — VERSION is ${version} but the newest CHANGELOG release heading is '${newest_release}' (a release PR renames '## [Unreleased]' to '## [${version}] — YYYY-MM-DD — title')" >&2
+    echo "doc-consistency: FAILED — VERSION is ${version} but the heading after '## [Unreleased]' is '${newest_release}' (a release PR renames '## [Unreleased]' to '## [${version}] — YYYY-MM-DD — title' and adds a fresh empty '## [Unreleased]' above it)" >&2
     exit 1
 fi
-if [[ ! "${newest_release}" =~ ^##\ \[[0-9.]+\]\ —\ [0-9]{4}-[0-9]{2}-[0-9]{2}\ —\ .+$ ]]; then
-    echo "doc-consistency: FAILED — release heading '${newest_release}' is not '## [X.Y.Z] — YYYY-MM-DD — title' (publish-images.yml parses that form)" >&2
+release_re='^## \[[0-9]+\.[0-9]+\.[0-9]+\] — [0-9]{4}-[0-9]{2}-[0-9]{2}( — .+)?$'
+if [[ ! "${newest_release}" =~ ${release_re} ]] || [[ -z "${BASH_REMATCH[1]}" ]]; then
+    echo "doc-consistency: FAILED — newest release heading '${newest_release}' is not '## [${version}] — YYYY-MM-DD — title' (publish-images.yml takes the Release title from it)" >&2
     exit 1
 fi
-echo "doc-consistency: CHANGELOG opens with [Unreleased] and its newest release heading names VERSION ${version}"
+for h in "${headings[@]:2}"; do
+    if [[ ! "${h}" =~ ${release_re} ]]; then
+        echo "doc-consistency: FAILED — release heading '${h}' is not '## [X.Y.Z] — YYYY-MM-DD — title' (publish-images.yml parses that form)" >&2
+        exit 1
+    fi
+done
+echo "doc-consistency: CHANGELOG opens with [Unreleased], its newest release heading names VERSION ${version}, all $(( ${#headings[@]} - 1 )) release headings well-formed"

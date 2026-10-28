@@ -181,7 +181,8 @@ mkdir -p "${EXTRA}" && ( cd "${EXTRA}" && git init -q 2>/dev/null && echo extra 
 CTR_A2="$(wait_for_agent "${SID_A}")"
 check "before relaunch: the extra repo is not mounted" \
     docker exec "${CTR_A2}" sh -c "! test -e '${EXTRA}'"
-docker stop -t 2 "${CTR_A2}" >/dev/null 2>&1
+check "an explicit docker stop leaves the agent container exited" bash -c \
+    "docker stop -t 2 '${CTR_A2}' >/dev/null 2>&1 && [ \"\$(docker inspect -f '{{.State.Status}}' '${CTR_A2}')\" = exited ]"
 ( cd "${REPO}" && "${T}" run --detach --session a --dir "${EXTRA}" sleep 600 >/dev/null 2>&1 )
 CTR_A3="$(wait_for_agent "${SID_A}")"
 check "relaunch of a stopped session creates a new agent container (#78)" \
@@ -192,7 +193,7 @@ check "relaunch hands the cage an allowlist that names the added --dir (#78)" \
     docker exec "${CTR_A3}" sh -c "printf '%s' \"\$TJOR_SAFE_DIRS\" | grep -qx '${EXTRA}'"
 check "the stopped container stays for gc; ls lists the session once, RUNNING (#78)" bash -c \
     "[ \"\$(docker ps -aq --filter label=tjor.role=agent --filter 'label=tjor.session=${SID_A}' | wc -l)\" -eq 2 ] \
-     && [ \"\$('${T}' ls 2>/dev/null | grep -c '${SID_A}')\" -eq 1 ] && '${T}' ls 2>/dev/null | grep '${SID_A}' | grep -q RUNNING"
+     && [ \"\$('${T}' ls 2>/dev/null | grep -c '^${SID_A} ')\" -eq 1 ] && '${T}' ls 2>/dev/null | grep '^${SID_A} ' | grep -q RUNNING"
 ( cd "${REPO}" && "${T}" down --session a >/dev/null 2>&1 )
 check "down after relaunch removes both agent containers" bash -c \
     "! docker ps -aq --filter 'label=tjor.session=${SID_A}' | grep -q ."
