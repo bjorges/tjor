@@ -12,3 +12,7 @@ node_modules/
 __pycache__/
 *.pyc
 .pytest_cache/
+
+# slides (Slidev): build outputs; the lockfile and symlinks ARE committed
+slides/dist/
+slides/presentations/*/dist/

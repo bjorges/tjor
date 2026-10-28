@@ -1,0 +1,112 @@
+name: slides
+
+# Build the Slidev decks under slides/ and publish them to GitHub Pages
+# (https://bjorges.github.io/tjor/). Three jobs, as in the playbook the setup
+# follows: check → build+assemble → deploy. Pull requests check and build but
+# never deploy. Separate from the test CI: a Pages failure never blocks tests,
+# and the spec↔slide consistency gate also runs in ci.yml's unit job so a
+# change to openspec/specs/ without a slide fails there too.
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'slides/**'
+      - 'openspec/specs/**'
+      - 'docs/decisions/**'
+      - 'docs/boundary-matrix.md'
+      - 'VERSION'
+      - 'tests/slides_consistency.sh'
+      - '.github/workflows/slides.yml'
+  pull_request:
+    paths:
+      - 'slides/**'
+      - 'openspec/specs/**'
+      - 'docs/decisions/**'
+      - 'docs/boundary-matrix.md'
+      - 'VERSION'
+      - 'tests/slides_consistency.sh'
+      - '.github/workflows/slides.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+# A superseded PR run is cancelled; a run on main is not, so a deploy in
+# flight is never cut off (the deploy job also serializes on the `pages` group).
+concurrency:
+  group: slides-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+# Actions pinned by commit SHA (charter L23: mutable tags are not pins).
+jobs:
+  check:
+    name: check (spec↔slide consistency, format)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - name: every spec capability has a reviewed slide (no node needed)
+        run: tests/slides_consistency.sh
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: slides/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: slides/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: slides
+      - run: pnpm format:check
+        working-directory: slides
+
+  build:
+    name: build + assemble
+    runs-on: ubuntu-latest
+    needs: [check]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: pnpm/action-setup@ea17c68df8912ef543352723c149a84f56e3d413 # v6.1.0
+        with:
+          package_json_file: slides/package.json
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: 24
+          cache: pnpm
+          cache-dependency-path: slides/pnpm-lock.yaml
+      - run: pnpm install --frozen-lockfile
+        working-directory: slides
+      - name: build every deck under its Pages base path
+        run: pnpm build
+        working-directory: slides
+        env:
+          # Project Pages serve at /<repo>/; each deck lands at /<repo>/<deck>/.
+          PAGES_BASE: /${{ github.event.repository.name }}
+      - name: assemble one site (landing page + every deck)
+        run: pnpm assemble
+        working-directory: slides
+        env:
+          PAGES_BASE: /${{ github.event.repository.name }}
+      - uses: actions/upload-pages-artifact@fc324d3547104276b827a68afc52ff2a11cc49c9 # v5.0.0
+        with:
+          path: slides/dist
+
+  deploy:
+    name: deploy to GitHub Pages
+    # Only main ships. PRs stop at build, and so does a workflow_dispatch run
+    # on any other branch (the event alone would let one through).
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    needs: [build]
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    steps:
+      - uses: actions/configure-pages@45bfe0192ca1faeb007ade9deae92b16b8254a0d # v6.0.0
+      - id: deployment
+        uses: actions/deploy-pages@368f82528645a54fb793d4d04e342629a3f51346 # v5.0.1

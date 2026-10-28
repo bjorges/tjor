@@ -8,9 +8,11 @@ on:
 permissions:
   contents: read
 
+# A superseded PR run is cancelled; a run on main is not, so every commit on
+# main keeps its own verdict (same rule as slides.yml).
 concurrency:
   group: ci-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 # Actions pinned by commit SHA (charter L23: mutable tags are not pins).
 jobs:
@@ -49,6 +51,8 @@ jobs:
         run: shellcheck --severity=warning bin/tjor images/agent/entrypoint.sh proxy/entrypoint.sh tests/*.sh tests/integration/*.sh
       - name: doc-consistency (README shipped markers vs roadmap table)
         run: tests/doc_consistency.sh
+      - name: slides-consistency (every spec capability has a reviewed slide)
+        run: tests/slides_consistency.sh
 
   agent-image:
     name: agent image (${{ matrix.harness }})

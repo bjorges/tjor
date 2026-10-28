@@ -3,6 +3,35 @@
 All notable changes to tjor. Versions follow [semver](https://semver.org);
 dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
+## [Unreleased]
+
+### Added
+- **Overview deck on GitHub Pages** (`slides/`): the problems tjor solves and
+  how, one or more slides per problem, every slide tagged with the OpenSpec
+  capability and ADRs it describes. Built with Slidev, published at
+  https://bjorges.github.io/tjor/overview/ by `slides.yml` on every merge to
+  `main` (pull requests build but never deploy).
+- **Spec↔slide consistency gate** (`tests/slides_consistency.sh`, in the CI
+  unit job): every capability under `openspec/specs/` must be tagged by a
+  slide, and the tag pins the spec file's content hash, so any change to a
+  spec fails CI until its slide is re-read and re-pinned. The map slide is
+  checked against the problem slides in both directions.
+- Contributor documentation: `CONTRIBUTING.md` (branch → pull request →
+  squash, the local gates, releasing, the repository settings that enforce
+  the flow), `SECURITY.md`, a pull-request template, `AGENTS.md` (loaded by
+  `CLAUDE.md` and the Copilot instructions), and Renovate configured for one
+  grouped weekly update.
+- Self-install test: symbolic links in the launcher tree are verified to
+  survive installation as links resolving inside the tree (boundary matrix:
+  262 checks). The writability check skips links, whose mode Linux cannot
+  change.
+
+### Changed
+- `ci.yml` cancels only superseded pull-request runs; a run on `main` keeps
+  its verdict.
+- README: AppArmor support is detected and announced; the profiles ship in a
+  later release (the wording implied they were active).
+
 ## [0.21.3] — 2026-09-28 — Worktree mounts: native layout only, explicit approval; git-check walks every root (v0.21.2 review)
 
 Review follow-ups for v0.21.2 (external review; both Criticals confirmed

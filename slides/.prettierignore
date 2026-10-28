@@ -1,0 +1,5 @@
+node_modules
+dist
+pnpm-lock.yaml
+# Deck markdown is hand-laid-out (Slidev slots, inline HTML); Prettier would reflow it.
+presentations/*/slides.md
