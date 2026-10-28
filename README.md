@@ -127,7 +127,10 @@ $ tjor reset cache --dry-run      # tiered state wipe: cache | sessions | creds 
 `tjor ls` re-verifies each running session's internal-only network and flags a
 tampered one as **DEGRADED**. `gc` only ever deletes docker resources it
 labelled — never your session state; wiping state is `reset`'s explicit,
-tiered, dry-runnable job.
+tiered, dry-runnable job. A session whose agent has exited or been stopped is
+relaunched with the same `tjor run --session <name>`: the agent container is
+created afresh from that command line, so a changed `--dir` list applies
+(verified, #78); the exited container stays until `gc` or `down`.
 
 ## Egress policy — and growing it
 

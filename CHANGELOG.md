@@ -26,6 +26,18 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
   262 checks). The writability check skips links, whose mode Linux cannot
   change.
 
+- Relaunch semantics verified and pinned down (#78): relaunching a session
+  whose agent exited or was stopped creates the agent container afresh from
+  the current command line, so a changed `--dir` list applies (mounted,
+  writable, in the sandbox allowlist and the git-check baseline); the
+  exited container stays until `gc` or `down`. Now a session-launch spec
+  scenario, a lifecycle integration check, and a README note.
+- Release guard in `tests/doc_consistency.sh`: `CHANGELOG.md` must open with
+  `## [Unreleased]`, and its newest release heading must name `VERSION` in
+  the `## [X.Y.Z] — YYYY-MM-DD — title` form the release workflow parses.
+  A release PR that bumps `VERSION` without renaming the heading fails CI
+  instead of producing a release with empty notes.
+
 ### Changed
 - `ci.yml` cancels only superseded pull-request runs; a run on `main` keeps
   its verdict.

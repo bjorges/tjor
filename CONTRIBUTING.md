@@ -51,8 +51,10 @@ merge; private vulnerability reporting enabled so the `SECURITY.md` link works.
 ## Releasing
 
 A release is a pull request like any other: bump `VERSION`, turn `## [Unreleased]` into the
-version's `CHANGELOG.md` heading (`## [X.Y.Z] — YYYY-MM-DD — title`), merge. Then tag the
-**merge commit on `main`** (squashing changes the SHA, so never tag the branch commit):
+version's `CHANGELOG.md` heading (`## [X.Y.Z] — YYYY-MM-DD — title`) and leave a fresh, empty
+`## [Unreleased]` above it (`tests/doc_consistency.sh` checks both, and that the heading names
+`VERSION`), merge. Then tag the **merge commit on `main`** (squashing changes the SHA, so never
+tag the branch commit):
 
 ```console
 $ git switch main && git pull
