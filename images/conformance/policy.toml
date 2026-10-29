@@ -6,6 +6,7 @@ mode = "strict-allow"
 allow = [
   "allowed.test", "*.allowed.test", "api.vendor.test",
   "echo-inject.tjor-test", "echo-noinject.tjor-test", "echo-broker.tjor-test",
+  "readonly.test",
 ]
 block = ["blocked.test", "*.telemetry.test"]
 
