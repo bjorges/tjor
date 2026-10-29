@@ -4,7 +4,7 @@
 
 ### Requirement: Denial is enforced before any request byte is forwarded
 
-The proxy SHALL compute the verdict, enforce a denial, and perform credential injection and identity handling once the request headers are read and before any part of the request is sent upstream. It SHALL negotiate HTTP/1.1 only, so every request declares its body at that point. A denied request with no body or a `Content-Length` at or below the streaming threshold SHALL get the 403 (body consumed, nothing forwarded, no `100 Continue`); otherwise its connection SHALL be closed without a response before any body byte is consumed.
+The proxy SHALL compute the verdict, enforce a denial, and perform credential injection and identity handling once the request headers are read and before any part of the request is sent upstream. It SHALL negotiate HTTP/1.1 only, so every request declares its body at that point. A denied request with no body or a bounded `Content-Length` SHALL get the 403, with nothing forwarded and no `100 Continue`; otherwise its connection SHALL be closed without a response before any body byte is consumed.
 
 #### Scenario: A large denied body is never forwarded
 - **WHEN** the agent sends a POST with a declared body above the streaming threshold to a denied URL
