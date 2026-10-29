@@ -576,3 +576,71 @@ For every mount root — the workspace, each `--dir` and each `--dir-ro` — who
 #### Scenario: A common directory already under a mount root needs no extra mount
 - **WHEN** the worktree and its main repository both lie under one writable mount root
 - **THEN** no additional mount is added and the launch announces none
+
+### Requirement: Launch records session metadata
+
+Every launch SHALL write a metadata file into the session's state root recording the workspace path, harness, profile (name or directory, or none), task id, the first and the most recent launch time, and the launch count. The write SHALL be atomic (a crash never leaves a torn file) and the file SHALL contain no credential or token. A state root created by an earlier version, with no metadata file, SHALL read as unknown metadata — never as an error.
+
+#### Scenario: First launch creates the metadata
+- **WHEN** a session is launched for the first time
+- **THEN** its state root holds a metadata file naming the workspace, harness, profile, task id, a first-launch time equal to the last-launch time, and a launch count of 1
+
+#### Scenario: Relaunch updates, never resets, the metadata
+- **WHEN** the same session is launched again, with a different task id
+- **THEN** the metadata keeps the first-launch time, updates the last-launch time and the task id, and increments the launch count
+
+#### Scenario: Legacy state root
+- **WHEN** a state root from an earlier version has no metadata file
+- **THEN** lifecycle commands treat its workspace, harness and launch times as unknown and proceed
+
+#### Scenario: Metadata holds no secret
+- **WHEN** a session is launched with a broker and an agent profile configured
+- **THEN** the metadata file contains no credential, token, key or CA material — only the fields named above
+
+### Requirement: Lifecycle commands create no session state
+
+Resolving a session name or id for any command other than `tjor run` SHALL NOT create, modify or touch anything under the session root. Only a launch creates a session's state directory, and only after its workspace, mount and profile gates have passed, so a launch refused there leaves no directory for a session that never existed.
+
+#### Scenario: A mistyped session name leaves nothing behind
+- **WHEN** `tjor prune --session typo --dry-run`, `tjor down --session typo` or `tjor reset cache --session typo` names a session that has no state directory
+- **THEN** no directory for it exists afterwards and the command reports that it found nothing to act on
+
+#### Scenario: Reading does not refresh a directory
+- **WHEN** `tjor ls --state` or `tjor prune --older-than 30d --dry-run` runs over an idle state directory
+- **THEN** the directory's last activity is the same before and after
+
+#### Scenario: A launch refused at a path gate leaves no directory
+- **WHEN** `tjor run --session fresh --dir /etc` is refused for the sensitive path, and `fresh` was never launched before
+- **THEN** no state directory for `fresh` exists afterwards and no lock for it is held
+
+#### Scenario: A launch refused at a profile gate leaves no directory
+- **WHEN** `tjor run --session fresh --profile nosuch` is refused for the unknown profile — likewise a `--profile-dir` that is not a directory, or a managed config that is not JSON — and `fresh` was never launched before
+- **THEN** no state directory for `fresh` exists afterwards and no lock for it is held
+
+### Requirement: A launch holds the session lock while it writes state
+
+From its first write into the session's state directory until the agent container exists, a launch SHALL hold a per-session lock stored outside the state directory. A launch that finds the lock held SHALL refuse, naming the lock and its holder, before writing into the state root or minting a credential. The lock SHALL be released when its holder exits, however it exits, and nothing is ever reclaimed from a dead holder; the stated residual is a process that inherited the holder's descriptor, which keeps the lock until it exits too (the launcher starts no such process). The lock path SHALL never be followed through a symbolic link: a link at the lock directory or the lock file is refused before anything is opened, and the holder's line is written through the held descriptor, never through the path.
+
+#### Scenario: Launch refused while the session is being pruned
+- **WHEN** `tjor prune --session a` holds the lock of session `a` and `tjor run --session a` starts
+- **THEN** the launch exits non-zero naming the lock and its holder, writes nothing into the state root, and mints no credential
+
+#### Scenario: A crashed holder leaves no lock
+- **WHEN** a launch of session `a` is killed while it holds the lock, before its agent container exists
+- **THEN** the next `tjor run --session a` or `tjor prune --session a` is not refused for the lock
+
+#### Scenario: A second launch of the same session is refused during the first one's setup
+- **WHEN** a launch of session `a` has taken the lock but not yet created its agent container, and a second `tjor run --session a` starts
+- **THEN** the second launch is refused naming the lock, instead of sharing the first one's credentials and topology
+
+#### Scenario: A refused launch releases the lock
+- **WHEN** a launch takes the lock and is then refused (a sensitive `--dir`, a missing image)
+- **THEN** the lock is released and the next launch of that session is not refused for it
+
+#### Scenario: A process that inherited the descriptor keeps the lock
+- **WHEN** a holder exits while a process it started still holds the lock's descriptor
+- **THEN** the lock stays held until that process exits, and a command refused meanwhile names the holder recorded in the lock file
+
+#### Scenario: A planted link at the lock path is refused, not followed
+- **WHEN** the lock file or the lock directory for a session is a symbolic link
+- **THEN** the command refuses before opening anything, and the link's target is neither truncated nor written

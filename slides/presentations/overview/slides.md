@@ -364,7 +364,7 @@ specs: [kernel-sandbox@51127809]
 ---
 layout: problem
 title: Git metadata that runs on your host
-specs: [git-tamper-detection@2d035d89]
+specs: [git-tamper-detection@0151ca0e]
 ---
 
 ::problem::
@@ -376,7 +376,7 @@ specs: [git-tamper-detection@2d035d89]
 
 - At launch, a **baseline** of every repo under a writable mount: dangerous keys with values, symlink status, worktree pointers, hook hashes, nested repos. Stored outside every mounted path.
 - A **check** at harness exit, at `tjor down` and on demand reports every add, change and removal with old and new values. It **fails closed**: an unparseable config or a new spot where the walk stopped is a finding.
-- A **pending marker** written before the agent starts survives crashes; `tjor ls` shows unchecked sessions. `--ack <token>` accepts exactly the reviewed state and nothing else.
+- A **pending marker** written before the agent starts survives crashes; `tjor ls` shows unchecked sessions. `--ack <token>` accepts exactly the reviewed state and nothing else; only an explicit per-session `tjor prune --discard-unreviewed` discards it unreviewed, and says so.
 
 <Plainly>
 <p>Detection, not prevention: a write fires in host git the moment it lands; this narrows the window, not closes it. Discovery stops <code>git_check_depth</code> levels down (32) or at an unreadable directory, announces each spot, and a repository planted below one is invisible. Keep <code>--ack</code> in human hands.</p>
@@ -385,7 +385,7 @@ specs: [git-tamper-detection@2d035d89]
 ---
 layout: problem
 title: Mounting the wrong directory
-specs: [session-launch@04a11994]
+specs: [session-launch@6f360a5f]
 ---
 
 ::problem::
@@ -499,7 +499,7 @@ Launches that behave the same every time, sessions as first-class objects, ident
 ---
 layout: problem
 title: A launch that behaves the same every time
-specs: [session-launch@04a11994]
+specs: [session-launch@6f360a5f]
 ---
 
 ::problem::
@@ -541,7 +541,7 @@ adrs: ['0004']
 ---
 layout: problem
 title: Sessions you can find, reattach, and clean up
-specs: [session-lifecycle@eb604e7d, session-launch@04a11994]
+specs: [session-lifecycle@36198502, session-launch@6f360a5f]
 adrs: ['0006']
 ---
 
@@ -555,17 +555,17 @@ adrs: ['0006']
 
 ```console
 $ tjor ls                     # all sessions, boundary re-checked
-$ tjor run --session review   # a second session, same repo
-$ tjor attach review          # reattach (detach: ctrl-p ctrl-q)
+$ tjor ls --state             # state dirs: containers, age, credentials
 $ tjor gc --dry-run           # reap what tjor labelled, never state
-$ tjor reset cache --dry-run  # cache | sessions | creds | all
+$ tjor prune --older-than 30d --dry-run   # delete state, explicitly
 ```
 
-- Containers are **detached and persistent**; durable state lives in the state root, so a container can be recreated without loss: relaunching a stopped session builds a new one from the current command line, and a changed `--dir` list applies.
-- `tjor ls` re-verifies each session's internal-only network and flags a tampered one **DEGRADED**.
+- Containers are **detached and persistent** (`tjor attach` reconnects); a stopped session relaunches without loss.
+- **State persists until you prune it**: one selector, dry-runnable, refused for a session with a container, an unreviewed git-check or a launch in progress.
+- `tjor ls` re-verifies each internal-only network and flags a tampered one **DEGRADED**.
 
 <Plainly>
-<p>A persistent container lingers until <code>tjor down</code> or <code>gc</code>: a longer compromise window, accepted because the boundary is time-invariant (ADR 0006). <code>gc</code> deletes only what tjor labelled.</p>
+<p>A persistent container lingers until <code>down</code> or <code>gc</code>: a longer compromise window, accepted because the boundary is time-invariant (ADR 0006). <code>prune</code> forgets credentials rather than revoking them, covers only the credential files tjor knows, and never sweeps what it could not read.</p>
 </Plainly>
 
 ---
