@@ -599,7 +599,7 @@ Every launch SHALL write a metadata file into the session's state root recording
 
 ### Requirement: Lifecycle commands create no session state
 
-Resolving a session name or id for any command other than `tjor run` SHALL NOT create, modify or touch anything under the session root. Only a launch creates a session's state directory, and only after every launch refusal has passed.
+Resolving a session name or id for any command other than `tjor run` SHALL NOT create, modify or touch anything under the session root. Only a launch creates a session's state directory, and only after its workspace, mount and profile gates have passed, so a launch refused there leaves no directory for a session that never existed.
 
 #### Scenario: A mistyped session name leaves nothing behind
 - **WHEN** `tjor prune --session typo --dry-run`, `tjor down --session typo` or `tjor reset cache --session typo` names a session that has no state directory
@@ -609,17 +609,21 @@ Resolving a session name or id for any command other than `tjor run` SHALL NOT c
 - **WHEN** `tjor ls --state` or `tjor prune --older-than 30d --dry-run` runs over an idle state directory
 - **THEN** the directory's last activity is the same before and after
 
+#### Scenario: A launch refused at a path gate leaves no directory
+- **WHEN** `tjor run --session fresh --dir /etc` is refused for the sensitive path, and `fresh` was never launched before
+- **THEN** no state directory for `fresh` exists afterwards and no lock for it is held
+
 ### Requirement: A launch holds the session lock while it writes state
 
-From its first write into the session's state directory until the agent container exists, a launch SHALL hold a per-session lock stored outside the state directory. A launch that finds the lock held by a live process SHALL refuse, naming the lock and its holder, before writing into the state root or minting a credential. A lock left by a process that no longer exists SHALL be cleared with a message. The lock SHALL be released on every exit path of the launch.
+From its first write into the session's state directory until the agent container exists, a launch SHALL hold a per-session lock stored outside the state directory. A launch that finds the lock held SHALL refuse, naming the lock and its holder, before writing into the state root or minting a credential. The lock SHALL be released when its holder exits, however it exits: no lock outlives the command that took it, and nothing is ever reclaimed from a dead holder.
 
 #### Scenario: Launch refused while the session is being pruned
 - **WHEN** `tjor prune --session a` holds the lock of session `a` and `tjor run --session a` starts
 - **THEN** the launch exits non-zero naming the lock and its holder, writes nothing into the state root, and mints no credential
 
-#### Scenario: A stale lock does not block a launch
-- **WHEN** the lock of session `a` names a process that no longer exists
-- **THEN** `tjor run --session a` clears it, says so, and proceeds
+#### Scenario: A crashed holder leaves no lock
+- **WHEN** a launch of session `a` is killed while it holds the lock, before its agent container exists
+- **THEN** the next `tjor run --session a` or `tjor prune --session a` is not refused for the lock
 
 #### Scenario: A second launch of the same session is refused during the first one's setup
 - **WHEN** a launch of session `a` has taken the lock but not yet created its agent container, and a second `tjor run --session a` starts

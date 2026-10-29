@@ -16,7 +16,7 @@ check() { local msg="$1"; shift; if "$@" >/dev/null 2>&1; then ok "${msg}"; else
 WORK="${HOME}/.tjor/tmp/state-$$"; mkdir -p "${WORK}"; WORK="$(cd "${WORK}" && pwd -P)"
 HOLD_PID=""
 # shellcheck disable=SC2329  # invoked via the EXIT trap
-cleanup() { [[ -n "${HOLD_PID}" ]] && kill "${HOLD_PID}" 2>/dev/null; chmod -R u+rwx "${WORK}" 2>/dev/null || true; rm -rf "${WORK}"; }
+cleanup() { [[ -n "${HOLD_PID}" ]] && kill -9 "${HOLD_PID}" 2>/dev/null; jobs -p | xargs -r kill -9 2>/dev/null; chmod -R u+rwx "${WORK}" 2>/dev/null || true; rm -rf "${WORK}"; }
 trap cleanup EXIT
 export GIT_CEILING_DIRECTORIES="${WORK}"
 MOCKBIN="${WORK}/bin"; mkdir -p "${MOCKBIN}"
@@ -87,31 +87,39 @@ PY
 }
 newest() { python3 -c 'import os,sys; print(max(os.lstat(os.path.join(dp,n)).st_mtime_ns for dp,dns,fns in os.walk(sys.argv[1]) for n in dns+fns))' "$1"; }
 
-# === 1. the per-session lock ===================================================
+# === 1. the per-session lock (a kernel flock: nothing stale outlives a holder) ===
 LOCK="${STATE}/.locks/$(sid l)"
-session_lock_acquire "$(sid l)" test >/dev/null 2>&1
-check "lock: acquire creates <root>/.locks/<sid> with our pid" grep -q "^pid=$$ cmd=test\$" "${LOCK}/owner"
-session_lock_release "$(sid l)"
-check "lock: release removes our lock" bash -c "! test -e '${LOCK}'"
-sleep 300 & HOLD_PID=$!
-mkdir -p "${LOCK}"; printf 'pid=%s cmd=run\n' "${HOLD_PID}" > "${LOCK}/owner"
-refuse_check "lock: held by a live process -> refused, naming the lock" \
-    "grep -q 'locked by another tjor command' '${OUT}' && grep -q '${LOCK}' '${OUT}' && test -e '${LOCK}/owner'" \
-    session_lock_acquire "$(sid l)" prune
-session_lock_release "$(sid l)"
-check "lock: release never removes someone else's lock" test -e "${LOCK}/owner"
-kill "${HOLD_PID}"; wait "${HOLD_PID}" 2>/dev/null || true; HOLD_PID=""
-DEAD="$(bash -c 'echo $$')"
-printf 'pid=%s cmd=run\n' "${DEAD}" > "${LOCK}/owner"
-session_lock_acquire "$(sid l)" prune 2>"${OUT}" && ACQ=0 || ACQ=1
-check "lock: left by a dead process -> cleared, said, acquired" bash -c \
-    "[ ${ACQ} -eq 0 ] && grep -q 'clearing stale session lock' '${OUT}' && grep -q '^pid=$$ ' '${LOCK}/owner'"
-session_lock_release "$(sid l)"
-mkdir -p "${LOCK}"; : > "${LOCK}/owner"
-refuse_check "lock: an empty owner (holder mid-write) counts as held" "true" session_lock_acquire "$(sid l)" prune
-rm -rf "${LOCK}"
-SECONDS=0; TJOR_TEST_HOLD_LOCK=1 session_lock_acquire "$(sid l)" test >/dev/null 2>&1; session_lock_release "$(sid l)"
-check "lock: TJOR_TEST_HOLD_LOCK holds the lock after acquiring (test seam)" test "${SECONDS}" -ge 1
+HELPER="${ROOT}/python/tjor_state.py"; export HELPER   # the contenders below run in fresh bash -c processes
+contend() { bash -c 'exec 7>>"$1"; python3 "$2" lock-try 7' _ "$1" "${HELPER}"; }   # a separate process tries the lock once
+hold_lock() { # $1 lock file -> pid of a separate process holding it until killed
+    bash -c 'exec 7>>"$1"; python3 "$2" lock-try 7 >/dev/null 2>&1 || exit 1; printf "pid=%s cmd=holder\n" "$$" > "$1"; exec sleep 300' _ "$1" "${HELPER}" >/dev/null 2>&1 &   # exec: no child inherits the descriptor, so a kill frees the lock at once
+    echo $!
+}
+wait_for_file() { local f="$1" n="${2:-100}" i; for ((i = 0; i < n; i++)); do [[ -e "${f}" ]] && return 0; sleep 0.1; done; return 1; }
+session_lock_acquire "${STATE}" "$(sid l)" test >/dev/null 2>&1
+check "lock: acquire creates <root>/.locks/<sid> holding our pid and command" grep -q "^pid=$$ cmd=test\$" "${LOCK}"
+check "lock: a second process is refused while we hold it" bash -c "$(declare -f contend); ! contend '${LOCK}' 2>/dev/null"
+session_lock_release
+check "lock: our release frees it for another process" bash -c "$(declare -f contend); contend '${LOCK}' 2>/dev/null"
+check "lock: release with nothing held is a no-op" session_lock_release
+HOLD_PID="$(hold_lock "${LOCK}")"; sleep 0.5
+refuse_check "lock: held by a live process -> refused, naming the lock and its holder" \
+    "grep -q 'locked by another tjor command' '${OUT}' && grep -q 'cmd=holder' '${OUT}' && grep -q '${LOCK}' '${OUT}'" \
+    session_lock_acquire "${STATE}" "$(sid l)" prune
+check "lock: a refused acquire holds no descriptor of its own" test -z "${TJOR_LOCK_FD}"
+kill -9 "${HOLD_PID}"; wait "${HOLD_PID}" 2>/dev/null || true; HOLD_PID=""
+check "lock: a holder killed -9 leaves nothing stale; the next acquire succeeds at once (no reclaim step)" \
+    session_lock_acquire "${STATE}" "$(sid l)" prune
+session_lock_release
+( for _ in 1 2 3; do ( bash -c 'exec 7>>"$1"; python3 "$2" lock-try 7 >/dev/null 2>&1 && echo got; sleep 1' _ "${LOCK}" "${HELPER}" ) & done; wait ) > "${OUT}" 2>&1
+check "lock: three simultaneous contenders -> exactly one acquires" test "$(grep -c '^got$' "${OUT}")" -eq 1
+READY="${WORK}/ready"; RELEASE="${WORK}/release"; rm -f "${READY}" "${RELEASE}"
+( TJOR_TEST_HOLD_LOCK=30 TJOR_TEST_HOLD_LOCK_READY="${READY}" TJOR_TEST_HOLD_LOCK_RELEASE="${RELEASE}" session_lock_acquire "${STATE}" "$(sid l)" test >/dev/null 2>&1; sleep 0.2 ) &
+HOLD_PID=$!
+check "lock: the test seam signals readiness once it holds the lock" wait_for_file "${READY}"
+check "lock: ... and holds it until released" bash -c "$(declare -f contend); ! contend '${LOCK}' 2>/dev/null"
+SECONDS=0; : > "${RELEASE}"; wait "${HOLD_PID}" || true; HOLD_PID=""
+check "lock: the release file ends the hold promptly (no fixed sleep)" test "${SECONDS}" -lt 5
 
 # === 2. lifecycle commands create no state ====================================
 ( cd "${HOME}/proj" && resolve_session opencode "" never >/dev/null 2>&1 )
@@ -122,6 +130,9 @@ run cmd_reset cache --session never
 check "reset of a never-launched session: nothing to delete, no directory left behind" bash -c "grep -q 'nothing to delete' '${OUT}' && ! test -e '$(sdir never)'"
 run cmd_prune --session never --dry-run
 check "prune --session of a never-launched session: no state directory, none created" bash -c "grep -q 'no state directory' '${OUT}' && ! test -e '$(sdir never)' && ! test -e '${STATE}/.locks/$(sid never)'"
+refuse_check "a launch of a never-launched session refused at a path gate (--dir /etc) creates no state directory and holds no lock" \
+    "! test -e '$(sdir fresh)' && grep -q 'refusing' '${OUT}' && $(declare -f contend); contend '${STATE}/.locks/$(sid fresh)' 2>/dev/null" \
+    cmd_run --detach --session fresh --dir /etc sleep 1
 
 # === 3. reset reads the tier from the helper, and dies when it cannot ==========
 plant r
@@ -130,12 +141,26 @@ check "reset creds (dry) lists every credential-tier path incl. Claude Code's" b
     "grep -q 'would delete .*broker\$' '${OUT}' && grep -q 'home/.claude/.credentials.json' '${OUT}' && grep -q 'home/.claude.json' '${OUT}' && grep -q 'home/.claude/backups' '${OUT}' && grep -q 'home/.config/gh' '${OUT}'"
 python3() { if [[ "${1:-}" == *tjor_state.py && "${2:-}" == tier ]]; then echo "mock helper crash" >&2; return 1; fi; command python3 "$@"; }
 refuse_check "reset dies before deleting anything when the state helper fails" \
-    "grep -q 'state helper failed' '${OUT}' && test -f '$(sdir r)/home/.cache/c1' && ! test -e '${STATE}/.locks/$(sid r)'" \
+    "grep -q 'state helper failed' '${OUT}' && test -f '$(sdir r)/home/.cache/c1' && $(declare -f contend); contend '${STATE}/.locks/$(sid r)' 2>/dev/null" \
     cmd_reset cache --session r
 unset -f python3
+TJOR_MOCK_DOCKER_FAIL=1
+refuse_check "reset dies when the container query fails (under the lock), deleting nothing" \
+    "grep -q 'cannot query containers' '${OUT}' && test -f '$(sdir r)/home/.cache/c1'" cmd_reset cache --session r
+TJOR_MOCK_DOCKER_FAIL=""
+TJOR_MOCK_CONTAINERS="$(sid r) running"
+refuse_check "reset refuses a running agent (checked under the lock)" \
+    "grep -q 'running agent' '${OUT}' && test -f '$(sdir r)/home/.cache/c1'" cmd_reset cache --session r
+TJOR_MOCK_CONTAINERS=""
+: > "$(sdir r)/gitcheck/pending"
+refuse_check "reset all refuses while the git-check marker is pending and names the explicit way out" \
+    "grep -q 'pending git-check' '${OUT}' && grep -q 'prune --session $(sid r) --discard-unreviewed' '${OUT}' && test -d '$(sdir r)'" cmd_reset all --session r
 run cmd_reset cache --session r
-check "reset still deletes its tier and leaves no lock behind" bash -c "! test -e '$(sdir r)/home/.cache' && ! test -e '${STATE}/.locks/$(sid r)'"
-rm -rf "$(sdir r)"
+check "reset below all still deletes its tier under a pending marker, and releases the lock" bash -c \
+    "! test -e '$(sdir r)/home/.cache' && test -f '$(sdir r)/gitcheck/pending' && $(declare -f contend); contend '${STATE}/.locks/$(sid r)' 2>/dev/null"
+rm -f "$(sdir r)/gitcheck/pending"
+run cmd_reset all --session r
+check "reset all removes the directory once the marker is gone" bash -c "! test -e '$(sdir r)'"
 
 # === 4. prune: selectors ======================================================
 plant old; age_all "$(sdir old)" $((40 * 86400))
@@ -155,6 +180,16 @@ check "prune (dry) refreshes no timestamp" test "$(newest "$(sdir old)")" = "${B
 run cmd_prune --older-than 30d
 check "prune --older-than removes only the old directory and says the broker credential is forgotten, not revoked" bash -c \
     "! test -e '$(sdir old)' && test -d '$(sdir fresh)' && grep -q 'removed $(sdir old)' '${OUT}' && grep -q 'forgotten, not revoked' '${OUT}'"
+plant old2; age_all "$(sdir old2)" $((40 * 86400))
+rm -f "${READY}" "${RELEASE}"
+( TJOR_TEST_HOLD_LOCK=30 TJOR_TEST_HOLD_LOCK_READY="${READY}" TJOR_TEST_HOLD_LOCK_RELEASE="${RELEASE}" run cmd_prune --older-than 30d ) &
+HOLD_PID=$!
+wait_for_file "${READY}" || bad "prune never signalled it holds the lock"
+echo new > "$(sdir old2)/home/fresh-activity"   # the session becomes active after it was selected
+: > "${RELEASE}"; wait "${HOLD_PID}" || true; HOLD_PID=""
+check "prune --older-than rechecks last activity under the lock: a session active since selection is skipped, not removed" bash -c \
+    "grep -q 'skipped: $(sid old2) — active since it was selected' '${OUT}' && test -d '$(sdir old2)'"
+rm -rf "$(sdir old2)"
 if [[ "$(id -u)" != 0 ]]; then
     plant unread; age_all "$(sdir unread)" $((40 * 86400)); chmod 000 "$(sdir unread)/home/.local"
     run cmd_prune --older-than 0d --dry-run
@@ -179,16 +214,16 @@ refuse_check "prune refuses when the container query fails, never assuming none"
     "grep -q 'container query failed' '${OUT}' && test -d '$(sdir used)'" cmd_prune --session used
 refuse_check "ls --state fails when the container query fails, never guessing" "grep -q 'refusing to guess' '${OUT}'" cmd_ls --state
 TJOR_MOCK_DOCKER_FAIL=""
-check "prune leaves no lock behind after a refusal" bash -c "! test -e '${STATE}/.locks/$(sid used)'"
-sleep 300 & HOLD_PID=$!
-mkdir -p "${STATE}/.locks/$(sid used)"; printf 'pid=%s cmd=run\n' "${HOLD_PID}" > "${STATE}/.locks/$(sid used)/owner"
-refuse_check "prune refuses a session whose lock a live launch holds" \
-    "grep -q 'refused: $(sid used) — locked' '${OUT}' && test -d '$(sdir used)'" cmd_prune --session used
-kill "${HOLD_PID}"; wait "${HOLD_PID}" 2>/dev/null || true; HOLD_PID=""
-printf 'pid=%s cmd=run\n' "${DEAD}" > "${STATE}/.locks/$(sid used)/owner"
+check "prune holds no lock after a refusal" bash -c "$(declare -f contend); contend '${STATE}/.locks/$(sid used)' 2>/dev/null"
+HOLD_PID="$(hold_lock "${STATE}/.locks/$(sid used)")"; sleep 0.5
+refuse_check "prune refuses a session whose lock another command holds, naming the holder" \
+    "grep -q 'refused: $(sid used) — locked' '${OUT}' && grep -q 'cmd=holder' '${OUT}' && test -d '$(sdir used)'" cmd_prune --session used
+refuse_check "prune --dry-run reports the held lock too (the preview matches the real run)" \
+    "grep -q 'refused: $(sid used) — locked' '${OUT}' && test -d '$(sdir used)'" cmd_prune --session used --dry-run
+kill -9 "${HOLD_PID}"; wait "${HOLD_PID}" 2>/dev/null || true; HOLD_PID=""
 : > "$(sdir used)/gitcheck/pending"
-refuse_check "prune clears a stale lock, then refuses the pending git-check marker and names the review command" \
-    "grep -q 'clearing stale session lock' '${OUT}' && grep -q 'git-check pending' '${OUT}' && grep -q 'tjor git-check --session $(sid used)' '${OUT}' && test -d '$(sdir used)' && ! test -e '${STATE}/.locks/$(sid used)'" \
+refuse_check "after the holder died prune proceeds to its checks: the pending git-check marker refuses and names the review command" \
+    "! grep -q 'locked' '${OUT}' && grep -q 'git-check pending' '${OUT}' && grep -q 'tjor git-check --session $(sid used)' '${OUT}' && test -d '$(sdir used)'" \
     cmd_prune --session used
 age_all "$(sdir used)" $((40 * 86400))
 refuse_check "prune --older-than leaves a pending session in place (and exits non-zero)" \

@@ -86,13 +86,45 @@ def parse_duration(text: str) -> int:
 
 
 def read_meta(state_dir: str) -> dict | None:
-    """The metadata file, or None when absent or unreadable (legacy state)."""
+    """The metadata file, or None when absent, unreadable, or a symlink
+    (legacy state reads as unknown; a planted link is never followed)."""
     try:
-        with open(os.path.join(state_dir, META_NAME), encoding="utf-8") as f:
+        fd = os.open(os.path.join(state_dir, META_NAME), os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError:
+        return None
+    try:
+        with os.fdopen(fd, encoding="utf-8") as f:
             meta = json.load(f)
     except (OSError, ValueError):
         return None
     return meta if isinstance(meta, dict) else None
+
+
+def activity(state_dir: str) -> int | None:
+    """Last activity of one state directory, as the inventory computes it:
+    the full lstat walk floored by the recorded last launch; None if unknown."""
+    last = last_activity(state_dir)
+    meta = read_meta(state_dir) or {}
+    if last is not None and isinstance(meta.get("last_launch"), int):
+        last = max(last, meta["last_launch"])
+    return last
+
+
+def lock_try(fd: int) -> int:
+    """Take an exclusive, non-blocking flock on an inherited descriptor.
+    The lock belongs to the OPEN FILE DESCRIPTION the launcher keeps open, so
+    it outlives this process and the kernel drops it when every descriptor
+    on it closes - a crashed holder leaves nothing stale. 0 = acquired,
+    1 = held elsewhere, 2 = the descriptor is not usable."""
+    import fcntl
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        return 1
+    except OSError as e:
+        print(f"tjor_state: lock-try: {e}", file=sys.stderr)
+        return 2
+    return 0
 
 
 def write_meta(state_dir: str, *, session: str, workspace: str, harness: str,
@@ -180,10 +212,7 @@ def inventory(root: str) -> list[dict]:
             rec["workspace"] = meta.get("workspace") if isinstance(meta.get("workspace"), str) else None
             rec["harness"] = meta.get("harness") if isinstance(meta.get("harness"), str) else None
             rec["launches"] = meta.get("launches") if isinstance(meta.get("launches"), int) else None
-            last = last_activity(path)
-            if last is not None and isinstance(meta.get("last_launch"), int):
-                last = max(last, meta["last_launch"])
-            rec["last_active"] = last
+            rec["last_active"] = activity(path)
             rec["creds"] = creds_present(path)
         records.append(rec)
     return records
@@ -222,7 +251,7 @@ USAGE = ("usage: tjor_state.py tier {cache|sessions|creds|all} STATE_DIR"
          " | duration TEXT"
          " | meta-write STATE_DIR --session ID --workspace PATH --harness NAME"
          " [--profile-name NAME | --profile-dir PATH] [--task ID]"
-         " | inventory ROOT")
+         " | inventory ROOT | activity STATE_DIR | lock-try FD")
 
 
 def main(argv: list[str]) -> int:
@@ -257,6 +286,14 @@ def main(argv: list[str]) -> int:
             if lines:
                 print("\n".join(lines))
             return 0
+        if cmd == "activity" and len(argv) == 3:
+            if not os.path.isdir(argv[2]):
+                print(f"tjor_state: not a directory: {argv[2]}", file=sys.stderr)
+                return 1
+            print(_field(activity(argv[2])))
+            return 0
+        if cmd == "lock-try" and len(argv) == 3 and argv[2].isdigit():
+            return lock_try(int(argv[2]))
     except (OSError, StateError) as e:
         print(f"tjor_state: {e}", file=sys.stderr)
         return 1

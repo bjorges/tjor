@@ -161,6 +161,18 @@ Lifecycle commands taking `--session` (`down`, `status`, `denials`, `reset`) SHA
 - **WHEN** a launch of session `a` holds its lock and `tjor prune --session a` runs
 - **THEN** the session is refused naming the lock and its holder, and nothing of it is removed
 
+### Requirement: Prune decides under the lock
+
+Age selection is discovery only: for every session selected by `--older-than`, prune SHALL recompute last activity under the session lock and SHALL skip a session that became active since it was selected. A dry run SHALL take the lock the same way, so it reports a held lock exactly where a real run would refuse.
+
+#### Scenario: A session that became active is skipped
+- **WHEN** a session selected by `--older-than 30d` is written to after selection and before prune reaches it
+- **THEN** prune reports it as skipped and removes nothing of it
+
+#### Scenario: A dry run reports a held lock
+- **WHEN** a launch of session `a` holds its lock and `tjor prune --session a --dry-run` runs
+- **THEN** the dry run reports the session as refused for the lock
+
 ### Requirement: Prune refuses unreviewed state unless told so per session
 
 `tjor prune` SHALL refuse whole-directory deletion of a session whose git-check marker is pending unless `--discard-unreviewed` is given. That flag SHALL be accepted only together with `--session`, never with `--older-than`, so an age sweep cannot discard unreviewed evidence. `--creds-only` removes no git-check evidence and SHALL NOT be refused by a pending marker.

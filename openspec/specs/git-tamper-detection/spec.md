@@ -49,7 +49,7 @@ A check SHALL re-snapshot the baseline's repositories and report, per repository
 
 The launcher SHALL run the check when an attached session's harness exits, at `tjor down`, and on demand via `tjor git-check [<repo> | --session <id>] [--ack [<token>]] [--json]`. `tjor git-check <repo>` SHALL locate every session baseline that covers that repository; with no argument it SHALL use the current workspace's session. The pending marker SHALL be cleared only by a clean check or by an acknowledgement; a check with findings — on the human path and on `--json` alike — SHALL set it (creating it when absent) and say so. Findings SHALL be printed with a token that names exactly that set of findings; `--ack <token>` SHALL accept the current state as the new baseline only when the token matches the current findings, so acknowledged findings are not reported again while anything written afterwards is. A bare `--ack` while findings exist, a wrong token, or a stale token (the state changed since it was issued) SHALL show the findings and the current token and refuse. `tjor git-check` SHALL exit non-zero when findings exist or an acknowledgement is refused, and zero after an accepted acknowledgement, so it can serve as a pre-use gate in the operator's own shell; tjor SHALL NOT install such a hook itself. `--json` output SHALL be an object carrying the findings, the token and the incomplete spots, sanitized like the terminal output. Teardown SHALL still complete when findings exist.
 
-Exactly one other path removes a pending marker: `tjor prune --session <id> --discard-unreviewed` deletes the session's whole state directory — baseline and marker together — and SHALL say that unreviewed findings were discarded. An age-based prune, a credential-only prune, `tjor reset` of any tier below `all`, and every other command SHALL leave a pending marker and its baseline in place.
+Exactly one other path removes a pending marker: `tjor prune --session <id> --discard-unreviewed` deletes the session's whole state directory — baseline and marker together — and SHALL say that unreviewed findings were discarded. An age-based prune, a credential-only prune, `tjor reset` (whose `all` tier SHALL refuse while the marker is pending, naming that path) and every other command SHALL leave a pending marker and its baseline in place.
 
 #### Scenario: Findings keep the marker
 - **WHEN** `tjor git-check --session <id>` finds a dangerous key
@@ -73,7 +73,7 @@ Exactly one other path removes a pending marker: `tjor prune --session <id> --di
 
 #### Scenario: Only an explicit per-session prune discards a pending marker
 - **WHEN** a session's marker is pending and it has no container
-- **THEN** `tjor prune --older-than 0d` and `tjor prune --session <id> --creds-only` leave the baseline and the marker in place, and `tjor prune --session <id> --discard-unreviewed` removes the directory and reports that unreviewed findings were discarded
+- **THEN** `tjor prune --older-than 0d`, `tjor prune --session <id> --creds-only` and `tjor reset all --session <id>` (refused) leave the baseline and the marker in place, and `tjor prune --session <id> --discard-unreviewed` removes the directory and reports that unreviewed findings were discarded
 
 ### Requirement: Unchecked sessions are surfaced
 

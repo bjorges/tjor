@@ -4,8 +4,10 @@
 # state survival, relaunch of a stopped session with a changed --dir list (#78),
 # every reset tier including a symlink-escape attempt, and the state-root
 # inventory and prune with a real launch interleaved against the session lock
-# (#68). LIFECYCLE_SESSION_ROOT (with a matching TJOR_USER_CONFIG) points the
-# #68 section at a scratch session root; CI uses the default.
+# (#68). The suite OWNS its session root: a scratch root under $HOME (the
+# Docker VM shares $HOME; /tmp is not shared) selected through
+# TJOR_USER_CONFIG, so the age sweep in section 6 can never reach an
+# operator's real ~/.tjor/sessions (review round 2).
 set -euo pipefail
 
 T="${TJOR_BIN:-$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)/bin/tjor}"
@@ -14,6 +16,14 @@ OUTSIDE="${HOME}/.tjor/tmp/lifecycle-outside"
 EXTRA="${HOME}/.tjor/tmp/lifecycle-extra"     # a repo added by --dir on relaunch (#78)
 FAKE_SID="fakedeg"
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/tjor-lifecycle.XXXXXX")"
+SROOT="${HOME}/.tjor/tmp/lifecycle-sessions"            # this suite's own session root (never the real one)
+# The config lives in its OWN directory: the sensitive-path gate treats the
+# directory of TJOR_USER_CONFIG as tjor's config dir and refuses everything
+# under it, which would include the test repo if the file sat in ~/.tjor/tmp.
+LIFECYCLE_CONFIG_DIR="${HOME}/.tjor/tmp/lifecycle-config"
+mkdir -p "${SROOT}" "${LIFECYCLE_CONFIG_DIR}"
+printf '[session]\nroot = "%s"\n' "${SROOT}" > "${LIFECYCLE_CONFIG_DIR}/config.toml"
+export TJOR_USER_CONFIG="${LIFECYCLE_CONFIG_DIR}/config.toml"
 PASS=0; FAIL=0
 
 ok()  { echo "ok   $1"; PASS=$((PASS + 1)); }
@@ -39,9 +49,7 @@ cleanup() {
         docker network rm "tjor-${sid}_internal" >/dev/null 2>&1
     done
     docker network rm "tjor-${FAKE_SID}_internal" >/dev/null 2>&1
-    rm -rf "${REPO}" "${OUTSIDE}" "${EXTRA}" "${SCRATCH}" "${HOME}"/.tjor/sessions/lifecycle-repo-* \
-        "${HOME}"/.tjor/sessions/.locks/lifecycle-repo-* "${LIFECYCLE_SESSION_ROOT:-/nonexistent}"/lifecycle-repo-* \
-        "${LIFECYCLE_SESSION_ROOT:-/nonexistent}"/.locks/lifecycle-repo-*
+    rm -rf "${REPO}" "${OUTSIDE}" "${EXTRA}" "${SCRATCH}" "${SROOT}" "${LIFECYCLE_CONFIG_DIR}"
 }
 trap cleanup EXIT
 
@@ -85,7 +93,7 @@ check "distinct identity in-cage" test \
 check "distinct internal networks" \
     docker network inspect "tjor-${SID_A}_internal" "tjor-${SID_B}_internal"
 check "distinct state roots" bash -c \
-    "test -d '${HOME}/.tjor/sessions/${SID_A}/home' && test -d '${HOME}/.tjor/sessions/${SID_B}/home'"
+    "test -d '${SROOT}/${SID_A}/home' && test -d '${SROOT}/${SID_B}/home'"
 check "relaunching a running session id is refused (collision guard)" bash -c \
     "cd '${REPO}' && ! '${T}' run --detach --session a sleep 60 >/dev/null 2>&1"
 check "reset refuses a running session (TOCTOU guard)" bash -c \
@@ -138,7 +146,7 @@ check "foreign-id launch refusal created no phantom container" bash -c \
 check "down with the fully-qualified id tears down the REAL session" bash -c \
     "! docker ps -aq --filter 'label=tjor.session=${SID_C}' | grep -q ."
 check "no doubled phantom id was constructed" bash -c \
-    "! docker ps -aq --filter 'label=tjor.session=${BASE_SID}-${SID_C}' | grep -q . && ! test -d '${HOME}/.tjor/sessions/${BASE_SID}-${SID_C}'"
+    "! docker ps -aq --filter 'label=tjor.session=${BASE_SID}-${SID_C}' | grep -q . && ! test -d '${SROOT}/${BASE_SID}-${SID_C}'"
 "${T}" run --detach --session c sleep 600 >/dev/null 2>&1
 wait_for_agent "${SID_C}" >/dev/null || { echo "FATAL: session c never restarted"; exit 1; }
 check "down with the qualified id works from a DIFFERENT cwd" bash -c \
@@ -156,7 +164,7 @@ check "the truncated-id refusal exits nonzero" bash -c \
 "${T}" gc --age 0 --dry-run > "${SCRATCH}/gc0.out" 2>&1
 check "gc dry-run reaps nothing while sessions run" bash -c \
     "! grep -q 'would tear down session ${SID_A}' '${SCRATCH}/gc0.out'"
-echo marker > "${HOME}/.tjor/sessions/${SID_A}/gc-survivor"
+echo marker > "${SROOT}/${SID_A}/gc-survivor"
 docker rm -f "${CTR_A}" tjor-lifecycle-fake >/dev/null 2>&1
 "${T}" gc --age 0 --dry-run > "${SCRATCH}/gc1.out" 2>&1
 check "gc dry-run lists the idle session" \
@@ -170,10 +178,10 @@ check "gc removed the idle session's networks" bash -c \
 check "gc removed the sabotaged orphan network" bash -c \
     "! docker network inspect 'tjor-${FAKE_SID}_internal'"
 check "gc left running session b alone" bash -c "docker ps -q --no-trunc | grep -q '${CTR_B}'"
-check "gc never touches state dirs" test -f "${HOME}/.tjor/sessions/${SID_A}/gc-survivor"
+check "gc never touches state dirs" test -f "${SROOT}/${SID_A}/gc-survivor"
 
 ( cd "${REPO}" && "${T}" run --session a true >/dev/null 2>&1 )
-check "session resumes after gc, state intact" test -f "${HOME}/.tjor/sessions/${SID_A}/gc-survivor"
+check "session resumes after gc, state intact" test -f "${SROOT}/${SID_A}/gc-survivor"
 ( cd "${REPO}" && "${T}" down --session a >/dev/null 2>&1 )
 
 # ---- 4b. relaunch of a STOPPED session applies the current --dir list (#78) ----
@@ -204,7 +212,7 @@ check "down after relaunch removes both agent containers" bash -c \
     "! docker ps -aq --filter 'label=tjor.session=${SID_A}' | grep -q ."
 
 # ---- 5. reset ------------------------------------------------------------------
-SDIR="${HOME}/.tjor/sessions/${SID_A}"
+SDIR="${SROOT}/${SID_A}"
 mkdir -p "${SDIR}/home/.local/state" "${SDIR}/home/.local/share/opencode/storage" "${SDIR}/home/.config/gh"
 echo x > "${SDIR}/home/.local/state/s1"
 echo x > "${SDIR}/home/.local/share/opencode/storage/h1"
@@ -255,8 +263,9 @@ check "reset all removed the state dir" bash -c "! test -d '${SDIR}'"
 
 # ---- 6. state inventory + prune (#68) ------------------------------------------
 # Session a: no containers, no state dir (reset all above). Session b: running.
-SROOT="${LIFECYCLE_SESSION_ROOT:-${HOME}/.tjor/sessions}"
 SDIR_A="${SROOT}/${SID_A}"; SDIR_B="${SROOT}/${SID_B}"
+wait_for_file() { local f="$1" n="${2:-300}" i; for ((i = 0; i < n; i++)); do [[ -e "${f}" ]] && return 0; sleep 0.1; done; return 1; }
+lock_free() { bash -c 'exec 7>>"$1"; python3 "$2" lock-try 7' _ "${SROOT}/.locks/$1" "$(dirname "${T}")/../python/tjor_state.py"; }   # a separate process can take it
 age_tree() { # $1 dir, $2 days -> every lstat time under it set that old (deep files stay the newest signal)
     python3 - "$1" "$2" <<'PY'
 import os, sys, time
@@ -276,6 +285,8 @@ PY
 ( cd "${REPO}" && "${T}" prune --session never --dry-run >/dev/null 2>&1 ) || true
 check "lifecycle commands naming a never-launched session create no state directory (#68)" bash -c \
     "! test -e '${SROOT}/${BASE_SID}-never' && ! test -e '${SROOT}/.locks/${BASE_SID}-never'"
+check "a launch of a never-launched session refused at a path gate (--dir /etc) creates no state directory and holds no lock (#68)" bash -c \
+    "cd '${REPO}' && ! '${T}' run --detach --session fresh --dir /etc sleep 1 >/dev/null 2>&1 && ! test -e '${SROOT}/${BASE_SID}-fresh' && $(declare -f lock_free); SROOT='${SROOT}'; T='${T}'; lock_free '${BASE_SID}-fresh' >/dev/null 2>&1"
 # (b) metadata from the real launch; inventory of a legacy dir beside it
 check "launch wrote meta.json: workspace, harness, no task, launch count 1, the documented keys only (#68)" bash -c \
     "python3 -c \"import json,sys; m=json.load(open('${SDIR_B}/meta.json')); sys.exit(0 if m['workspace']=='${REPO}' and m['harness']=='opencode' and m['task'] is None and m['launches']==1 and m['created']==m['last_launch'] and set(m)=={'schema','session','workspace','harness','profile','task','created','last_launch','launches'} else 1)\""
@@ -320,6 +331,8 @@ PEND_SID="${BASE_SID}-pend"; PEND="${SROOT}/${PEND_SID}"
 mkdir -p "${PEND}/gitcheck" "${PEND}/broker" "${PEND}/home/.local/state"
 : > "${PEND}/gitcheck/pending"; echo '{"repos":[]}' > "${PEND}/gitcheck/baseline.json"; echo s > "${PEND}/broker/broker.json"; echo x > "${PEND}/home/.local/state/s1"
 age_tree "${PEND}" 40
+check "reset all refuses while the git-check marker is pending and names the explicit way out (#68)" bash -c \
+    "cd '${REPO}' && ! '${T}' reset all --session ${PEND_SID} > '${SCRATCH}/reset-pend.out' 2>&1 && grep -q 'pending git-check' '${SCRATCH}/reset-pend.out' && test -f '${PEND}/gitcheck/pending' && test -f '${PEND}/broker/broker.json'"
 check "prune refuses whole-directory deletion while the git-check marker is pending, naming the review command" bash -c \
     "cd '${REPO}' && ! '${T}' prune --session ${PEND_SID} > '${SCRATCH}/prune-pend.out' 2>&1 && grep -q 'git-check pending' '${SCRATCH}/prune-pend.out' && grep -q 'tjor git-check --session ${PEND_SID}' '${SCRATCH}/prune-pend.out' && test -f '${PEND}/gitcheck/pending'"
 check "prune --older-than refuses the pending session and still previews the legacy one" bash -c \
@@ -347,39 +360,56 @@ check "prune --creds-only --dry-run lists every credential path and preserves al
 check "prune --creds-only removes exactly the credential tier (tjor's own, opencode, gh, Claude Code) and keeps history" bash -c \
     "cd '${REPO}' && '${T}' prune --session ${CR_SID} --creds-only >/dev/null 2>&1; ! test -e '${CR}/broker' && ! test -e '${CR}/proxy-ca' && ! test -e '${CR}/ca.pem' && ! test -e '${CR}/home/.local/share/opencode/auth.json' && ! test -e '${CR}/home/.config/gh' && ! test -e '${CR}/home/.claude/.credentials.json' && ! test -e '${CR}/home/.claude.json' && ! test -e '${CR}/home/.claude/backups' && test -f '${CR}/home/.local/state/s1'"
 rm -rf "${CR}"
-# (i) the lock: a launch and a prune of one session cannot interleave (TJOR_TEST_HOLD_LOCK seam)
+# (i) the lock: a launch and a prune of one session cannot interleave. The
+# holder signals readiness through the TJOR_TEST_HOLD_LOCK seam and is
+# released by a file, never by a timing guess.
+READY="${SCRATCH}/lock-ready"; RELEASE="${SCRATCH}/lock-release"
 mkdir -p "${SDIR_A}/home"; echo old > "${SDIR_A}/home/marker"
-( cd "${REPO}" && TJOR_TEST_HOLD_LOCK=6 "${T}" prune --session a > "${SCRATCH}/prune-hold.out" 2>&1 ) &
+rm -f "${READY}" "${RELEASE}"
+( cd "${REPO}" && TJOR_TEST_HOLD_LOCK=120 TJOR_TEST_HOLD_LOCK_READY="${READY}" TJOR_TEST_HOLD_LOCK_RELEASE="${RELEASE}" "${T}" prune --session a > "${SCRATCH}/prune-hold.out" 2>&1 ) &
 HOLD_PID=$!
-sleep 2
+wait_for_file "${READY}" || bad "prune never signalled that it holds the lock"
 ( cd "${REPO}" && "${T}" run --detach --session a sleep 600 > "${SCRATCH}/run-locked.out" 2>&1 ) && RUN_RC=0 || RUN_RC=$?
+: > "${RELEASE}"; wait "${HOLD_PID}" || true
 check "a launch while prune holds the session lock is refused, naming the lock and its holder (#68)" bash -c \
     "[ ${RUN_RC} -ne 0 ] && grep -q 'locked by another tjor command' '${SCRATCH}/run-locked.out' && grep -q 'cmd=prune' '${SCRATCH}/run-locked.out'"
-wait "${HOLD_PID}" || true
 check "the held prune then removed the directory; the refused launch left no state, no credential, no container" bash -c \
-    "grep -q 'removed ${SDIR_A}' '${SCRATCH}/prune-hold.out' && ! test -e '${SDIR_A}' && ! test -e '${SROOT}/.locks/${SID_A}' && ! docker ps -aq --filter 'label=tjor.session=${SID_A}' | grep -q ."
+    "grep -q 'removed ${SDIR_A}' '${SCRATCH}/prune-hold.out' && ! test -e '${SDIR_A}' && ! docker ps -aq --filter 'label=tjor.session=${SID_A}' | grep -q ."
 mkdir -p "${SDIR_A}/home"   # a relaunch: the dir exists while the launch holds the lock
-( cd "${REPO}" && TJOR_TEST_HOLD_LOCK=8 "${T}" run --detach --session a --task LIFE-2 sleep 600 > "${SCRATCH}/run-hold.out" 2>&1 ) &
+rm -f "${READY}" "${RELEASE}"
+( cd "${REPO}" && TJOR_TEST_HOLD_LOCK=120 TJOR_TEST_HOLD_LOCK_READY="${READY}" TJOR_TEST_HOLD_LOCK_RELEASE="${RELEASE}" "${T}" run --detach --session a --task LIFE-2 sleep 600 > "${SCRATCH}/run-hold.out" 2>&1 ) &
 HOLD_PID=$!
-sleep 3
+wait_for_file "${READY}" || bad "the launch never signalled that it holds the lock"
 check "prune while a launch holds the session lock is refused, naming the launch (#68)" bash -c \
     "cd '${REPO}' && ! '${T}' prune --session a > '${SCRATCH}/prune-locked.out' 2>&1 && grep -q 'refused: ${SID_A} — locked' '${SCRATCH}/prune-locked.out' && grep -q 'cmd=run' '${SCRATCH}/prune-locked.out' && test -d '${SDIR_A}'"
-wait "${HOLD_PID}" || true
+check "prune --dry-run while the launch holds the lock says so as well" bash -c \
+    "cd '${REPO}' && ! '${T}' prune --session a --dry-run > '${SCRATCH}/prune-locked-dry.out' 2>&1 && grep -q 'refused: ${SID_A} — locked' '${SCRATCH}/prune-locked-dry.out'"
+: > "${RELEASE}"; wait "${HOLD_PID}" || true
 CTR_A4="$(wait_for_agent "${SID_A}")" || true
 check "the held launch completed and released its lock once the agent container existed" bash -c \
-    "test -n '${CTR_A4}' && ! test -e '${SROOT}/.locks/${SID_A}'"
+    "test -n '${CTR_A4}' && $(declare -f lock_free); SROOT='${SROOT}'; T='${T}'; lock_free '${SID_A}' >/dev/null 2>&1"
 check "launch metadata records the task; a refused launch after the lock (sensitive --dir) leaves no lock behind" bash -c \
     "python3 -c \"import json,sys; m=json.load(open('${SDIR_A}/meta.json')); sys.exit(0 if m['task']=='LIFE-2' and m['launches']==1 else 1)\" \
-     && cd '${REPO}' && ! '${T}' run --detach --session a --dir /etc sleep 1 >/dev/null 2>&1 && ! test -e '${SROOT}/.locks/${SID_A}'"
+     && cd '${REPO}' && ! '${T}' run --detach --session a --dir /etc sleep 1 >/dev/null 2>&1 && $(declare -f lock_free); SROOT='${SROOT}'; T='${T}'; lock_free '${SID_A}' >/dev/null 2>&1"
 docker stop -t 2 "${CTR_A4}" >/dev/null 2>&1 || true
 ( cd "${REPO}" && "${T}" run --detach --session a --task LIFE-3 sleep 600 >/dev/null 2>&1 )
 CTR_A5="$(wait_for_agent "${SID_A}")" || true
 check "relaunch keeps created, bumps launches to 2 and updates the task (#68)" bash -c \
     "test -n '${CTR_A5}' && python3 -c \"import json,sys; m=json.load(open('${SDIR_A}/meta.json')); sys.exit(0 if m['task']=='LIFE-3' and m['launches']==2 and m['created']<=m['last_launch'] else 1)\""
+# A holder that dies leaves nothing stale: kill -9 a launch while it holds the lock.
+CRASH_SID="${BASE_SID}-crash"; CRASH="${SROOT}/${CRASH_SID}"
+mkdir -p "${CRASH}/home"; echo x > "${CRASH}/home/marker"
+rm -f "${READY}" "${RELEASE}"
+( cd "${REPO}" && exec env TJOR_TEST_HOLD_LOCK=120 TJOR_TEST_HOLD_LOCK_READY="${READY}" "${T}" run --detach --session crash sleep 600 > "${SCRATCH}/run-crash.out" 2>&1 ) &
+CRASH_PID=$!
+wait_for_file "${READY}" || bad "the launch to be crashed never signalled that it holds the lock"
+kill -9 "${CRASH_PID}"; wait "${CRASH_PID}" 2>/dev/null || true
+check "a launch killed -9 while holding the lock leaves no stale lock: prune of that session proceeds at once (#68)" bash -c \
+    "cd '${REPO}' && '${T}' prune --session crash > '${SCRATCH}/prune-crash.out' 2>&1 && grep -q 'removed ${CRASH}' '${SCRATCH}/prune-crash.out' && ! grep -q 'locked' '${SCRATCH}/prune-crash.out' && ! test -e '${CRASH}'"
 STALE_SID="${BASE_SID}-stale"; STALE="${SROOT}/${STALE_SID}"
-mkdir -p "${STALE}/home" "${SROOT}/.locks/${STALE_SID}"; printf 'pid=%s cmd=run\n' "$(bash -c 'echo $$')" > "${SROOT}/.locks/${STALE_SID}/owner"
-check "a lock left by a dead process is cleared and the prune proceeds" bash -c \
-    "cd '${REPO}' && '${T}' prune --session ${STALE_SID} > '${SCRATCH}/prune-stale.out' 2>&1 && grep -q 'clearing stale session lock' '${SCRATCH}/prune-stale.out' && ! test -e '${STALE}' && ! test -e '${SROOT}/.locks/${STALE_SID}'"
+mkdir -p "${STALE}/home" "${SROOT}/.locks"; printf 'pid=%s cmd=run\n' "$(bash -c 'echo $$')" > "${SROOT}/.locks/${STALE_SID}"
+check "a lock file whose recorded holder is long gone is simply free: prune proceeds without a reclaim step" bash -c \
+    "cd '${REPO}' && '${T}' prune --session ${STALE_SID} > '${SCRATCH}/prune-stale.out' 2>&1 && ! grep -q 'locked' '${SCRATCH}/prune-stale.out' && ! test -e '${STALE}'"
 # (j) a real age sweep: the legacy dir goes, the running session's dir stays (refused, exit non-zero)
 check "prune --older-than 30d removes the legacy dir and leaves the running session's dir (refused)" bash -c \
     "! '${T}' prune --older-than 30d > '${SCRATCH}/prune-real.out' 2>&1; grep -q 'removed ${LEGACY}' '${SCRATCH}/prune-real.out' && ! test -e '${LEGACY}' && test -d '${SDIR_A}'"

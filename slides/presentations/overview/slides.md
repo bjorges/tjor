@@ -364,7 +364,7 @@ specs: [kernel-sandbox@51127809]
 ---
 layout: problem
 title: Git metadata that runs on your host
-specs: [git-tamper-detection@d4859cb4]
+specs: [git-tamper-detection@7b592756]
 ---
 
 ::problem::
@@ -385,7 +385,7 @@ specs: [git-tamper-detection@d4859cb4]
 ---
 layout: problem
 title: Mounting the wrong directory
-specs: [session-launch@c1325dac]
+specs: [session-launch@ca687f33]
 ---
 
 ::problem::
@@ -499,7 +499,7 @@ Launches that behave the same every time, sessions as first-class objects, ident
 ---
 layout: problem
 title: A launch that behaves the same every time
-specs: [session-launch@c1325dac]
+specs: [session-launch@ca687f33]
 ---
 
 ::problem::
@@ -541,7 +541,7 @@ adrs: ['0004']
 ---
 layout: problem
 title: Sessions you can find, reattach, and clean up
-specs: [session-lifecycle@fefa8a6f, session-launch@c1325dac]
+specs: [session-lifecycle@cdc6d5cf, session-launch@ca687f33]
 adrs: ['0006']
 ---
 

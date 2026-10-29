@@ -151,6 +151,10 @@ mid-way through (a per-session lock, held from the launch's first write until
 the agent container exists, and by `prune`/`reset` while they delete).
 `--creds-only` removes just the credential tier. Prune **forgets** credentials,
 it does not revoke them — revocation happens at `down`/`gc` — and says so.
+`reset all` refuses while a git-check is pending for the same reason prune
+does; `prune --dry-run` takes the lock for an instant, so its preview says
+"locked" exactly where a real run would refuse; a session selected by age is
+re-checked under the lock and skipped if it became active meanwhile.
 Limits: the credential tier covers what tjor writes (`broker/`, `proxy-ca/`,
 `ca.pem`) and the harness files tjor knows (opencode's `auth.json`, `gh`'s
 `hosts.yml`, Claude Code's `.credentials.json`, `.claude.json` and its
@@ -159,9 +163,12 @@ fallback was not located — is not covered by `--creds-only`, while a
 whole-directory prune removes everything. Last activity is the newest
 timestamp anywhere in the directory, so a very large home takes a moment to
 walk, and a directory tjor cannot fully read shows `unknown` and is never
-swept by age. The lock is a directory holding the owner's pid; after a crash
-a reused pid can make a stale one look held — the refusal names the path, and
-you remove it by hand after checking `ps`.
+swept by age. The lock is a kernel file lock on `<session.root>/.locks/<id>`,
+released the moment its holder exits — a crashed launch leaves nothing to
+clean up — and a refusal names the holder; it needs a session root on a
+filesystem with working file locks (that failing is fatal, never silently
+unlocked), and a long-lived child that inherited the launcher's descriptor
+would keep it (the launcher starts none).
 
 ## Egress policy — and growing it
 

@@ -154,54 +154,62 @@ session_root() {
 }
 
 # ------------------------------------------------- per-session lock (#68)
-# A launch writes into the state dir from prepare_profile until the agent
+# A launch writes into the state dir from its first write until the agent
 # container exists; prune and reset delete from it. The two must never
 # interleave (specs: session-launch "A launch holds the session lock while it
 # writes state", session-lifecycle "Prune refuses state that is in use or
-# being launched"), so each takes <root>/.locks/<sid> — a DIRECTORY, because
-# mkdir is atomic on every filesystem tjor runs on and macOS ships no
-# flock(1) — BESIDE the state dirs, never inside one (deleting a state dir
-# cannot delete its own lock). `owner` holds "pid=<pid> cmd=<run|prune|reset>".
-# Held by a live pid: refuse, nothing waits. Left by a dead pid: cleared,
-# said, retried once. Liveness is `ps -p`, not `kill -0`, which fails with
-# EPERM for another user's process and would call a live holder dead.
-# Residual (README): a pid reused after a crash reads as held; the refusal
-# names the path and the operator removes it by hand after checking ps.
-# TJOR_TEST_HOLD_LOCK=<seconds> (test seam, like TJOR_ATTACH_DRY): sleep
-# after acquiring, so the lifecycle suite interleaves run/prune on purpose.
-session_lock_path() { printf '%s/.locks/%s' "$(session_root)" "$1"; }
+# being launched"). The lock is a KERNEL file lock (flock) on
+# <root>/.locks/<sid>, taken through python/tjor_state.py on a descriptor
+# this shell keeps open: the kernel drops it when every descriptor on that
+# open file closes, so a holder that dies — however it dies — leaves nothing
+# stale, and there is no reclaim protocol to race (review round 2: a
+# mkdir+pid lock let two reclaimers delete each other's fresh lock). macOS
+# ships no flock(1); the helper has fcntl. The file's content is the
+# holder's "pid=<pid> cmd=<run|prune|reset>" line, for the refusal message.
+# The root is passed explicitly, so every command locks under the same root
+# it resolves sessions in (a trusted repo config may override session.root
+# only after TJOR_REPO_ROOT is exported).
+# Residuals (README): a descriptor inherited by a long-lived child keeps the
+# lock until that child exits (the launcher starts no background jobs, and
+# the agent container is spawned by the daemon, not by this shell); a session
+# root on a filesystem without working file locks cannot be locked, and that
+# is fatal rather than silently unlocked.
+# TJOR_TEST_HOLD_LOCK=<seconds> (test seam, like TJOR_ATTACH_DRY): after
+# acquiring, touch TJOR_TEST_HOLD_LOCK_READY (if set) and hold until
+# TJOR_TEST_HOLD_LOCK_RELEASE exists or the seconds elapse, so the suites
+# interleave run/prune on a readiness signal, never a timing guess.
+TJOR_LOCK_FD=""
+session_lock_path() { printf '%s/.locks/%s' "$1" "$2"; }   # $1 = session root, $2 = session id
 
-session_lock_acquire() { # $1 = session id, $2 = command name -> 0 acquired / 1 held by someone else
-    local lock pid owner attempt
-    lock="$(session_lock_path "$1")"
+session_lock_acquire() { # $1 = session root, $2 = session id, $3 = command name -> 0 acquired / 1 held elsewhere
+    local lock owner rc=0 i
+    lock="$(session_lock_path "$1" "$2")"
     mkdir -p "$(dirname "${lock}")"
-    for attempt in 1 2; do
-        if mkdir "${lock}" 2>/dev/null; then
-            printf 'pid=%s cmd=%s\n' "$$" "$2" > "${lock}/owner"
-            if [[ -n "${TJOR_TEST_HOLD_LOCK:-}" ]]; then sleep "${TJOR_TEST_HOLD_LOCK}"; fi
-            return 0
+    [[ -z "${TJOR_LOCK_FD}" ]] || session_lock_release
+    exec {TJOR_LOCK_FD}>>"${lock}"   # append-open: never truncates a holder's owner line
+    python3 "${TJOR_ROOT}/python/tjor_state.py" lock-try "${TJOR_LOCK_FD}" || rc=$?
+    if ((rc == 0)); then
+        printf 'pid=%s cmd=%s\n' "$$" "$3" > "${lock}"
+        if [[ -n "${TJOR_TEST_HOLD_LOCK:-}" ]]; then
+            if [[ -n "${TJOR_TEST_HOLD_LOCK_READY:-}" ]]; then : > "${TJOR_TEST_HOLD_LOCK_READY}"; fi
+            for ((i = 0; i < TJOR_TEST_HOLD_LOCK * 10; i++)); do
+                if [[ -n "${TJOR_TEST_HOLD_LOCK_RELEASE:-}" && -e "${TJOR_TEST_HOLD_LOCK_RELEASE}" ]]; then break; fi
+                sleep 0.1
+            done
         fi
-        owner="$(cat "${lock}/owner" 2>/dev/null || true)"
-        pid="${owner#pid=}"; pid="${pid%% *}"
-        if [[ "${pid}" =~ ^[0-9]+$ ]] && ! ps -p "${pid}" >/dev/null 2>&1; then
-            echo "tjor: clearing stale session lock ${lock} (${owner}; that process is gone)" >&2
-            rm -f "${lock}/owner"; rmdir "${lock}" 2>/dev/null || true
-            continue
-        fi
-        # An empty owner is a holder between its mkdir and its write: held.
-        loud "session $1 is locked by another tjor command (${owner:-owner not written yet}) — lock: ${lock}; if that process no longer exists, remove the directory by hand"
-        return 1
-    done
-    loud "session $1 is locked (${lock}) — could not acquire it after clearing a stale lock"
+        return 0
+    fi
+    session_lock_release
+    ((rc == 1)) || die "cannot lock ${lock} — the session root must be on a filesystem with working file locks"
+    owner="$(head -n 1 "${lock}" 2>/dev/null || true)"
+    loud "session $2 is locked by another tjor command (${owner:-holder unknown}) — lock: ${lock}; it is released the moment that command exits"
     return 1
 }
 
-session_lock_release() { # $1 = session id — removes OUR lock only (no-op otherwise)
-    local lock owner
-    lock="$(session_lock_path "$1")"
-    owner="$(cat "${lock}/owner" 2>/dev/null || true)"
-    [[ "${owner}" == "pid=$$ "* ]] || return 0
-    rm -f "${lock}/owner"; rmdir "${lock}" 2>/dev/null || true
+session_lock_release() { # closes our descriptor; the kernel drops the lock (no-op when none is held)
+    [[ -n "${TJOR_LOCK_FD}" ]] || return 0
+    exec {TJOR_LOCK_FD}>&-
+    TJOR_LOCK_FD=""
 }
 
 gitcheck_mark_pending() { # $1 = session dir, $2 = roots (space-joined) — atomic (write, then rename): a crash mid-write never leaves a torn marker
@@ -264,6 +272,9 @@ gitcheck_pending_report() { # every session whose marker is still pending (crash
     root="$(session_root)"
     for d in "${root}"/*/gitcheck/pending; do
         [[ -f "${d}" ]] || continue
+        # A planted symlink under the root is reported by `ls --state` and
+        # never followed (#68): the glob above resolves through it, so skip.
+        if [[ -L "$(dirname "$(dirname "${d}")")" ]]; then continue; fi
         sid="$(basename "$(dirname "$(dirname "${d}")")")"
         roots="$(grep '^roots=' "${d}" 2>/dev/null | cut -d= -f2-)"
         warn "session ${sid} has UNCHECKED repos (git-check pending): $(safeprint "${roots}") — run: tjor git-check --session ${sid}"
@@ -1511,17 +1522,14 @@ cmd_run() {
     # for its system-directory re-check), the loops below for the extras.
     if [[ -n "${unsafe_dir}" ]]; then export TJOR_UNSAFE_DIR=1; fi
     resolve_session "${harness}" "${task}" "${name}" launch
-    # Everything from here until the agent container exists writes into the
-    # state dir (profile stage, mint, metadata, topology): hold the session
-    # lock so a prune/reset of this session cannot interleave, and a second
-    # launch of the same session cannot share this one's credentials (#68).
-    # Released in run_agent once the container exists — from then on the
-    # container itself keeps prune away — and by the trap on every other exit.
-    session_lock_acquire "${TJOR_SESSION}" run || exit 1
-    TJOR_LOCK_HELD="${TJOR_SESSION}"
-    trap 'session_lock_release "${TJOR_LOCK_HELD}"' EXIT
-    mkdir -p "${TJOR_SESSION_DIR}/home"
-    prepare_profile "${profile}" "${profile_dir}"
+    # Everything from the first write into the state dir (profile stage,
+    # mint, metadata, topology) until the agent container exists happens
+    # under the session lock, so a prune/reset of this session cannot
+    # interleave and a second launch of the same session cannot share this
+    # one's credentials (#68). Released in run_agent once the container
+    # exists — from then on the container itself keeps prune away; on every
+    # other exit the kernel drops it with the descriptor.
+    session_lock_acquire "$(dirname "${TJOR_SESSION_DIR}")" "${TJOR_SESSION}" run || exit 1
     # Multi-repo (--dir): resolve each to an absolute path now (existence
     # check); VM-share verification + mounting happen in run_agent, after the
     # proxy image (used by the share check) is built. Refuse sensitive host
@@ -1614,6 +1622,12 @@ cmd_run() {
             echo "tjor: note: the running tjor tree ${TJOR_ROOT} is mounted read-only via ${self_root}" >&2
         fi
     done
+    # The FIRST write into the state directory (#68, spec: session-launch
+    # "Lifecycle commands create no session state"): after every path gate
+    # above, so a launch refused there leaves no directory behind for a
+    # session that never existed. prepare_profile validates before it stages.
+    mkdir -p "${TJOR_SESSION_DIR}/home"
+    prepare_profile "${profile}" "${profile_dir}"
     # Credential material is assembled only NOW (v0.19.0 review): every
     # refusal above — sensitive paths, writability conflicts, the self-mount
     # guard — precedes the mint, so an aborted launch never leaves a real PAT,
@@ -1982,7 +1996,7 @@ for p in json.load(sys.stdin):
         die "agent container was created without the requested PTY — interactive harnesses cannot work; aborting (compose ignored the TTY force flag?)"
     fi
     # The agent container exists: it, not the lock, now refuses prune (#68).
-    session_lock_release "${TJOR_SESSION}"
+    session_lock_release
     if [[ -n "${detach}" ]]; then
         echo "tjor: session ${TJOR_SESSION} started detached — attach with: tjor attach ${TJOR_SESSION}" >&2
         return 0
@@ -2378,27 +2392,49 @@ cmd_reset() {
     done
     [[ -n "${tier}" ]] || die "tjor reset requires an explicit tier: cache | sessions | creds | all"
     resolve_session "opencode" "" "${name}"   # state teardown: no broker mint
+    # The canonical session root (#68): the guard below runs from it, as
+    # prune's does, so the session directory itself is checked as a path
+    # component too.
+    local root dir
+    root="$(cd "$(dirname "${TJOR_SESSION_DIR}")" 2>/dev/null && pwd -P)" \
+        || { echo "tjor reset: nothing to delete for tier '${tier}' — no session state root yet" >&2; return 0; }
+    dir="${root}/${TJOR_SESSION}"
+    if [[ ! -e "${dir}" && ! -L "${dir}" ]]; then
+        echo "tjor reset: nothing to delete for tier '${tier}' — session ${TJOR_SESSION} has no state directory" >&2; return 0
+    fi
+    # `reset all` would take the git-check baseline and its pending marker
+    # with the directory. Unreviewed evidence leaves through exactly one
+    # explicit path (spec: git-tamper-detection), never as the side effect
+    # of a wipe.
+    if [[ "${tier}" == all && -f "${dir}/gitcheck/pending" ]]; then
+        die "session ${TJOR_SESSION} has a pending git-check — review it (tjor git-check --session ${TJOR_SESSION}) or give the findings up explicitly: tjor prune --session ${TJOR_SESSION} --discard-unreviewed"
+    fi
+    # Serialise against a launch of this session (#68): the lock comes FIRST
+    # and the running check runs under it — a launch takes the same lock
+    # before its first write, so none can complete between the check and
+    # the rm. A dry run deletes nothing and takes no lock.
+    if [[ -z "${dry}" ]]; then session_lock_acquire "${root}" "${TJOR_SESSION}" reset || exit 1; fi
     # TOCTOU guard: the ancestors check and the rm are two syscalls. With the
     # persistent-container model a LIVE agent (write access to the same home
     # tree) could swap a dir for a symlink between them. Refuse to reset a
     # running session — `tjor down` first — unless --force is given (a live
-    # race is then the caller's accepted risk). This removes the racer.
-    if [[ -z "${dry}" && -z "${force_reset}" ]] \
-       && docker ps -q --filter "label=tjor.role=agent" --filter "label=tjor.session=${TJOR_SESSION}" --filter status=running | grep -q .; then
-        die "session ${TJOR_SESSION} has a running agent — 'tjor down' first, or pass --force (accepts a live-swap race)"
+    # race is then the caller's accepted risk). This removes the racer. The
+    # query's status is captured: a failed query refuses, never reads as
+    # "no agent".
+    if [[ -z "${dry}" && -z "${force_reset}" ]]; then
+        local running
+        running="$(docker ps -q --filter "label=tjor.role=agent" --filter "label=tjor.session=${TJOR_SESSION}" --filter status=running 2>&1)" \
+            || die "cannot query containers (${running}) — refusing to reset session ${TJOR_SESSION}"
+        [[ -z "${running}" ]] || die "session ${TJOR_SESSION} has a running agent — 'tjor down' first, or pass --force (accepts a live-swap race)"
     fi
     # One tier definition for reset, ls --state and prune (#68,
     # python/tjor_state.py). A helper failure is a hard stop — never an empty
     # tier that "succeeds" with the credentials still on disk.
     local -a paths=()
     local tier_out
-    tier_out="$(python3 "${TJOR_ROOT}/python/tjor_state.py" tier "${tier}" "${TJOR_SESSION_DIR}")" \
+    tier_out="$(python3 "${TJOR_ROOT}/python/tjor_state.py" tier "${tier}" "${dir}")" \
         || die "state helper failed — nothing deleted"
     mapfile -t paths <<<"${tier_out}"
-    # Serialise against a launch of this session (#68): nothing is deleted
-    # while a launch writes into the dir, and no launch starts mid-wipe. A
-    # dry run deletes nothing and takes no lock.
-    if [[ -z "${dry}" ]]; then session_lock_acquire "${TJOR_SESSION}" reset || exit 1; fi
     local p found=""
     for p in "${paths[@]}"; do
         [[ -e "${p}" || -L "${p}" ]] || continue
@@ -2407,8 +2443,8 @@ cmd_reset() {
         # intermediate dir (e.g. home/.local/share/opencode) for a symlink
         # could redirect the wipe outside the session. Refuse unless every
         # ancestor of the target is a real directory under the session root.
-        if ! ancestors_are_real_dirs "${TJOR_SESSION_DIR}" "${p}"; then
-            loud "reset: REFUSING ${p} — a symlink in its path could redirect deletion outside the session (charter L26)"
+        if ! ancestors_are_real_dirs "${root}" "${p}"; then
+            loud "reset: REFUSING ${p} — a symlink in its path could redirect deletion outside the session root (charter L26)"
             continue
         fi
         found=1
@@ -2419,7 +2455,7 @@ cmd_reset() {
             echo "tjor reset: deleted ${p}" >&2
         fi
     done
-    if [[ -z "${dry}" ]]; then session_lock_release "${TJOR_SESSION}"; fi
+    session_lock_release
     [[ -n "${found}" ]] || echo "tjor reset: nothing to delete for tier '${tier}'" >&2
 }
 
@@ -2463,9 +2499,9 @@ ancestors_are_real_dirs() { # $1 root, $2 target
 # runs at down/gc — and says so.
 prune_usage() { die "usage: tjor prune (--older-than <N>{d|h|m|s} | --session <name|id>...) [--creds-only] [--dry-run] [--discard-unreviewed] — one selector is required"; }
 
-prune_one() { # $1 sid, $2 dir, $3 canonical root, $4 dry, $5 creds_only, $6 discard -> 0 acted (or would) / 1 refused
-    local sid="$1" dir="$2" root="$3" dry="$4" creds_only="$5" discard="$6"
-    local states tier_out p rel flags note="" verb="removed" rc=0
+prune_one() { # $1 sid, $2 dir, $3 canonical root, $4 dry, $5 creds_only, $6 discard, $7 age cutoff ("" for --session) -> 0 acted (or would) / 1 refused
+    local sid="$1" dir="$2" root="$3" dry="$4" creds_only="$5" discard="$6" cutoff="$7"
+    local states tier_out p rel flags note="" verb="removed" rc=0 last
     [[ -n "${dry}" ]] && verb="would remove"
     # In use? Exit status captured: a failed query refuses, never reads as "none".
     if ! states="$(docker ps -a --filter "label=tjor.session=${sid}" --format '{{.State}}' 2>&1)"; then
@@ -2473,6 +2509,15 @@ prune_one() { # $1 sid, $2 dir, $3 canonical root, $4 dry, $5 creds_only, $6 dis
     fi
     if [[ -n "${states}" ]]; then
         echo "tjor prune: refused: ${sid} — has containers ($(sort -u <<<"${states}" | paste -sd, -)) — tjor down --session ${sid} first"; return 1
+    fi
+    # Age selection is discovery; eligibility is decided HERE, under the
+    # lock (review round 2): a session that became active between the
+    # inventory and its turn is skipped, and unknown is still never old.
+    if [[ -n "${cutoff}" ]]; then
+        last="$(python3 "${TJOR_ROOT}/python/tjor_state.py" activity "${dir}")" || die "state helper failed"
+        if [[ "${last}" == "-" ]] || ((last >= cutoff)); then
+            echo "tjor prune: skipped: ${sid} — active since it was selected (last activity rechecked under the lock)"; return 0
+        fi
     fi
     # Credential flags on every line, so a dry run is a complete preview.
     tier_out="$(python3 "${TJOR_ROOT}/python/tjor_state.py" tier creds "${dir}")" || die "state helper failed"
@@ -2531,7 +2576,7 @@ cmd_prune() {
     if [[ -n "${older}" && ${#names[@]} -gt 0 ]]; then die "tjor prune: --older-than and --session are alternatives — use one of them"; fi
     if [[ -z "${older}" && ${#names[@]} -eq 0 ]]; then prune_usage; fi
     if [[ -n "${discard}" && -n "${older}" ]]; then die "tjor prune: --discard-unreviewed is accepted only with --session — name each session whose unreviewed git-check findings you give up"; fi
-    local root now
+    local root now cutoff=""
     root="$(cd "$(session_root)" 2>/dev/null && pwd -P)" \
         || { echo "tjor prune: nothing to prune — $(session_root) does not exist" >&2; return 0; }
     now="$(date +%s)"
@@ -2539,7 +2584,7 @@ cmd_prune() {
     declare -A age_of=()
     local id kind ws last creds n
     if [[ -n "${older}" ]]; then
-        local secs cutoff inv
+        local secs inv
         secs="$(python3 "${TJOR_ROOT}/python/tjor_state.py" duration "${older}")" \
             || die "tjor prune: --older-than takes <N>d, <N>h, <N>m or <N>s (got '${older}')"
         cutoff=$((now - secs))
@@ -2565,13 +2610,14 @@ cmd_prune() {
     for sid in "${selected[@]}"; do
         dir="${root}/${sid}"
         if [[ ! -e "${dir}" && ! -L "${dir}" ]]; then echo "tjor prune: ${sid}: no state directory" >&2; continue; fi
-        # Under the session lock (a dry run deletes nothing and takes none):
-        # a launch cannot start writing between the checks and the rm.
-        if [[ -z "${dry}" ]] && ! session_lock_acquire "${sid}" prune; then
+        # Under the session lock: a launch cannot start writing between the
+        # checks and the rm. A dry run takes it too (for an instant), so its
+        # preview says "locked" exactly where a real run would refuse.
+        if ! session_lock_acquire "${root}" "${sid}" prune; then
             echo "tjor prune: refused: ${sid} — locked by a launch, reset or prune in progress"; refused=1; continue
         fi
-        prune_one "${sid}" "${dir}" "${root}" "${dry}" "${creds_only}" "${discard}" || refused=1
-        if [[ -z "${dry}" ]]; then session_lock_release "${sid}"; fi
+        prune_one "${sid}" "${dir}" "${root}" "${dry}" "${creds_only}" "${discard}" "${cutoff}" || refused=1
+        session_lock_release
     done
     if [[ -n "${refused}" ]]; then echo "tjor prune: some sessions were refused (see above)" >&2; return 1; fi
     return 0

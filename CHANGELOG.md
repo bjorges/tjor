@@ -56,11 +56,13 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
   (workspace, harness, profile, task, first and last launch, launch count),
   atomically and without secrets; directories from older versions read as
   unknown.
-- A per-session lock (`<session.root>/.locks/<id>`), held by `tjor run` from
-  its first write until the agent container exists and by `prune`/`reset`
-  while they delete, so a launch and a deletion of one session's state cannot
-  interleave. A lock left by a dead process is cleared; a held one refuses
-  and names its holder.
+- A per-session kernel file lock (`<session.root>/.locks/<id>`), held by
+  `tjor run` from its first write until the agent container exists and by
+  `prune`/`reset` while they delete, so a launch and a deletion of one
+  session's state cannot interleave. The kernel releases it when its holder
+  exits, so a crash leaves nothing stale; a held one refuses and names its
+  holder. Age-selected sessions are re-checked under the lock; a dry run
+  reports a held lock where a real run would refuse.
 - One definition of the state tiers (`python/tjor_state.py`) shared by
   `reset`, `ls --state` and `prune --creds-only`. The credential tier now also
   covers Claude Code's `.credentials.json`, `.claude.json` and its backups;
@@ -76,6 +78,12 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 - A second `tjor run` of the same session while the first is still setting
   up, before its agent container exists, is refused instead of sharing its
   credentials and topology (#68).
+- `tjor reset all` refuses while the session's git-check marker is pending
+  (the explicit path is `prune --session <id> --discard-unreviewed`), and
+  `reset` checks for a running agent under the session lock with the query's
+  status captured — a failed query refuses instead of reading as "no agent".
+- `tests/integration/lifecycle_test.sh` runs against its own session root
+  under `~/.tjor/tmp`, never an operator's real sessions.
 
 ### Fixed
 - `tjor ls` and `tjor gc` died with `unbound variable` on bash 5.3 when no

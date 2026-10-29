@@ -304,3 +304,64 @@ def test_inventory_cli_missing_root_fails(tmp_path):
 def test_usage_exit_code():
     r = _run()
     assert r.returncode == 2 and r.stdout == "" and "usage:" in r.stderr
+
+
+# ---- activity / symlinked meta / lock-try -----------------------------------
+
+def test_read_meta_never_follows_a_symlink(tmp_path):
+    real = tmp_path / "elsewhere.json"
+    real.write_text(json.dumps({"schema": 1, "workspace": "/planted"}))
+    d = tmp_path / "s"
+    d.mkdir()
+    (d / "meta.json").symlink_to(real)
+    assert ts.read_meta(str(d)) is None
+    [rec] = ts.inventory(str(tmp_path / "s").rsplit("/", 1)[0]) if False else [r for r in ts.inventory(str(tmp_path)) if r["id"] == "s"]
+    assert rec["workspace"] is None
+
+
+def test_activity_cli_matches_inventory(tmp_path):
+    d = tmp_path / "s"
+    (d / "home").mkdir(parents=True)
+    ts.write_meta(str(d), session="s", workspace="/w", harness="opencode", now=7_000)
+    for p in [d, *d.rglob("*")]:
+        _set_mtime(p, 10)
+    r = _run("activity", str(d))
+    assert r.returncode == 0 and r.stdout.strip() == "7000"
+    r = _run("activity", str(tmp_path / "missing"))
+    assert r.returncode == 1 and r.stdout == ""
+
+
+@pytest.mark.skipif(os.geteuid() == 0, reason="root can read anything")
+def test_activity_cli_unknown_when_unreadable(tmp_path):
+    d = tmp_path / "s"
+    (d / "home" / "locked").mkdir(parents=True)
+    (d / "home" / "locked").chmod(0)
+    try:
+        r = _run("activity", str(d))
+    finally:
+        (d / "home" / "locked").chmod(stat.S_IRWXU)
+    assert r.returncode == 0 and r.stdout.strip() == "-"
+
+
+def test_lock_try_is_exclusive_and_outlives_the_helper(tmp_path):
+    lock = tmp_path / "lock"
+    a = os.open(str(lock), os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+    b = os.open(str(lock), os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+    try:
+        # The helper locks the inherited description; the lock stays with fd a
+        # after the helper exits, so a second description is refused ...
+        r = subprocess.run([sys.executable, str(HELPER), "lock-try", str(a)], pass_fds=[a])
+        assert r.returncode == 0
+        r = subprocess.run([sys.executable, str(HELPER), "lock-try", str(b)], pass_fds=[b])
+        assert r.returncode == 1
+        # ... until it is closed.
+        os.close(a)
+        r = subprocess.run([sys.executable, str(HELPER), "lock-try", str(b)], pass_fds=[b])
+        assert r.returncode == 0
+    finally:
+        os.close(b)
+
+
+def test_lock_try_bad_descriptor():
+    r = _run("lock-try", "999")
+    assert r.returncode == 2 and "lock-try" in r.stderr
