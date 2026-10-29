@@ -75,15 +75,43 @@ class TestPolicyEdit:
         assert "keep this comment" in text                       # comment preserved
         pol = tjor_policy.load_policy(str(p))
         assert pol.valid
-        assert tjor_policy.evaluate(pol, "https://example.test/").allowed
-        assert tjor_policy.evaluate(pol, "https://github.com/").allowed
+        assert tjor_policy.evaluate(pol, "https://example.test/", "GET").allowed
+        assert tjor_policy.evaluate(pol, "https://github.com/", "GET").allowed
 
     def test_add_creates_hosts_when_absent(self, tmp_path):
         p = tmp_path / "policy.toml"
         p.write_text('mode = "strict-allow"\n')
         tjor_policy_edit.add_hosts(str(p), ["a.test"])
         pol = tjor_policy.load_policy(str(p))
-        assert pol.valid and tjor_policy.evaluate(pol, "https://a.test/").allowed
+        assert pol.valid and tjor_policy.evaluate(pol, "https://a.test/", "GET").allowed
+
+    def test_add_never_lands_in_a_restrict_rule(self, tmp_path):
+        # [hosts] has only `block`, and a [[methods.restrict]] with its own
+        # `allow` follows: the host must land in a NEW hosts.allow, and the
+        # restrict rule must be untouched (openspec policy-ergonomics scenario).
+        p = tmp_path / "policy.toml"
+        p.write_text(
+            'mode = "strict-allow"\n\n[hosts]\nblock = ["bad.test"]\n\n'
+            '[[methods.restrict]]\nhost = "api.test"\nallow = ["GET"]\n'
+        )
+        tjor_policy_edit.add_hosts(str(p), ["that.host"])
+        pol = tjor_policy.load_policy(str(p))
+        assert pol.valid, pol.errors
+        assert "that.host" in pol.host_allow
+        assert pol.method_restrict == [("api.test", frozenset({"GET"}))]
+        assert tjor_policy.evaluate(pol, "https://that.host/", "GET").allowed
+        assert tjor_policy.evaluate(pol, "https://that.host/", "POST").allowed    # the restriction is api.test's
+
+    def test_add_into_existing_allow_with_restrict_after(self, tmp_path):
+        p = tmp_path / "policy.toml"
+        p.write_text(
+            'mode = "strict-allow"\n[hosts]\nallow = [\n  "a.test",\n]\n'
+            '[[methods.restrict]]\nhost = "a.test"\nallow = ["GET"]\n'
+        )
+        tjor_policy_edit.add_hosts(str(p), ["b.test"])
+        pol = tjor_policy.load_policy(str(p))
+        assert pol.valid and set(pol.host_allow) == {"a.test", "b.test"}
+        assert pol.method_restrict == [("a.test", frozenset({"GET"}))]
 
     def test_refuses_to_write_invalid(self, tmp_path):
         p = tmp_path / "policy.toml"
@@ -112,4 +140,4 @@ class TestPolicyEdit:
             tjor_policy_edit.add_hosts(str(p), ["real.test"])
         # and the real allow-list was NOT changed by the refused write
         pol = tjor_policy.load_policy(str(p))
-        assert not tjor_policy.evaluate(pol, "https://real.test/").allowed
+        assert not tjor_policy.evaluate(pol, "https://real.test/", "GET").allowed

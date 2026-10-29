@@ -4,7 +4,7 @@
      Regenerate: python3 python/gen_boundary_matrix.py
      Drift-checked by tests/doc_consistency.sh (`--check`). -->
 
-Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount` and `gitcheck` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (274 checks total; 105 adversarial guarantees below, the rest functional/config checks the suites also run).
+Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount` and `gitcheck` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (284 checks total; 115 adversarial guarantees below, the rest functional/config checks the suites also run).
 
 ## cage-network
 
@@ -19,6 +19,7 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 
 | Guarantee | Probe | Suite |
 |---|---|---|
+| A 101 from a read-only host is refused before it reaches the agent | `header guard: a 101 from the upstream of a read-only host is refused` | conformance |
 | A Host header inside a tunnel cannot steer the verdict | `host identity: a Host header inside a tunnel cannot steer the verdict` | conformance |
 | A TLS tunnel is judged on its server name | `host identity: a TLS tunnel is judged on its server name` | conformance |
 | A blocked host is denied at the proxy | `blocked host is denied at the proxy` | conformance |
@@ -26,7 +27,15 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | A chunked denied body is never forwarded | `enforcement: a chunked denied body is never forwarded` | conformance |
 | A denied body above the streaming threshold is never forwarded | `enforcement: a large denied body is never forwarded` | conformance |
 | A denied request never receives 100 Continue | `enforcement: a denied request with Expect gets no 100 Continue` | conformance |
+| A method exception admits the listed method on its exact path | `method gate: an exception admits the listed method on its path` | conformance |
+| A method-override header on a read-only host is refused | `header guard: a method-override header on a read-only host is refused` | conformance |
 | A path carve-out on a blocked host is allowed (precedence) | `path carve-out on a blocked host passes policy` | conformance |
+| A protocol switch on a read-only host is refused | `header guard: a protocol upgrade on a read-only host is refused` | conformance |
+| A read on a read-only host is served | `method gate: a read on the read-only host reaches the upstream` | conformance |
+| A redirected request is judged on its own | `method gate: a redirect does not carry a method past the gate` | conformance |
+| A write inside a TLS tunnel is gated on the server name | `method gate: a write inside a TLS tunnel is judged on the server name` | conformance |
+| A write inside a tunnel is gated on the tunnel target | `method gate: a write inside a tunnel is judged on the tunnel target` | conformance |
+| A write to a read-only host is denied (method-block) | `method gate: a write to a read-only host is denied` | conformance |
 | An absolute-form Host header cannot steer the verdict | `host identity: an absolute-form Host header cannot steer the verdict` | conformance |
 | An absolute-form target inside a tunnel cannot steer the verdict | `host identity: an absolute-form target inside a tunnel cannot steer the verdict` | conformance |
 | An interrupted denied upload is denied and logged at the headers stage | `enforcement: an interrupted denied upload is still logged` | conformance |
@@ -34,6 +43,7 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | Dot-segments cannot escape a carve-out | `dot-segments cannot escape a carve-out` | conformance |
 | HTTP/2 is not negotiated: HTTP/1.1 only, so every body is declared | `transport: HTTP/2 is not negotiated` | conformance |
 | Percent-encoding cannot evade a path block | `encoding cannot evade a path block` | conformance |
+| Percent-encoding cannot widen a method exception | `method gate: encoding cannot widen a method exception` | conformance |
 | Percent-encoding cannot widen an allow carve-out | `encoding cannot widen an allow carve-out` | conformance |
 | Strict-allow default-deny for unknown hosts | `strict-allow default-deny holds for unknown hosts` | conformance |
 | Upstream TLS verification holds; the conformance trust anchor is scoped | `transport: the conformance trust anchor does not disable upstream verification` | conformance |

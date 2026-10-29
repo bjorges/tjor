@@ -195,6 +195,67 @@ $ tjor policy https://x/ --explain       # why a URL is allowed/denied, and whic
 The active policy is, most-specific first: a **trusted** repo `.tjor/policy.toml`
 → your `~/.config/tjor/policy.toml` → the packaged default.
 
+### Read-only hosts (the method gate)
+
+A brokered token is usually as powerful inside the cage as outside; the proxy
+is the one place that can narrow it. A `[[methods.restrict]]` rule makes a
+host read-only, and a `[[methods.except]]` rule admits a method on exactly
+one path — for the APIs that query by `POST`:
+
+```toml
+# Read-only access to an API host: GET and HEAD, plus the search endpoint,
+# which queries by POST.
+[[methods.restrict]]
+host = "api.example.test"
+allow = ["GET", "HEAD"]
+
+[[methods.except]]
+host = "api.example.test"
+path = "/rest/api/2/search"
+methods = ["POST"]
+
+# A read-only git host: fetch and clone POST to git-upload-pack; push would
+# POST to git-receive-pack, which stays denied.
+[[methods.restrict]]
+host = "git.example.test"
+allow = ["GET", "HEAD"]
+
+[[methods.except]]
+host = "git.example.test"
+path = "/*/git-upload-pack"
+methods = ["POST"]
+```
+
+How it decides, plainly:
+
+- The gate runs **last, on a request the other stages allowed**, and can only
+  deny: a host block, a path block or `default-deny` is reported as such, an
+  admitted request keeps its earlier verdict, and a policy without a `methods`
+  section evaluates exactly as before.
+- Methods are compared **byte for byte as sent**, no case folding: `get` is not
+  `GET` and is denied as `method-block:get`. A method must be an HTTP token of
+  at most 32 characters, else `fail-closed:bad-method` on every host. Listing
+  `GET` admits neither `HEAD` nor `OPTIONS`; list what you mean.
+- Several restrictions matching one host **intersect**: a method must be listed
+  by every one of them. An exception is as wide as its own `host` and `path`
+  patterns (`*` spans `/`), not as the restriction it lifts, and it never
+  bypasses a host block, a path block or the default mode.
+- On a restricted host the proxy also refuses **protocol switches** (`Upgrade`,
+  `Connection: upgrade`, `Sec-WebSocket-Version`, and a `101` from the host) and
+  **method-override headers** (`X-HTTP-Method-Override` and friends), as
+  `header-block:*`. No rule lifts these: a host that needs WebSockets or
+  override headers is simply left unrestricted. `tjor policy <url> --explain`
+  notes when a host is restricted, because the preview cannot see headers.
+- Preview a write with `tjor policy https://api.example.test/x --method POST
+  --explain`. In `tjor denials`, a `method-block:POST` line is widened by an
+  exception or the restriction's `allow` list, not by `tjor policy add`; a
+  `method-block:get` line means a client sent a non-standard token, so fix the
+  client; a `header-block:` line has no exception.
+- **What the gate does not do:** it sees the verb, not what a request does. A
+  `POST` exception on a GraphQL endpoint admits mutations; a `POST` exception
+  admits every `POST` to its path. `CONNECT` is decided on the host; each
+  request inside the tunnel on its own method.
+
 **What a denial looks like.** A denied request with a small body gets a `403`
 whose body names the rule. A denied request with a declared body above the
 proxy's streaming threshold (1 MiB) or a chunked body has its connection
@@ -408,6 +469,15 @@ When enabled, a LiteLLM sidecar runs on the **egress** network and the harness's
   generated (0600, under your config dir — never a session dir, label, or config
   hash) and injected by the proxy toward the gateway host; the agent holds only a
   placeholder. Your provider keys stay on the egress side (gateway sidecar only).
+- **Your policy survives the augmentation.** The session policy is generated
+  from your base policy as parsed by the one policy parser: every section is
+  re-emitted, `[[methods.restrict]]` and `[[methods.except]]` included, and the
+  gateway's `POST` inference paths get a `POST` exception of their own, so a
+  read-only rule written for other hosts (even `host = "*"`) cannot take
+  inference down. A base policy that does not parse fails the launch, loudly,
+  before anything starts; a relaunch into the same session directory removes
+  the stale session policy an earlier launch left (sidecars still running from
+  it keep the policy they loaded until `tjor down`).
 
 Rotate the generated master key any time with `tjor gateway rotate-key` (new
 sessions pick it up; running gateway sessions keep theirs until relaunched).

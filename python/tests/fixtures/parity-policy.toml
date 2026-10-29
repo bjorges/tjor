@@ -2,7 +2,7 @@
 mode = "strict-allow"
 
 [hosts]
-allow = ["allowed.test", "*.allowed.test", "api.vendor.test"]
+allow = ["allowed.test", "*.allowed.test", "api.vendor.test", "readonly.test"]
 block = ["blocked.test", "*.telemetry.test"]
 
 [[paths.allow]]
@@ -16,3 +16,19 @@ path = "*/telemetry*"
 [[paths.block]]
 host = "*"
 path = "/phone-home/*"
+
+# Method gate (#66): readonly.test is read-only, with POST excepted on the
+# two paths that query by POST; a 32-character token case lives in the corpus.
+[[methods.restrict]]
+host = "readonly.test"
+allow = ["GET", "HEAD"]
+
+[[methods.except]]
+host = "readonly.test"
+path = "/search"
+methods = ["POST"]
+
+[[methods.except]]
+host = "readonly.test"
+path = "/redirect"
+methods = ["POST"]

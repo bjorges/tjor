@@ -357,10 +357,10 @@ def _current_policy() -> tjor_policy.Policy:
     return _cache["policy"]
 
 
-def decide(url: str) -> tjor_policy.Verdict:
+def decide(url: str, method: str) -> tjor_policy.Verdict:
     """Parity call site: identical inputs must yield identical verdicts to
-    the module API and the CLI."""
-    return tjor_policy.evaluate(_current_policy(), url)
+    the module API and the CLI. The method has no default here either."""
+    return tjor_policy.evaluate(_current_policy(), url, method)
 
 
 def decide_connect(host: str) -> tjor_policy.Verdict:
@@ -682,9 +682,9 @@ def connect_verdict(host: str) -> tjor_policy.Verdict:
     return _fail_closed(compute)
 
 
-def request_verdict(url: str, host: str) -> tjor_policy.Verdict:
+def request_verdict(url: str, host: str, method: str) -> tjor_policy.Verdict:
     def compute():
-        verdict = decide(url)
+        verdict = decide(url, method)
         if verdict.allowed and _IP_GUARD:
             ok, why = resolved_addresses_ok(host)
             if not ok:
@@ -935,6 +935,45 @@ def _abort_client_connection(flow) -> bool:
         return True
     except Exception:  # noqa: BLE001 — best effort; the kill already stands
         return False
+
+
+def _raw_method(flow) -> "str | None":
+    """The request method exactly as the client sent it, or None when it is
+    not ASCII. mitmproxy's `request.method` is `.upper()`-ed and Python's
+    upper() folds `ſ` to `S`; the raw bytes are what goes upstream, so they
+    are what the gate judges. Fakes without raw data fall back to `.method`."""
+    try:
+        raw = getattr(getattr(flow.request, "data", None), "method", None)
+        if isinstance(raw, (bytes, bytearray)):
+            return bytes(raw).decode("ascii")
+        method = getattr(flow.request, "method", None)
+        return method if isinstance(method, str) else None
+    except (UnicodeDecodeError, AttributeError):
+        return None
+
+
+# Header guards on a method-restricted host (#66, D6). A request that asks for
+# a protocol switch is not a read: `Upgrade`, an `upgrade` token in
+# `Connection`, or `Sec-WebSocket-Version` — mitmproxy keys its own WebSocket
+# upgrade on that last header, never on `Upgrade`. A method-override header
+# would make the upstream treat a GET as something else. Denied, not stripped,
+# so the agent and the operator see what happened. No rule lifts a guard; a
+# host that needs these is left unrestricted.
+_SWITCH_HEADERS = ("upgrade", "sec-websocket-version")
+_OVERRIDE_HEADERS = ("x-http-method-override", "x-http-method", "x-method-override")
+
+
+def _header_guard(flow, host: str) -> str:
+    """The `header-block:*` rule a restricted host's request trips, or ``""``."""
+    if not tjor_policy.method_restricted(_current_policy(), host):
+        return ""
+    headers = flow.request.headers
+    connection_tokens = [t.strip().lower() for t in str(headers.get("connection") or "").split(",")]
+    if any(name in headers for name in _SWITCH_HEADERS) or "upgrade" in connection_tokens:
+        return "header-block:upgrade"
+    if any(name in headers for name in _OVERRIDE_HEADERS):
+        return "header-block:method-override"
+    return ""
 
 
 def _record_verdict(flow, verdict: tjor_policy.Verdict) -> None:
@@ -1267,10 +1306,17 @@ class TjorPolicy:
         # deny, never forward a request without the intended handling.
         try:
             host, mismatch = _connection_host(flow)
+            method = _raw_method(flow)
             if mismatch:
                 verdict = tjor_policy.Verdict(False, "fail-closed:host-mismatch")
+            elif method is None:
+                verdict = tjor_policy.Verdict(False, "fail-closed:bad-method")
             else:
-                verdict = request_verdict(_judged_url(flow, host), host)
+                verdict = request_verdict(_judged_url(flow, host), host, method)
+                if verdict.allowed:
+                    guard = _header_guard(flow, host)
+                    if guard:
+                        verdict = tjor_policy.Verdict(False, guard, host)
             _record_verdict(flow, verdict)
             if verdict.allowed:
                 _apply_identity(flow)
@@ -1328,6 +1374,30 @@ class TjorPolicy:
             _safe_log(f"tjor: request hook error — failing closed: {exc!r}")
 
     def responseheaders(self, flow) -> None:
+        # Method gate, response side (#66, D6): a `101` from a method-restricted
+        # host would switch the connection to a channel the gate cannot judge
+        # — mitmproxy hands it to its WebSocket layer when the request carried
+        # Sec-WebSocket-Version, or forwards it and closes otherwise. Refuse it
+        # before it reaches the agent: kill, abort the client transport, log.
+        # Fail-closed like the request hooks: an error here refuses too.
+        try:
+            status = getattr(getattr(flow, "response", None), "status_code", None)
+            if status == 101:
+                host = _logical_host(flow)
+                if tjor_policy.method_restricted(_current_policy(), host):
+                    _log_denial(host, "header-block:upgrade-response")
+                    flow.kill()
+                    if not _abort_client_connection(flow):
+                        _log_abort_miss()
+                    return
+        except Exception as exc:  # noqa: BLE001 — never hand an unjudged 101 to the agent
+            try:
+                flow.kill()
+                _abort_client_connection(flow)
+            except Exception:  # noqa: BLE001
+                pass
+            _safe_log(f"tjor: responseheaders upgrade guard error — refusing the 101: {exc!r}")
+            return
         # #50 observability: count `pods/log` read volume WITHOUT touching the
         # body. A stream passthrough tallies chunk sizes (so follow=true / large
         # streamed bodies are counted too — flow.response.content would not be

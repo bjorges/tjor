@@ -597,6 +597,109 @@ def p_host_authority_in_tunnel():
     expect_denial(ECHO, "fail-closed:host-mismatch")
 
 
+# ---------------------------------------------------------------------------
+# Method gate (#66): readonly.test is restricted to GET/HEAD, with POST
+# excepted on /search and /redirect (images/conformance/policy.toml).
+
+RO = "readonly.test"
+
+
+def _rule(resp) -> str:
+    return f"{resp.status} {resp.getheader('x-tjor-rule')!r}"
+
+
+@probe("method gate: a write to a read-only host is denied")
+def p_mg_write_denied():
+    resp = via_proxy(f"http://{RO}:8080/items", method="POST", body=b"{}")
+    assert resp.status == 403 and resp.getheader("x-tjor-rule") == "method-block:POST", _rule(resp)
+    expect_denial(RO, "method-block:POST")
+
+
+@probe("method gate: a read on the read-only host reaches the upstream")
+def p_mg_read_passes():
+    resp = via_proxy(f"http://{RO}:8080/items")
+    assert resp.status == 200 and json.loads(resp.read())["method"] == "GET", _rule(resp)
+
+
+@probe("method gate: an exception admits the listed method on its path")
+def p_mg_exception_admits():
+    resp = via_proxy(f"http://{RO}:8080/search?q=x", method="POST", body=b"{}")
+    assert resp.status == 200 and json.loads(resp.read())["method"] == "POST", _rule(resp)
+
+
+@probe("method gate: encoding cannot widen a method exception")
+def p_mg_encoding_cannot_widen():
+    resp = via_proxy(f"http://{RO}:8080/%73earch", method="POST", body=b"{}")
+    assert resp.status == 403 and resp.getheader("x-tjor-rule") == "method-block:POST", _rule(resp)
+    expect_denial(RO, "method-block:POST")
+
+
+@probe("method gate: a redirect does not carry a method past the gate")
+def p_mg_redirect_is_a_new_request():
+    first = via_proxy(f"http://{RO}:8080/redirect", method="POST", body=b"{}")
+    assert first.status == 307 and first.getheader("Location") == "/items", _rule(first)
+    first.read()
+    follow = via_proxy(f"http://{RO}:8080/items", method="POST", body=b"{}")   # what a client does with a 307
+    assert follow.status == 403 and follow.getheader("x-tjor-rule") == "method-block:POST", _rule(follow)
+    expect_denial(RO, "method-block:POST")
+
+
+@probe("method gate: a write inside a tunnel is judged on the tunnel target")
+def p_mg_tunnel():
+    conn = tunnel(RO, 8080)
+    resp = in_tunnel(conn, "GET", "/items")
+    assert resp.status == 200, _rule(resp)
+    resp.read()
+    resp = in_tunnel(conn, "POST", "/items", body=b"{}")
+    assert resp.status == 403 and resp.getheader("x-tjor-rule") == "method-block:POST", _rule(resp)
+    expect_denial(RO, "method-block:POST")
+
+
+@probe("method gate: a write inside a TLS tunnel is judged on the server name")
+def p_mg_tls_tunnel():
+    conn = tunnel(RO, 8443, tls=True)
+    resp = in_tunnel(conn, "GET", "/items")
+    assert resp.status == 200, _rule(resp)
+    resp.read()
+    resp = in_tunnel(conn, "POST", "/items", body=b"{}")
+    assert resp.status == 403 and resp.getheader("x-tjor-rule") == "method-block:POST", _rule(resp)
+    expect_denial(RO, "method-block:POST")
+
+
+@probe("header guard: a protocol upgrade on a read-only host is refused")
+def p_hg_upgrade():
+    resp = via_proxy(f"http://{RO}:8080/ws", headers={"Upgrade": "websocket", "Connection": "Upgrade"})
+    assert resp.status == 403 and resp.getheader("x-tjor-rule") == "header-block:upgrade", _rule(resp)
+    expect_denial(RO, "header-block:upgrade")
+    # mitmproxy keys its own WebSocket upgrade on this header, not on Upgrade
+    resp = via_proxy(f"http://{RO}:8080/ws", headers={"Sec-WebSocket-Version": "13"})
+    assert resp.status == 403 and resp.getheader("x-tjor-rule") == "header-block:upgrade", _rule(resp)
+    expect_denial(RO, "header-block:upgrade")
+
+
+@probe("header guard: a method-override header on a read-only host is refused")
+def p_hg_override():
+    resp = via_proxy(f"http://{RO}:8080/items", headers={"X-HTTP-Method-Override": "DELETE"})
+    assert resp.status == 403 and resp.getheader("x-tjor-rule") == "header-block:method-override", _rule(resp)
+    expect_denial(RO, "header-block:method-override")
+
+
+@probe("header guard: a 101 from the upstream of a read-only host is refused")
+def p_hg_upgrade_response():
+    # The request carries no switch marker; the fixture answers 101 anyway. On
+    # the read-only host the proxy refuses it before it reaches the client.
+    with socket.create_connection((PROXY_IP, PROXY_PORT), timeout=15) as sock:
+        sock.sendall(f"GET http://{RO}:8080/switch HTTP/1.1\r\nHost: {RO}:8080\r\n\r\n".encode())
+        closed_at_once(sock)
+    expect_denial(RO, "header-block:upgrade-response")
+    # Baseline on an unrestricted host: the 101 reaches the client as today.
+    with socket.create_connection((PROXY_IP, PROXY_PORT), timeout=15) as sock:
+        sock.sendall(f"GET http://{ECHO}:8080/switch HTTP/1.1\r\nHost: {ECHO}:8080\r\n\r\n".encode())
+        sock.settimeout(10)
+        line = sock.makefile("rb").readline()
+    assert line.startswith(b"HTTP/1.1 101"), f"the baseline 101 did not reach the client: {line!r}"
+
+
 # Multi-cluster kube isolation (#57): cross-cluster token isolation — cluster
 # A's token never reaching cluster B's origin — is asserted authoritatively by
 # the addon unit suite (python/tests/test_addon_guards.py::TestKubeMultiInjection),

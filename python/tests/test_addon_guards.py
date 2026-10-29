@@ -28,8 +28,8 @@ def load_addon():
 class TestFailClosedWrapper:
     def test_exception_in_decision_denies(self, monkeypatch):
         addon = load_addon()
-        monkeypatch.setattr(addon, "decide", lambda url: 1 / 0)
-        verdict = addon.request_verdict("https://allowed.test/x", "allowed.test")
+        monkeypatch.setattr(addon, "decide", lambda url, method: 1 / 0)
+        verdict = addon.request_verdict("https://allowed.test/x", "allowed.test", "GET")
         assert not verdict.allowed and verdict.rule == "fail-closed:addon-error"
 
     def test_exception_in_connect_denies(self, monkeypatch):
@@ -41,8 +41,8 @@ class TestFailClosedWrapper:
     def test_normal_path_unaffected(self):
         addon = load_addon()
         addon._resolver = lambda host: {"140.82.121.3"}
-        assert addon.request_verdict("https://allowed.test/x", "allowed.test").allowed
-        assert not addon.request_verdict("https://blocked.test/x", "blocked.test").allowed
+        assert addon.request_verdict("https://allowed.test/x", "allowed.test", "GET").allowed
+        assert not addon.request_verdict("https://blocked.test/x", "blocked.test", "GET").allowed
 
 
 class TestIdentityAtTheAddon:
@@ -405,7 +405,7 @@ class TestAddressGuard:
     def test_private_resolution_denied(self):
         addon = load_addon()
         addon._resolver = lambda host: {"10.0.0.5"}
-        verdict = addon.request_verdict("https://allowed.test/x", "allowed.test")
+        verdict = addon.request_verdict("https://allowed.test/x", "allowed.test", "GET")
         assert not verdict.allowed and verdict.rule.startswith("ip-guard:")
 
     def test_mixed_resolution_denied(self):
@@ -600,7 +600,7 @@ class TestAgentFacingReason:
         pol = addon.TjorPolicy()
         flow = types.SimpleNamespace(
             request=types.SimpleNamespace(host="allowed.test", scheme="https", port=443, path="/x",
-                                          headers=Headers()),
+                                          headers=Headers(), method="GET"),
             response=None, metadata={}, kill=lambda: None)
         pol.requestheaders(flow)
         body = flow.response.content.decode()
@@ -644,7 +644,7 @@ class TestBoundedResolution:
         addon = self._hanging_addon(gate)
         try:
             # allowed.test is policy-allowed, so the verdict reaches the guard.
-            v = addon.request_verdict("https://allowed.test/x", "allowed.test")
+            v = addon.request_verdict("https://allowed.test/x", "allowed.test", "GET")
             assert not v.allowed and v.rule == "ip-guard:resolve-timeout"
             addon._ip_cache.clear()
             cv = addon.connect_verdict("allowed.test")
@@ -877,7 +877,7 @@ class TestDenyHooksFailClosed:
         from mitmproxy.http import Headers
         return types.SimpleNamespace(
             request=types.SimpleNamespace(host=host, scheme="https", port=443, path="/x",
-                                          headers=Headers()),
+                                          headers=Headers(), method="GET"),
             response=None, metadata={}, kill=lambda: None)
 
     def test_log_denial_is_total_even_if_redact_throws(self, tmp_path, monkeypatch):
@@ -1178,7 +1178,7 @@ class TestEgressSecretTripwire:
         body = f"k={self.TOKEN}".encode()
         flow = types.SimpleNamespace(
             request=types.SimpleNamespace(host="allowed.test", scheme="https", port=443, path="/v1/x",
-                                          headers=Headers(), content=body, raw_content=body),
+                                          headers=Headers(), content=body, raw_content=body, method="POST"),
             response=None, metadata={}, kill=lambda: None)
         addon.TjorPolicy().requestheaders(flow)
         addon.TjorPolicy().request(flow)
@@ -1427,7 +1427,7 @@ class TestServerConnectPin:
 # Headers-stage enforcement and one host identity (ADR 0012).
 
 def _hflow(host, path="/x", scheme="https", port=None, headers=None, sni=None,
-           client_id=None, stream=False, host_header=True, kill_raises=False):
+           client_id=None, stream=False, host_header=True, kill_raises=False, method="GET"):
     """A fake flow shaped like what the requestheaders hook sees: the request's
     own host/scheme/port/path, a real mitmproxy Headers multidict, the server
     name, the client connection id and a kill() that records itself."""
@@ -1440,7 +1440,8 @@ def _hflow(host, path="/x", scheme="https", port=None, headers=None, sni=None,
         pairs.insert(0, (b"host", host_header.encode()))
     port = port or (443 if scheme == "https" else 80)
     req = types.SimpleNamespace(host=host, scheme=scheme, port=port, path=path,
-                                headers=Headers(pairs), stream=stream,
+                                headers=Headers(pairs), stream=stream, method=method,
+                                data=types.SimpleNamespace(method=method.encode()),
                                 pretty_url=f"{scheme}://{host}{path}")
     flow = types.SimpleNamespace(
         request=req, response=None, metadata={}, killed=False,
@@ -1880,3 +1881,95 @@ class TestHostIdentity:
         assert addon._judged_url(f, "allowed.test") == "http://allowed.test:8080/x"
         f = _hflow("2001:db8::1", scheme="http", port=80, path="/")
         assert addon._judged_url(f, "2001:db8::1") == "http://[2001:db8::1]/"
+
+
+class TestMethodGateAtTheAddon:
+    """The method is read from the raw request bytes and judged inside the
+    headers-stage verdict; the header guards act on a restricted host only;
+    a 101 from a restricted host is refused. readonly.test is restricted to
+    GET/HEAD with POST excepted on /search in the fixture policy."""
+
+    def _addon(self, tmp_path):
+        return _enforcement_addon(tmp_path)
+
+    def test_request_verdict_takes_the_method(self, tmp_path):
+        addon = self._addon(tmp_path)
+        denied = addon.request_verdict("http://readonly.test/items", "readonly.test", "POST")
+        assert not denied.allowed and denied.rule == "method-block:POST"
+        assert addon.request_verdict("http://readonly.test/items", "readonly.test", "GET").allowed
+        assert addon.request_verdict("http://readonly.test/items", "readonly.test", "get").rule == "method-block:get"
+        assert addon.request_verdict("http://readonly.test/items", "readonly.test", "bad method").rule == "fail-closed:bad-method"
+
+    def test_method_is_required_at_the_addon(self, tmp_path):
+        addon = self._addon(tmp_path)
+        with pytest.raises(TypeError):
+            addon.decide("http://readonly.test/items")  # type: ignore[call-arg]
+
+    def test_hook_reads_the_raw_method_bytes(self, tmp_path):
+        import types
+        addon = self._addon(tmp_path)
+        flow = _hflow("readonly.test", path="/items", scheme="http", port=8080, host_header="readonly.test:8080")
+        flow.request.data = types.SimpleNamespace(method=b"POST")
+        flow.request.method = "POST"
+        addon.TjorPolicy().requestheaders(flow)
+        assert flow.response.headers["x-tjor-rule"] == "method-block:POST"
+        lower = _hflow("readonly.test", path="/items", scheme="http", port=8080, host_header="readonly.test:8080")
+        lower.request.data = types.SimpleNamespace(method=b"get")   # mitmproxy's .method would say GET
+        lower.request.method = "GET"
+        addon.TjorPolicy().requestheaders(lower)
+        assert lower.response.headers["x-tjor-rule"] == "method-block:get"
+        bad = _hflow("allowed.test")
+        bad.request.data = types.SimpleNamespace(method="G\u00c9T".encode("utf-8"))
+        addon.TjorPolicy().requestheaders(bad)
+        assert bad.response.headers["x-tjor-rule"] == "fail-closed:bad-method"
+
+    def test_a_method_literally_named_upgrade_is_a_method_denial(self, tmp_path):
+        import types
+        addon = self._addon(tmp_path)
+        flow = _hflow("readonly.test", path="/items", scheme="http", port=8080, host_header="readonly.test:8080")
+        flow.request.data = types.SimpleNamespace(method=b"upgrade")
+        addon.TjorPolicy().requestheaders(flow)
+        assert flow.response.headers["x-tjor-rule"] == "method-block:upgrade"
+
+    @pytest.mark.parametrize("headers,rule", [
+        ({"upgrade": "websocket"}, "header-block:upgrade"),
+        ({"connection": "keep-alive, Upgrade"}, "header-block:upgrade"),
+        ({"sec-websocket-version": "13"}, "header-block:upgrade"),
+        ({"x-http-method-override": "DELETE"}, "header-block:method-override"),
+        ({"x-http-method": "DELETE"}, "header-block:method-override"),
+        ({"x-method-override": "DELETE"}, "header-block:method-override"),
+    ])
+    def test_header_guards_on_a_restricted_host(self, tmp_path, headers, rule):
+        import types
+        addon = self._addon(tmp_path)
+        flow = _hflow("readonly.test", path="/ws", scheme="http", port=8080, host_header="readonly.test:8080", headers=headers)
+        flow.request.data = types.SimpleNamespace(method=b"GET")
+        addon.TjorPolicy().requestheaders(flow)
+        assert flow.response.status_code == 403 and flow.response.headers["x-tjor-rule"] == rule
+        assert f"readonly.test\t{rule}" in (tmp_path / "denials.log").read_text()
+        plain = _hflow("allowed.test", path="/ws", headers=headers)
+        plain.request.data = types.SimpleNamespace(method=b"GET")
+        addon.TjorPolicy().requestheaders(plain)
+        assert plain.response is None and all(k in plain.request.headers for k in headers)   # forwarded as before
+
+    def test_101_from_a_restricted_host_is_refused(self, tmp_path):
+        import types
+        addon = self._addon(tmp_path)
+        flow = _hflow("readonly.test", path="/switch", scheme="http", port=8080, host_header="readonly.test:8080")
+        flow.response = types.SimpleNamespace(status_code=101, stream=None, headers={"upgrade": "websocket"})
+        addon.TjorPolicy().responseheaders(flow)
+        assert flow.killed
+        assert "readonly.test\theader-block:upgrade-response" in (tmp_path / "denials.log").read_text()
+        plain = _hflow("allowed.test", path="/switch")
+        plain.response = types.SimpleNamespace(status_code=101, stream=None, headers={"upgrade": "websocket"})
+        addon.TjorPolicy().responseheaders(plain)
+        assert not plain.killed                                   # the proxy handles it as today
+        ok = _hflow("readonly.test", path="/items", scheme="http", port=8080, host_header="readonly.test:8080")
+        ok.response = types.SimpleNamespace(status_code=200, stream=None, headers={})
+        addon.TjorPolicy().responseheaders(ok)
+        assert not ok.killed
+
+    def test_exception_inside_decide_still_fails_closed(self, tmp_path, monkeypatch):
+        addon = self._addon(tmp_path)
+        monkeypatch.setattr(addon, "decide", lambda url, method: (_ for _ in ()).throw(RuntimeError("boom")))
+        assert addon.request_verdict("http://readonly.test/items", "readonly.test", "GET").rule == "fail-closed:addon-error"

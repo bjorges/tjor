@@ -14,17 +14,36 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 import tjor_policy
 
 
+_HOSTS_HEADER = re.compile(r"^\[hosts\][ \t]*(?:#.*)?$", re.M)
+_NEXT_TABLE = re.compile(r"^\[", re.M)
+_ALLOW_OPEN = re.compile(r"^[ \t]*allow[ \t]*=[ \t]*\[", re.M)
+
+
 def add_hosts(path: str, hosts: list[str]) -> None:
     text = Path(path).read_text() if Path(path).is_file() else ""
-    # Insert right after the opening bracket of hosts.allow, so existing
-    # entries and comments are untouched.
-    m = re.search(r"\[hosts\][\s\S]*?allow\s*=\s*\[", text)
-    if m:
-        insert = "".join(f'\n  "{h}",' for h in hosts)
-        text = text[: m.end()] + insert + text[m.end():]
-    else:
+    # Three shapes of file (#66, design D9). Only the `[hosts]` table's own
+    # `allow` list is an insertion point: a `[[methods.restrict]]` rule has an
+    # `allow` list too, and the old "first `allow = [` after `[hosts]`" search
+    # could land in it. The table's keys end at the next table header.
+    header = _HOSTS_HEADER.search(text)
+    if header is None:
         block = "".join(f'  "{h}",\n' for h in hosts)
         text = text.rstrip() + f"\n\n[hosts]\nallow = [\n{block}]\n"
+    else:
+        body_start = header.end()
+        nxt = _NEXT_TABLE.search(text, body_start)
+        body_end = nxt.start() if nxt else len(text)
+        opening = _ALLOW_OPEN.search(text, body_start, body_end)
+        if opening:
+            # Insert right after the opening bracket, so existing entries and
+            # comments are untouched.
+            insert = "".join(f'\n  "{h}",' for h in hosts)
+            text = text[: opening.end()] + insert + text[opening.end():]
+        else:
+            # The table exists without an allow list: add the key right after
+            # the header (a second [hosts] table would be a TOML error).
+            block = "".join(f'  "{h}",\n' for h in hosts)
+            text = text[:body_start] + f"\nallow = [\n{block}]" + text[body_start:]
 
     parsed = tjor_policy.parse_policy(text, source=path)
     if not parsed.valid:

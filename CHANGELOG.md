@@ -6,6 +6,21 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 ## [Unreleased]
 
 ### Added
+- **Method gate in the egress policy** (#66). `[[methods.restrict]]` makes a
+  host read-only (`host`, `allow = [<METHOD>, …]`) and `[[methods.except]]`
+  admits a method on exactly one path (`host`, `path`, `methods`), matched
+  like an allow rule (every encoded form of the path must match). The gate
+  runs last, on a request the other stages allowed, and can only deny with
+  `method-block:<METHOD>`; restrictions on one host intersect; an exception is
+  as wide as its own patterns. Methods are compared byte for byte as sent (no
+  case folding), and must be HTTP tokens of at most 32 characters, else
+  `fail-closed:bad-method`. On a restricted host the proxy also refuses
+  protocol switches (`Upgrade`, `Connection: upgrade`, `Sec-WebSocket-Version`,
+  a `101` from the host) and method-override headers, as `header-block:*`;
+  no rule lifts those. `tjor policy <url> --method <M>` previews a method and
+  notes when a host is restricted; `tjor denials` and the teardown recap give
+  each rule kind its own hint. README "Read-only hosts"; a commented example
+  in the packaged policy; ten conformance probes (41 in all).
 - **Conformance: an upstream that would notice** (ADR 0012). The echo fixture
   records every accepted connection and every request it starts reading,
   serves TLS from a conformance-only certificate (the proxy trusts it through
@@ -90,6 +105,20 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
   gains a live section that interleaves a real launch with a prune.
 
 ### Changed
+- The gateway's policy augmentation parses the base policy with the one
+  policy parser first and re-emits every section from it, `methods` rules
+  included, adding a `POST` exception for the gateway's `POST` inference
+  paths so a wildcard restriction cannot deny inference. An invalid base
+  policy now fails the launch loudly before anything starts, and a relaunch
+  into a reused session directory removes the stale session policy an earlier
+  launch left (sidecars still running from it keep the policy they loaded
+  until `tjor down`); before, the tolerant re-read could emit a valid policy
+  without a malformed section.
+- `tjor policy add` inserts into the `[hosts]` table's own `allow` list only
+  (creating it when the table has none), never into a `[[methods.restrict]]`
+  rule's `allow` list.
+- Python API: `tjor_policy.evaluate` and `check` take the request method; the
+  proxy addon reads it from the raw request bytes.
 - **Egress enforcement at the headers stage** (ADR 0012): the verdict, the
   denial, credential injection and identity handling run in mitmproxy's
   `requestheaders` hook, before any byte of the request can be forwarded. A
