@@ -37,8 +37,50 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
   the `## [X.Y.Z] — YYYY-MM-DD — title` form the release workflow parses.
   A release PR that bumps `VERSION` without renaming the heading fails CI
   instead of producing a release with empty notes.
+- **Session state inventory and prune** (#68; specs: session-lifecycle,
+  session-launch, git-tamper-detection). `tjor ls --state` lists every state
+  directory under the session root: the workspace it belongs to, whether it
+  still has containers, how long since anything in it changed (the newest
+  timestamp anywhere in the directory, never following a symlink; `unknown`
+  when it could not be fully read) and which credential paths it holds.
+  `tjor prune` deletes state and nothing else: exactly one selector
+  (`--older-than <N>d` or `--session <id>`), `--dry-run`, `--creds-only`. It
+  refuses any session that still has a container in any state (`tjor down`
+  first), whole-directory deletion while a git-check is pending unless
+  `--discard-unreviewed` (accepted per `--session` only, never with an age
+  sweep), a failed container query, and a session a launch is mid-way
+  through. Every deletion goes through the symlink-ancestor guard from the
+  canonical session root (charter L26). Prune forgets credentials, it does
+  not revoke them, and says so.
+- Every launch records `meta.json` in the session's state directory
+  (workspace, harness, profile, task, first and last launch, launch count),
+  atomically and without secrets; directories from older versions read as
+  unknown.
+- A per-session lock (`<session.root>/.locks/<id>`), held by `tjor run` from
+  its first write until the agent container exists and by `prune`/`reset`
+  while they delete, so a launch and a deletion of one session's state cannot
+  interleave. A lock left by a dead process is cleared; a held one refuses
+  and names its holder.
+- One definition of the state tiers (`python/tjor_state.py`) shared by
+  `reset`, `ls --state` and `prune --creds-only`. The credential tier now also
+  covers Claude Code's `.credentials.json`, `.claude.json` and its backups;
+  what it does not cover is stated in the README.
+- `tests/integration/state_test.sh` (unit job, mock docker): the lock, the
+  inventory and every prune refusal and deletion path; the lifecycle suite
+  gains a live section that interleaves a real launch with a prune.
 
 ### Changed
+- Lifecycle commands (`down`, `reset`, `status`, `denials`, `git-check`,
+  `ls --state`, `prune`) no longer create the session's state directory when
+  they resolve its name; only a launch does (#68).
+- A second `tjor run` of the same session while the first is still setting
+  up, before its agent container exists, is refused instead of sharing its
+  credentials and topology (#68).
+
+### Fixed
+- `tjor ls` and `tjor gc` died with `unbound variable` on bash 5.3 when no
+  session existed (an empty associative array is unbound under `set -u`
+  there); they now say "no sessions" / "nothing to reap" as intended.
 - `ci.yml` cancels only superseded pull-request runs; a run on `main` keeps
   its verdict.
 - README: AppArmor support is detected and announced; the profiles ship in a

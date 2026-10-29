@@ -118,10 +118,12 @@ Managing sessions (D3):
 
 ```console
 $ tjor ls                         # every session, with a live boundary re-check
+$ tjor ls --state                 # every state directory: containers, last activity, credentials present
 $ tjor run --session review       # a second, isolated session in the same repo
 $ tjor attach review              # reattach to a running agent (detach: ctrl-p ctrl-q)
 $ tjor gc --dry-run               # what would be reaped (idle containers/networks)
 $ tjor reset cache --dry-run      # tiered state wipe: cache | sessions | creds | all
+$ tjor prune --older-than 30d --dry-run   # state directories to delete, by age (or: --session <id>)
 ```
 
 `tjor ls` re-verifies each running session's internal-only network and flags a
@@ -131,6 +133,35 @@ tiered, dry-runnable job. A session whose agent has exited or been stopped is
 relaunched with the same `tjor run --session <name>`: the agent container is
 created afresh from that command line, so a changed `--dir` list applies
 (verified, #78); the exited container stays until `gc` or `down`.
+
+Session **state** — `~/.tjor/sessions/<id>`: the harness home, the session
+CA, broker material, the git-check baseline — persists until you prune it
+(#68). `tjor ls --state` inventories the state root, one row per directory:
+the workspace it belongs to (recorded at launch in `meta.json`; directories
+from older versions show `unknown`), whether it still has containers, how long
+since anything in it changed, and which credential paths it holds. `tjor
+prune` deletes state and nothing else. It takes exactly one selector
+(`--older-than <N>d` or `--session <id>`, never both), is dry-runnable, and
+refuses: any session that still has a container, in any state (`tjor down`
+first — that also revokes the brokered credential and runs the teardown git
+check); whole-directory deletion of a session whose git-check is pending,
+unless you give its findings up with `--discard-unreviewed`, accepted per
+`--session` only, never with an age sweep; and any session a launch is
+mid-way through (a per-session lock, held from the launch's first write until
+the agent container exists, and by `prune`/`reset` while they delete).
+`--creds-only` removes just the credential tier. Prune **forgets** credentials,
+it does not revoke them — revocation happens at `down`/`gc` — and says so.
+Limits: the credential tier covers what tjor writes (`broker/`, `proxy-ca/`,
+`ca.pem`) and the harness files tjor knows (opencode's `auth.json`, `gh`'s
+`hosts.yml`, Claude Code's `.credentials.json`, `.claude.json` and its
+backups); a harness that stores a token elsewhere — Copilot CLI's keyring
+fallback was not located — is not covered by `--creds-only`, while a
+whole-directory prune removes everything. Last activity is the newest
+timestamp anywhere in the directory, so a very large home takes a moment to
+walk, and a directory tjor cannot fully read shows `unknown` and is never
+swept by age. The lock is a directory holding the owner's pid; after a crash
+a reused pid can make a stale one look held — the refusal names the path, and
+you remove it by hand after checking `ps`.
 
 ## Egress policy — and growing it
 

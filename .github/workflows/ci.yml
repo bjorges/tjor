@@ -44,6 +44,8 @@ jobs:
         run: bash tests/integration/gitcheck_test.sh
       - name: worktree common-dir mounts (no docker) (#79)
         run: bash tests/integration/worktree_test.sh
+      - name: session state inventory, prune and lock (mock docker) (#68)
+        run: bash tests/integration/state_test.sh
       - name: shellcheck
         # --severity=warning: fail on real bugs (warning/error), not info-level
         # findings like SC2317 (trap-invoked functions look "unreachable"),
