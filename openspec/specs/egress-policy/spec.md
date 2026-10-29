@@ -51,7 +51,7 @@ The default policy SHALL allow the harness's functionally required endpoints whi
 
 ### Requirement: Denial is enforced before any request byte is forwarded
 
-The proxy SHALL compute the verdict, enforce a denial, and perform credential injection and identity handling once the request headers are read and before any part of the request is sent upstream. It SHALL negotiate HTTP/1.1 only, so every request declares its body at that point. A denied request with no body or a bounded `Content-Length` SHALL get the 403, with nothing forwarded and no `100 Continue`; otherwise its connection SHALL be closed without a response before any body byte is consumed.
+The proxy SHALL compute the verdict, enforce a denial, inject credentials and handle identity at the headers stage, before any byte of the request is sent upstream. It SHALL negotiate HTTP/1.1 only, so every body is declared there. A denied request with no body or a bounded `Content-Length` gets the 403 (nothing forwarded, no `100 Continue`), except one asking for a `100 Continue` before a body, which is closed at once; any other denied request is closed before a body byte is read.
 
 #### Scenario: A large denied body is never forwarded
 - **WHEN** the agent sends a POST with a declared body above the streaming threshold to a denied URL
@@ -62,7 +62,7 @@ The proxy SHALL compute the verdict, enforce a denial, and perform credential in
 - **THEN** the connection is closed at the headers stage, no byte of the request is forwarded, and the denial is logged with its rule
 
 #### Scenario: A bounded denied request gets the 403 and the connection survives
-- **WHEN** the agent sends a denied request with no body or with a `Content-Length` at or below the threshold
+- **WHEN** the agent sends a denied request with no body or with a `Content-Length` at or below the threshold, and does not ask for a `100 Continue` before a body
 - **THEN** it receives the 403 with the rule, nothing is forwarded, and a following request on the same connection is judged on its own
 
 #### Scenario: A denied request with Expect gets no 100 Continue

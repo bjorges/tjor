@@ -120,9 +120,9 @@ def in_tunnel(conn: http.client.HTTPConnection, method: str, path: str,
 
 def seen() -> dict:
     """The echo fixture's record of connections and requests (its own /_seen
-    requests excluded). Polls until two consecutive snapshots agree, so a
-    request the fixture is still recording in a handler thread is in the
-    record before it is compared."""
+    requests excluded). A bounded heuristic for a settled record: snapshots
+    are read 100 ms apart until two consecutive ones agree; a record still
+    changing after four seconds fails the probe rather than being compared."""
     last = None
     for _ in range(40):
         resp = via_proxy(f"http://{ECHO}:8080/_seen")
@@ -132,17 +132,31 @@ def seen() -> dict:
             return snap
         last = snap
         time.sleep(0.1)
-    return last
+    raise AssertionError("the fixture's record kept changing for four seconds; cannot compare it")
+
+
+def closed_at_once(sock: socket.socket, timeout: float = 10.0) -> None:
+    """Assert the peer closed the connection: EOF, or a reset while reading.
+    A timeout is NOT a close — a proxy that merely stalls fails here."""
+    sock.settimeout(timeout)
+    try:
+        data = sock.recv(4096)
+    except (ConnectionResetError, BrokenPipeError, ConnectionAbortedError):
+        return
+    except TimeoutError:
+        raise AssertionError(f"the proxy stalled for {timeout:.0f}s instead of closing the connection") from None
+    assert data == b"", f"expected the connection closed at once, got {data[:60]!r}"
 
 
 def nothing_forwarded(before: dict, what: str) -> None:
     """After a denied attempt: send a sentinel allowed request and assert the
-    record grew by exactly that sentinel. The sentinel orders the proxy's side
-    (a forwarded request leaves the proxy before its answer to the client,
-    which precedes the sentinel); on the fixture's side a connection is
-    recorded in the accept loop before any thread runs and `seen()` waits for
-    a settled snapshot, so the fixture's own threads cannot reorder the
-    record past the comparison."""
+    record grew by exactly that sentinel. What this establishes: on the proxy's
+    side a forwarded request leaves before the proxy answers the client, which
+    precedes the sentinel; on the fixture's side a new connection is counted in
+    the accept loop before any thread runs, and a request on an existing
+    connection is recorded once its headers parse, which `seen()`'s settled
+    snapshot gives a bounded (four-second) chance to happen. It is a strong
+    heuristic over the fixture's threads, not a proof of ordering."""
     sentinel = f"/sentinel-{time.time_ns()}"
     resp = via_proxy(f"http://{ECHO}:8080{sentinel}")
     assert resp.status == 200, f"{what}: sentinel request failed ({resp.status})"
@@ -422,8 +436,11 @@ def p_enf_bounded_denied():
         f"bounded denied POST: expected 403 path-block, got {resp.status} {resp.getheader('x-tjor-rule')!r}")
     resp.read()
     expect_denial(ECHO, "path-block")
-    follow = via_proxy(f"http://{ECHO}:8080/after-denial", conn=conn)   # same connection
+    first_sock = conn.sock                                             # http.client would reconnect silently
+    assert first_sock is not None, "the connection was dropped after the 403"
+    follow = via_proxy(f"http://{ECHO}:8080/after-denial", conn=conn)   # same connection, same socket
     assert follow.status == 200, f"the connection did not survive the 403: {follow.status}"
+    assert conn.sock is first_sock, "the follow-up request went over a new socket: the 403 closed the connection"
     follow.read()
     after = seen()
     new = after["requests"][len(before["requests"]):]
@@ -440,12 +457,7 @@ def p_enf_expect():
         sock.sendall(
             f"POST http://{ECHO}:8080/phone-home/expect HTTP/1.1\r\nHost: {ECHO}:8080\r\n"
             f"Content-Length: 10\r\nExpect: 100-continue\r\n\r\n".encode())
-        sock.settimeout(10)
-        try:
-            data = sock.recv(4096)
-        except OSError:
-            data = b""                       # a reset is a close too
-    assert data == b"", f"expected the connection closed at once (no 100, no body wait), got {data[:60]!r}"
+        closed_at_once(sock)                 # EOF or reset; a stall fails
     expect_denial(ECHO, "path-block")
     # With no body to wait for, the 403 is the answer, and no 100 precedes it.
     with socket.create_connection((PROXY_IP, PROXY_PORT), timeout=15) as sock:

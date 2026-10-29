@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import ssl
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -152,21 +153,22 @@ class Echo(BaseHTTPRequestHandler):
             return
         while True:  # chunked; strict: a fixture meant to notice mis-framing
             line = self.rfile.readline(1024)
-            if not line:
-                raise ConnectionError("chunked body cut short")
-            token = line.split(b";", 1)[0].strip()
-            if not token:
-                raise ConnectionError("empty chunk-size line")
-            try:
-                size = int(token, 16)
-            except ValueError:
-                raise ConnectionError(f"malformed chunk size {token[:16]!r}") from None
+            if not line.endswith(b"\r\n"):
+                raise ConnectionError("chunked body cut short or unterminated chunk-size line")
+            token = line[:-2].split(b";", 1)[0].strip()
+            if not re.fullmatch(rb"[0-9A-Fa-f]{1,8}", token):     # hex digits only: no sign, no 0x, bounded
+                raise ConnectionError(f"malformed chunk size {token[:16]!r}")
+            size = int(token, 16)
             if size == 0:
-                while self.rfile.readline(1024) not in (b"\r\n", b""):
-                    pass  # trailers
-                return
+                while True:                                           # trailers end with an empty line, never EOF
+                    trailer = self.rfile.readline(1024)
+                    if not trailer.endswith(b"\r\n"):
+                        raise ConnectionError("chunked body cut short before the final CRLF")
+                    if trailer == b"\r\n":
+                        return
             self._read_exact(entry, size)
-            self.rfile.readline(1024)  # the chunk's CRLF
+            if self.rfile.read(2) != b"\r\n":
+                raise ConnectionError("chunk data not followed by CRLF")
 
     # --- reply ------------------------------------------------------------
     def _reply(self, obj: dict) -> None:

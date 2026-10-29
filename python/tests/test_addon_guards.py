@@ -1621,12 +1621,20 @@ class TestHeadersStageEnforcement:
         assert flow.response.status_code == 403
         assert flow.response.headers["x-tjor-rule"] == "host-block"
 
-    def test_no_streaming_configured_means_every_denial_is_a_403(self, tmp_path):
+    def test_no_streaming_configured_still_kills_unbounded_bodies(self, tmp_path):
+        # With streaming off mitmproxy would buffer a chunked body whole before
+        # answering; a denied request is not worth that memory: still a kill.
         addon = self._addon(tmp_path)
         addon._STREAM_THRESHOLD = None
-        flow = _hflow("blocked.test", headers={"transfer-encoding": "chunked"})
-        addon.TjorPolicy().requestheaders(flow)
-        assert not flow.killed and flow.response.status_code == 403
+        chunked = _hflow("blocked.test", headers={"transfer-encoding": "chunked"})
+        addon.TjorPolicy().requestheaders(chunked)
+        assert chunked.killed and chunked.response is None
+        big = _hflow("blocked.test", headers={"content-length": str(50 * self.MIB)})
+        addon.TjorPolicy().requestheaders(big)
+        assert not big.killed and big.response.status_code == 403     # declared: mitmproxy buffers it, then answers
+        expect_chunked = _hflow("blocked.test", headers={"transfer-encoding": "chunked", "expect": "100-continue"})
+        addon.TjorPolicy().requestheaders(expect_chunked)
+        assert expect_chunked.killed                                    # size None is a body, not "no body"
 
     def test_allowed_streaming_request_is_rewritten_at_headers(self, tmp_path):
         import tjor_broker as tb
@@ -1824,15 +1832,39 @@ class TestHostIdentity:
 
     def test_authority_parsing(self, tmp_path):
         addon = self._addon(tmp_path)
-        assert addon._authority_host("example.test.:8443") == "example.test"
-        assert addon._authority_host("EXAMPLE.test") == "example.test"
-        assert addon._authority_host("[2001:db8::1]:8443") == "2001:db8::1"
-        assert addon._authority_host("bücher.example") == "xn--bcher-kva.example"
-        assert addon._authority_host(b"a.test:80") == "a.test"
-        assert addon._authority_host("bad host") is None
-        assert addon._authority_host("a.test/x") is None
-        assert addon._authority_host("[2001:db8::1]x") is None
-        assert addon._authority_host("") is None
+        assert addon._ident_authority("example.test.:8443") == "example.test"
+        assert addon._ident_authority("EXAMPLE.test") == "example.test"
+        assert addon._ident_authority("[2001:db8::1]:8443") == "2001:db8::1"
+        assert addon._ident_authority("bücher.example") == "xn--bcher-kva.example"
+        assert addon._ident_authority(b"a.test:80") == "a.test"
+        assert addon._ident_authority("bad host") is None
+        assert addon._ident_authority("a.test/x") is None
+        assert addon._ident_authority("[2001:db8::1]x") is None
+        assert addon._ident_authority("[]") is None                 # the guard applies to the bracket branch too
+        assert addon._ident_authority("[foo/bar]") is None
+        assert addon._ident_authority("[ ]:80") is None
+        assert addon._ident_authority("") is None
+
+    def test_bare_host_parsing(self, tmp_path):
+        addon = self._addon(tmp_path)
+        assert addon._ident_host("2001:db8::1") == "2001:db8::1"      # a bare IPv6 host keeps every group
+        assert addon._ident_host("Bücher.Example.") == "xn--bcher-kva.example"
+        assert addon._ident_host("10.1.2.3") == "10.1.2.3"
+        assert addon._ident_host("a b") is None and addon._ident_host("") is None
+
+    def test_idn_connect_target_matches_its_ascii_sni(self, tmp_path):
+        # mitmproxy hands the CONNECT target over as a U-label; the SNI and the
+        # Host header carry the A-label. One representation, no false mismatch.
+        addon = self._addon(tmp_path)
+        self._connect(addon, "bücher.allowed.test", "c1")
+        assert addon._tunnel_host == {"c1": "xn--bcher-kva.allowed.test"}
+        flow = _hflow("10.1.2.3", client_id="c1", sni="xn--bcher-kva.allowed.test", host_header="xn--bcher-kva.allowed.test")
+        addon.TjorPolicy().requestheaders(flow)
+        assert flow.response is None and flow.metadata["tjor_verdict"]["allowed"]
+        assert addon._logical_host(flow) == "xn--bcher-kva.allowed.test"
+        lie = _hflow("10.1.2.3", client_id="c1", sni="xn--bcher-kva.allowed.test", host_header="bücher.blocked.test")
+        addon.TjorPolicy().requestheaders(lie)
+        assert lie.response.headers["x-tjor-rule"] == "fail-closed:host-mismatch"
 
     def test_u_label_host_header_matches_a_label_sni(self, tmp_path):
         addon = self._addon(tmp_path)

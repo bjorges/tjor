@@ -2862,6 +2862,42 @@ cmd_gateway() {
     esac
 }
 
+# Denial-log check for `tjor conformance` (ADR 0012). Every probe that provokes
+# a denial declares it (`expect-denial<TAB>host<TAB>rule` lines in the probe
+# output), so the session's denial log must be EXACTLY the declared multiset:
+# per-pair counts match AND the line totals match, so neither a missing
+# declaration nor an undeclared denial can pass; a run that declared nothing is
+# a broken run, not a clean one. A killed request leaves no 403 to read, so this
+# is how a closed connection is shown to have been a denial by the right rule.
+# Tokens are whitespace-free by construction: the addon writes hosts through its
+# ASCII sanitizer and the declared rules are literals. Exercised without docker
+# by tests/integration/conformance_runtime_test.sh.
+conformance_denials_match() { # <probe output file> <denials.log>; prints the summary, returns 1 on mismatch
+    local out="$1" dlog="$2" cnt host rule have nmatch=0 ntotal=0 declared logged status=0
+    while read -r cnt host rule; do
+        [[ -n "${host}" ]] || continue
+        ntotal=$((ntotal + 1))
+        have="$(awk -F'\t' -v h="${host}" -v r="${rule}" '$1 == h && $2 == r' "${dlog}" 2>/dev/null | wc -l | tr -d ' ')"
+        if [[ "${have}" == "${cnt}" ]]; then
+            nmatch=$((nmatch + 1))
+        else
+            loud "conformance: denial log has ${have} line(s) for '${host} ${rule}', the probes expected ${cnt}"
+            status=1
+        fi
+    done < <(sed -n $'s/^expect-denial\t//p' "${out}" | sort | uniq -c | awk '{print $1, $2, $3}')
+    declared="$(grep -c $'^expect-denial\t' "${out}" || true)"
+    logged="$(grep -c . "${dlog}" 2>/dev/null || true)"
+    if ((ntotal == 0)); then
+        loud "conformance: the probes declared no denials — the suite did not run as expected"
+        status=1
+    elif [[ "${declared}" != "${logged}" ]]; then
+        loud "conformance: the denial log holds ${logged} line(s) but the probes declared ${declared} — an undeclared or missing denial"
+        status=1
+    fi
+    echo "tjor: denials: ${nmatch}/${ntotal} expected rules recorded, ${logged} log line(s) for ${declared} declared" >&2
+    return "${status}"
+}
+
 cmd_conformance() {
     export TJOR_POLICY_OVERRIDE="${TJOR_ROOT}/images/conformance/policy.toml"
     export TJOR_SESSION="conformance"
@@ -2955,32 +2991,7 @@ cmd_conformance() {
     # is how a closed connection is shown to have been a denial by the right
     # rule — and a count, not presence, means an unrelated failure in one
     # probe cannot hide behind another probe's denial.
-    # Every probe that provokes a denial declares it, so the log must be EXACTLY
-    # the declared multiset: per-pair counts match AND the line totals match, so
-    # neither a missing declaration nor an undeclared denial can pass. A run
-    # that declared nothing at all is a broken run, not a clean one.
-    local dlog="${TJOR_SESSION_DIR}/denials.log" cnt host rule have nmatch=0 ntotal=0 declared logged
-    while read -r cnt host rule; do
-        [[ -n "${host}" ]] || continue
-        ntotal=$((ntotal + 1))
-        have="$(awk -F'\t' -v h="${host}" -v r="${rule}" '$1 == h && $2 == r' "${dlog}" 2>/dev/null | wc -l | tr -d ' ')"
-        if [[ "${have}" == "${cnt}" ]]; then
-            nmatch=$((nmatch + 1))
-        else
-            loud "conformance: denial log has ${have} line(s) for '${host} ${rule}', the probes expected ${cnt}"
-            rc=1
-        fi
-    done < <(sed -n $'s/^expect-denial\t//p' "${out}" | sort | uniq -c | awk '{print $1, $2, $3}')
-    declared="$(grep -c $'^expect-denial\t' "${out}" || true)"
-    logged="$(grep -c . "${dlog}" 2>/dev/null || true)"
-    if ((ntotal == 0)); then
-        loud "conformance: the probes declared no denials — the suite did not run as expected"
-        rc=1
-    elif [[ "${declared}" != "${logged}" ]]; then
-        loud "conformance: the denial log holds ${logged} line(s) but the probes declared ${declared} — an undeclared or missing denial"
-        rc=1
-    fi
-    echo "tjor: denials: ${nmatch}/${ntotal} expected rules recorded, ${logged} log line(s) for ${declared} declared" >&2
+    conformance_denials_match "${out}" "${TJOR_SESSION_DIR}/denials.log" || rc=1
     rm -f "${out}"
     if ((rc == 0)); then
         result="PASS"

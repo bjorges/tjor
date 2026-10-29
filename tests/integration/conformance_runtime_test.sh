@@ -54,6 +54,31 @@ probes="$(printf 'ok   x\n\nconformance: 17/18 probes passed\n' \
 [[ "${probes}" == "18" ]] && ok "attestation probe count parsed from the suite summary (18)" \
     || bad "probe-count parse: wanted 18, got '${probes}'"
 
+# The denial-log check (ADR 0012): the log must be EXACTLY the multiset the
+# probes declared. Driven against hand-made files, no docker.
+WORK="$(mktemp -d)"; trap 'rm -rf "${WORK}"' EXIT
+mk() {  # mk <name> <content…>: a file whose lines are the remaining args
+    printf '%s\n' "${@:2}" > "${WORK}/$1"
+}
+denials_case() {  # denials_case <label> <want-exit> <out-file> <log-file>
+    local label="$1" want="$2" got=0
+    conformance_denials_match "${WORK}/$3" "${WORK}/$4" >/dev/null 2>&1 || got=$?
+    [[ "${got}" == "${want}" ]] && ok "denial check: ${label}" || bad "denial check: ${label} (wanted exit ${want}, got ${got})"
+}
+T=$'\t'
+mk out.ok   "ok   a" "expect-denial${T}a.test${T}host-block" "expect-denial${T}a.test${T}host-block" "expect-denial${T}b.test${T}path-block" "conformance: 3/3 probes passed"
+mk log.ok   "a.test${T}host-block${T}t1" "b.test${T}path-block${T}t2" "a.test${T}host-block${T}t3"
+mk log.miss "a.test${T}host-block${T}t1" "b.test${T}path-block${T}t2"
+mk log.extra "a.test${T}host-block${T}t1" "b.test${T}path-block${T}t2" "a.test${T}host-block${T}t3" "c.test${T}default-deny${T}t4"
+mk log.swap "a.test${T}host-block${T}t1" "b.test${T}path-block${T}t2" "b.test${T}path-block${T}t3"
+mk out.none "ok   a" "conformance: 1/1 probes passed"
+mk log.none
+denials_case "exact multiset passes"            0 out.ok   log.ok
+denials_case "a missing denial fails"           1 out.ok   log.miss
+denials_case "an undeclared denial fails"       1 out.ok   log.extra
+denials_case "same total, wrong pair fails"     1 out.ok   log.swap
+denials_case "no declarations at all fails"     1 out.none log.none
+
 echo
 echo "conformance-runtime: ${PASS} passed, ${FAIL} failed"
 exit "$((FAIL > 0 ? 1 : 0))"

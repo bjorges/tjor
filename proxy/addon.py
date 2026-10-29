@@ -754,14 +754,32 @@ def _server_sni(flow) -> str:
     return sni.decode() if isinstance(sni, bytes) else str(sni)
 
 
-def _authority_host(value) -> "str | None":
-    """The canonical host named by a Host header or a request-target authority,
-    or None when it cannot be parsed. The port is split off BEFORE
-    canonicalising (so a trailing dot survives `_canon_host`'s rstrip only
-    when it is really trailing), a bracketed IPv6 literal is unwrapped, and a
-    non-ASCII name is converted to its A-label so a U-label and the A-label the
-    SNI carries compare equal. Anything that does not parse compares unequal —
-    a mismatch, which fails closed."""
+def _a_label(host: str) -> str:
+    """A non-ASCII (U-label) name as its A-label. mitmproxy hands the addon the
+    request host and authority it parsed from the wire as U-labels, while the
+    TLS server name stays ASCII; one representation is compared everywhere."""
+    return host if host.isascii() else host.encode("idna").decode("ascii")
+
+
+def _ident_host(value) -> "str | None":
+    """Canonical form of a bare host (no port): the tunnel target, the server
+    name, the URL host. None when it is not a host at all, which compares
+    unequal — fail closed."""
+    try:
+        text = value.decode("ascii") if isinstance(value, bytes) else str(value)
+        text = text.strip()
+        if not text or any(c.isspace() for c in text) or "/" in text:
+            return None
+        return tjor_policy._canon_host(_a_label(text))
+    except Exception:  # noqa: BLE001 — unparseable: compare unequal
+        return None
+
+
+def _ident_authority(value) -> "str | None":
+    """Canonical form of a Host header or request-target authority: the port
+    is split off (a bracketed IPv6 literal unwrapped) BEFORE canonicalising,
+    so a trailing dot survives `_canon_host`'s strip only when it really
+    trails, then `_ident_host`. None when it cannot be parsed."""
     try:
         text = value.decode("ascii") if isinstance(value, bytes) else str(value)
         text = text.strip()
@@ -772,15 +790,9 @@ def _authority_host(value) -> "str | None":
                 return None
         else:
             host, sep, port = text.rpartition(":")
-            if sep and port.isdigit():
-                pass
-            else:
+            if not (sep and port.isdigit()):
                 host = text
-            if not host or " " in host or "/" in host:
-                return None
-        if not host.isascii():
-            host = host.encode("idna").decode("ascii")
-        return tjor_policy._canon_host(host)
+        return _ident_host(host)
     except Exception:  # noqa: BLE001 — unparseable authority: compare unequal
         return None
 
@@ -807,22 +819,22 @@ def _connection_host(flow) -> tuple[str, str]:
     sni = _server_sni(flow)
     if tunnel is not None:
         judged = tunnel
-        if sni and tjor_policy._canon_host(sni) != judged:
+        if sni and _ident_host(sni) != judged:
             return judged, "sni"
     elif sni:
-        judged = tjor_policy._canon_host(sni)
+        judged = _ident_host(sni) or ""
     else:
-        judged = tjor_policy._canon_host(flow.request.host)
+        judged = _ident_host(flow.request.host) or ""
     headers = getattr(flow.request, "headers", None)
     host_header = headers.get("host") if headers is not None else None
-    if host_header is not None and _authority_host(host_header) != judged:
+    if host_header is not None and _ident_authority(host_header) != judged:
         return judged, "host-header"
     # An absolute-form target inside a tunnel keeps its authority (mitmproxy
     # clears it in regular mode only) and is re-emitted upstream as such, so a
     # request line naming B with Host: A would reach A as `GET http://B/…`.
     # The authority must name the judged host too.
     authority = getattr(flow.request, "authority", "") or ""
-    if authority and _authority_host(authority) != judged:
+    if authority and _ident_authority(authority) != judged:
         return judged, "authority"
     return judged, ""
 
@@ -957,8 +969,11 @@ def _enforce_denial(flow, agent_rule: str, pattern: str = "") -> None:
     cannot be killed falls back to the 403, the next-best denial."""
     size = _declared_body_size(flow)
     streaming = bool(getattr(flow.request, "stream", False))
+    # A chunked body (size None) is unbounded whatever the threshold: with
+    # streaming off mitmproxy would buffer all of it before answering, and a
+    # denied request is not worth that memory.
     if _STREAM_THRESHOLD is None:
-        bounded = not streaming
+        bounded = size is not None and not streaming
     else:
         bounded = size is not None and size <= _STREAM_THRESHOLD and not streaming
     # `Expect: 100-continue` with a body: mitmproxy sends a response only after
@@ -966,7 +981,7 @@ def _enforce_denial(flow, agent_rule: str, pattern: str = "") -> None:
     # a 403 could never arrive promptly. Close at once instead (the README
     # states this exception); with no body to wait for, the 403 is fine.
     expects_continue = "100-continue" in str(flow.request.headers.get("expect") or "").lower()
-    if bounded and expects_continue and size:
+    if bounded and expects_continue and size != 0:
         bounded = False
     if not bounded:
         try:
@@ -1210,13 +1225,18 @@ class TjorPolicy:
         # _log_denial) would otherwise skip the 403 and forward the request, as a
         # mitmproxy hook exception is logged but does not re-run the hook.
         try:
-            verdict = connect_verdict(flow.request.host)
+            # The CONNECT target in its one canonical form (an IDN target
+            # arrives from mitmproxy as a U-label; the matcher, the SNI and the
+            # registry all speak A-labels). An unparseable target is judged raw
+            # and fails the matcher's host grammar — closed.
+            target = _ident_host(flow.request.host) or flow.request.host
+            verdict = connect_verdict(target)
             if verdict.allowed:
                 # Tunnel registry (ADR 0012): every request inside this tunnel
                 # is judged on THIS host, the one the CONNECT was judged on.
                 cid = _client_id(flow)
                 if cid is not None:
-                    _tunnel_host[cid] = tjor_policy._canon_host(flow.request.host)
+                    _tunnel_host[cid] = target
             else:
                 _log_denial(flow.request.host, verdict.rule)  # operator log keeps the full reason
                 agent_rule = _agent_rule(verdict.rule)         # agent gets the class only (#60)
@@ -1268,7 +1288,8 @@ class TjorPolicy:
             except Exception:  # noqa: BLE001 — kill if we can, else the plain 403 is the last resort
                 try:
                     flow.kill()
-                    _abort_client_connection(flow)
+                    if not _abort_client_connection(flow):
+                        _log_abort_miss()
                 except Exception:  # noqa: BLE001
                     flow.response = http.Response.make(
                         403, b"tjor egress policy: DENY (fail-closed)\n",

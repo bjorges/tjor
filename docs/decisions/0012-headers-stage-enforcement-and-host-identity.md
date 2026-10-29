@@ -130,9 +130,15 @@ the facts they rest on, so a later refactor cannot undo them by accident.
    when present, must name that host, and so must a request-target authority
    a request inside a tunnel retains (mitmproxy clears it in regular mode only
    and re-emits it upstream as absolute-form), else
-   `fail-closed:host-mismatch`. Hosts are compared after the port is split
-   off and a non-ASCII name is converted to its A-label, so `example.test.:8443`
-   and a U-label `Host` compare as the SNI does. The URL the matcher evaluates
+   `fail-closed:host-mismatch`. Every identity source goes through one
+   canonical form: the port split off first, a non-ASCII name as its A-label
+   — mitmproxy hands the addon the request host and authority it parsed from
+   the wire as U-labels while the SNI stays ASCII, so without this an IDN
+   target would disagree with its own server name (and the matcher's ASCII
+   host grammar would refuse the CONNECT) — then the matcher's host
+   canonicalisation. Anything unparseable compares unequal. A chunked denied
+   body is unbounded whatever the streaming threshold (with streaming off
+   mitmproxy would buffer all of it before answering). The URL the matcher evaluates
    is rebuilt on the judged host; `pretty_url` is no longer consulted for any
    security decision. The same host keys injection,
    identity handling, the resolved-address guard, the #62 scan and the #50
