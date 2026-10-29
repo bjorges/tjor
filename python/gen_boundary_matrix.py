@@ -96,6 +96,31 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
         (CONFORMANCE, "credential-broker", "gh's token-scheme placeholder is overwritten in its own scheme", True),
     "broker: credential does not leak to a non-destination host":
         (CONFORMANCE, "credential-broker", "Credential never leaks to a non-destination host", True),
+    # --- headers-stage enforcement, one host identity, HTTP/1.1 only (ADR 0012) ---
+    "enforcement: a large denied body is never forwarded":
+        (CONFORMANCE, "egress-policy", "A denied body above the streaming threshold is never forwarded", True),
+    "enforcement: a chunked denied body is never forwarded":
+        (CONFORMANCE, "egress-policy", "A chunked denied body is never forwarded", True),
+    "enforcement: a bounded denied request gets the 403 and the connection survives":
+        (CONFORMANCE, "egress-policy", "A bounded denied request is answered 403 and never forwarded", True),
+    "enforcement: a denied request with Expect gets no 100 Continue":
+        (CONFORMANCE, "egress-policy", "A denied request never receives 100 Continue", True),
+    "enforcement: an interrupted denied upload is still logged":
+        (CONFORMANCE, "egress-policy", "An interrupted denied upload is denied and logged at the headers stage", True),
+    "broker: a streamed request still receives the real credential":
+        (CONFORMANCE, "credential-broker", "A streamed request is rewritten before its first byte goes upstream", True),
+    "host identity: a Host header inside a tunnel cannot steer the verdict":
+        (CONFORMANCE, "egress-policy", "A Host header inside a tunnel cannot steer the verdict", True),
+    "host identity: an absolute-form Host header cannot steer the verdict":
+        (CONFORMANCE, "egress-policy", "An absolute-form Host header cannot steer the verdict", True),
+    "host identity: a TLS tunnel is judged on its server name":
+        (CONFORMANCE, "egress-policy", "A TLS tunnel is judged on its server name", True),
+    "host identity: an absolute-form target inside a tunnel cannot steer the verdict":
+        (CONFORMANCE, "egress-policy", "An absolute-form target inside a tunnel cannot steer the verdict", True),
+    "transport: HTTP/2 is not negotiated":
+        (CONFORMANCE, "egress-policy", "HTTP/2 is not negotiated: HTTP/1.1 only, so every body is declared", True),
+    "transport: the conformance trust anchor does not disable upstream verification":
+        (CONFORMANCE, "egress-policy", "Upstream TLS verification holds; the conformance trust anchor is scoped", True),
 
     # --- kernel-sandbox suite: adversarial guarantees (rendered) ---
     "outside-tree read is kernel-denied":

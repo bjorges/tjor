@@ -116,7 +116,7 @@ What the agent can talk to. The network boundary is the cage's primary guarantee
 ---
 layout: problem
 title: The agent can reach any host
-specs: [cage-network@b36c84fa, egress-policy@6f18b695]
+specs: [cage-network@b36c84fa, egress-policy@484f4e5a]
 adrs: ['0004']
 ---
 
@@ -149,23 +149,25 @@ specs: [cage-network@b36c84fa]
 ---
 layout: problem
 title: Policy has to see the request, not just the host
-specs: [cage-network@b36c84fa, egress-policy@6f18b695]
-adrs: ['0007']
+specs: [cage-network@b36c84fa, egress-policy@484f4e5a]
+adrs: ['0007', '0012']
 ---
 
 ::problem::
 
 - A `CONNECT` tunnel shows the proxy a hostname and nothing else. Path-level rules, credential injection and identity headers all need the request.
 - Inside TLS, a vendor endpoint and its admin route look the same.
+- Seeing the request is not enough if the verdict comes after the body has gone, or trusts a header the agent wrote.
 
 ::solution::
 
 - The proxy **terminates TLS** with a per-session CA that only the cage trusts, so every request is seen in the clear at the boundary and policy applies to the path, not just the host.
 - That is what lets the proxy **overwrite a placeholder with a brokered credential**, **strip forged identity headers**, and carve inference paths out of a blocked gateway host.
-- Server-name verification toward the real host is still done against the hostname, never against a pinned address. `tjor reset creds` discards the session CA.
+- The verdict, the denial and every rewrite happen **at the headers stage, before any byte is forwarded**: a denied streamed body is cut off, not delivered and then refused. HTTP/1.1 only, so every body is declared up front.
+- Every request is judged on the **host its connection was opened to** (the `CONNECT` target, which must equal the server name), never on a `Host` header or an absolute-form request target; either naming another host is denied.
 
 <Plainly>
-<p>The proxy is the session's most-trusted component (ADR 0007): it holds the CA key and the brokered secrets and sees every body. It lives on the egress side, reachable from the agent only as the chokepoint.</p>
+<p>The proxy is the session's most-trusted component (ADR 0007): it holds the CA key and the brokered secrets and sees every body. Residual (ADR 0012): no HTTP/2 inside the cage, so no gRPC; a large or chunked denied upload, or one asking for a <code>100 Continue</code> before its body, sees a closed connection, with the rule in <code>tjor denials</code>.</p>
 </Plainly>
 
 ---
@@ -193,7 +195,7 @@ specs: [cage-network@b36c84fa]
 ---
 layout: problem
 title: A policy that can be bent
-specs: [egress-policy@6f18b695]
+specs: [egress-policy@484f4e5a]
 ---
 
 ::problem::

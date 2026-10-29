@@ -9,6 +9,19 @@ Fail-closed, everywhere: an invalid policy denies everything, and ANY
 unhandled exception in verdict computation yields a deny — an addon
 exception must never let mitmproxy pass a request through unfiltered.
 
+Headers stage (ADR 0012): the verdict, the denial, credential injection and
+identity handling all happen in `requestheaders`, before mitmproxy can open
+the upstream connection and send the request headers — which it does for a
+streamed body (declared past stream_large_bodies, or chunked past it) BEFORE
+the `request` hook fires. A denied request with a bounded body gets the 403;
+one whose body is unbounded or already streaming is killed (connection closed,
+no response) before any body byte is consumed. Either way no byte of the
+request is forwarded. The proxy speaks HTTP/1.1 only (compose.yaml
+http2=false) so every request declares its body at that point. Every request
+is judged on the host its connection was opened to — the CONNECT target
+recorded per client connection, which must equal the TLS server name — never
+on a Host header the agent writes; a disagreeing Host header is denied.
+
 Resolved-address guard: an allowed hostname says nothing about where it
 resolves. A DNS-rebound or hijacked allowed domain pointing at a private,
 loopback, or link-local address would let the (dual-homed) proxy be used as
@@ -714,25 +727,286 @@ def identity_outcome(existing: dict[str, str], host: str) -> tuple[dict, dict]:
         return {}, dict(existing)
 
 
-def _logical_host(flow) -> str:
-    """The destination HOSTNAME the client asked for, surviving the #41 pin.
+# Streaming threshold in bytes: mitmproxy's `stream_large_bodies` (compose.yaml:
+# 1m), read from the options in configure(); this default matches it. A denied
+# request whose declared body is at or below it gets the 403 (mitmproxy consumes
+# the bounded body and answers without an upstream request); a larger or
+# undeclared (chunked) body is killed at the headers stage. None = mitmproxy
+# never streams, so every denial can be a 403.
+_STREAM_THRESHOLD: "int | None" = 1024 * 1024
 
-    After `server_connect` pins the upstream address (`data.server.address =
-    (ip, port)`), mitmproxy reports that pinned IP in `flow.request.host` for
-    every request inside the tunnel — so any host-scoped decision keyed on it
-    (broker injection, identity injection, gateway key, the #62 scan, the
-    denial log) silently stopped matching for every DNS-resolved destination
-    (found end-to-end in #65: git's and gh's placeholders were forwarded
-    unsubstituted and GitHub answered 401). The hostname that was judged is
-    the client's SNI, which mitmproxy also verifies the upstream certificate
-    against — so, unlike the Host header, it cannot be forged to steer a
-    credential toward another server. Plain HTTP (no TLS, no SNI) falls back
-    to the request's own host (URL / Host header), which for a non-tunneled
-    request is also where the connection goes."""
+# Tunnel registry (ADR 0012): the CONNECT target, recorded per client
+# connection when the CONNECT is allowed, so every request inside the tunnel
+# is judged on the host the tunnel was opened to. One entry per live client
+# connection; removed in client_disconnected, which mitmproxy fires for every
+# client connection it accepted.
+_tunnel_host: dict[str, str] = {}
+
+
+def _client_id(flow) -> "str | None":
+    return getattr(getattr(flow, "client_conn", None), "id", None)
+
+
+def _server_sni(flow) -> str:
     sni = getattr(getattr(flow, "server_conn", None), "sni", None)
-    if sni:
-        return sni.decode() if isinstance(sni, bytes) else str(sni)
-    return getattr(flow.request, "pretty_host", None) or flow.request.host
+    if not sni:
+        return ""
+    return sni.decode() if isinstance(sni, bytes) else str(sni)
+
+
+def _a_label(host: str) -> str:
+    """A non-ASCII (U-label) name as its A-label. mitmproxy hands the addon the
+    request host and authority it parsed from the wire as U-labels, while the
+    TLS server name stays ASCII; one representation is compared everywhere."""
+    return host if host.isascii() else host.encode("idna").decode("ascii")
+
+
+def _ident_host(value) -> "str | None":
+    """Canonical form of a bare host (no port): the tunnel target, the server
+    name, the URL host. None when it is not a host at all, which compares
+    unequal — fail closed."""
+    try:
+        text = value.decode("ascii") if isinstance(value, bytes) else str(value)
+        text = text.strip()
+        if not text or any(c.isspace() for c in text) or "/" in text:
+            return None
+        return tjor_policy._canon_host(_a_label(text))
+    except Exception:  # noqa: BLE001 — unparseable: compare unequal
+        return None
+
+
+def _ident_authority(value) -> "str | None":
+    """Canonical form of a Host header or request-target authority: the port
+    is split off (a bracketed IPv6 literal unwrapped) BEFORE canonicalising,
+    so a trailing dot survives `_canon_host`'s strip only when it really
+    trails, then `_ident_host`. None when it cannot be parsed."""
+    try:
+        text = value.decode("ascii") if isinstance(value, bytes) else str(value)
+        text = text.strip()
+        if text.startswith("["):
+            end = text.index("]")
+            host, rest = text[1:end], text[end + 1:]
+            if rest and not (rest.startswith(":") and rest[1:].isdigit()):
+                return None
+        else:
+            host, sep, port = text.rpartition(":")
+            if not (sep and port.isdigit()):
+                host = text
+        return _ident_host(host)
+    except Exception:  # noqa: BLE001 — unparseable authority: compare unequal
+        return None
+
+
+def _connection_host(flow) -> tuple[str, str]:
+    """The host this request's connection was opened to, and why it may not be
+    trusted: ``(judged_host, mismatch)`` where ``mismatch`` is ``""`` or a
+    reason (``"sni"``, ``"host-header"``).
+
+    Inside a CONNECT tunnel the judged host is the tunnel's target (recorded in
+    http_connect) and it must equal the TLS server name when there is one —
+    mitmproxy verifies the upstream certificate against that name, so it is
+    the identity injection already trusts (ADR 0007). Without a recorded tunnel
+    the server name alone decides (it survives the #41 pin, under which
+    `flow.request.host` is the pinned IP), and a plain absolute-form request is
+    judged on the URL host from its request line. In every case a `Host`
+    header, when present, must name the same host: mitmproxy's `pretty_url`
+    builds on that header, which its own docstring calls spoofable, and a
+    request inside a tunnel to A with `Host: B` used to be judged under B's
+    rules and sent to A carrying A's credential. The header is never used as
+    the identity, only checked against it."""
+    cid = _client_id(flow)
+    tunnel = _tunnel_host.get(cid) if cid is not None else None
+    sni = _server_sni(flow)
+    if tunnel is not None:
+        judged = tunnel
+        if sni and _ident_host(sni) != judged:
+            return judged, "sni"
+    elif sni:
+        judged = _ident_host(sni) or ""
+    else:
+        judged = _ident_host(flow.request.host) or ""
+    headers = getattr(flow.request, "headers", None)
+    host_header = headers.get("host") if headers is not None else None
+    if host_header is not None and _ident_authority(host_header) != judged:
+        return judged, "host-header"
+    # An absolute-form target inside a tunnel keeps its authority (mitmproxy
+    # clears it in regular mode only) and is re-emitted upstream as such, so a
+    # request line naming B with Host: A would reach A as `GET http://B/…`.
+    # The authority must name the judged host too.
+    authority = getattr(flow.request, "authority", "") or ""
+    if authority and _ident_authority(authority) != judged:
+        return judged, "authority"
+    return judged, ""
+
+
+def _logical_host(flow) -> str:
+    """The destination HOSTNAME every host-scoped decision keys on (broker and
+    identity injection, the gateway key, the #62 scan, the #50 counter, the
+    denial log): the connection's host per `_connection_host`, never the Host
+    header. After `server_connect` pins the upstream address (#41) mitmproxy
+    reports that pinned IP in `flow.request.host` for every request inside the
+    tunnel, which is why the tunnel target / server name decide (found end-to-end
+    in #65: git's and gh's placeholders were forwarded unsubstituted)."""
+    return _connection_host(flow)[0]
+
+
+def _judged_url(flow, host: str) -> str:
+    """The URL the matcher evaluates, rebuilt on the judged host, so the client's
+    Host header (which `pretty_url` would use) never reaches a security
+    decision. Scheme, port and path come from the request itself."""
+    scheme = getattr(flow.request, "scheme", None) or "http"
+    port = getattr(flow.request, "port", None)
+    path = getattr(flow.request, "path", None) or "/"
+    default_port = 443 if scheme == "https" else 80
+    netloc = f"[{host}]" if ":" in host else host   # bare IPv6 literal
+    if port is not None and port != default_port:
+        netloc = f"{netloc}:{port}"
+    if not path.startswith("/"):
+        path = "/" + path
+    return f"{scheme}://{netloc}{path}"
+
+
+def _declared_body_size(flow) -> "int | None":
+    """What the request headers declare about the body: None for chunked
+    (unbounded), the Content-Length, or 0 for no body. Mirrors the request side
+    of mitmproxy's expected_http_body_size, whose framing validation
+    (validate_inbound_headers, explicit in compose.yaml) is the precondition.
+    A malformed Content-Length reads as unbounded — fail closed."""
+    headers = flow.request.headers
+    te = headers.get("transfer-encoding")
+    if te and "chunked" in str(te).lower():
+        return None
+    cl = headers.get("content-length")
+    if cl is None or cl == "":
+        return 0
+    try:
+        n = int(cl)
+    except (TypeError, ValueError):
+        return None
+    return n if n >= 0 else None
+
+
+def _deny_response(agent_rule: str, pattern: str = ""):
+    from mitmproxy import http
+
+    return http.Response.make(
+        403,
+        (
+            f"tjor egress policy: DENY ({agent_rule}"
+            + (f": {pattern}" if pattern else "")
+            + ")\n"
+        ).encode(),
+        {"content-type": "text/plain", "x-tjor-policy": "deny", "x-tjor-rule": agent_rule},
+    )
+
+
+def _abort_client_connection(flow) -> bool:
+    """Close the client socket ourselves after a kill. mitmproxy 12.1.2 does not
+    close it promptly when the kill is issued while that same client is still
+    sending (its own body_size_limit refusal shows the identical symptom): the
+    connection handler stops reading but the socket stays open until garbage
+    collection, so a client mid-upload blocks until its own timeout instead of
+    failing at once. The live handler is reachable through the proxyserver
+    addon's connection registry, the same table mitmproxy's inject commands
+    use; aborting its client transport closes the socket now (the kernel
+    resets the connection, the client's pending send fails) and lets the
+    handler unwind normally. Best effort: on any failure the kill alone stands
+    and the client learns of the denial when its send times out or it reads."""
+    try:
+        from mitmproxy import ctx
+
+        client = flow.client_conn
+        registry = ctx.master.addons.get("proxyserver").connections
+        key = (getattr(client, "peername", None), getattr(client, "sockname", None))
+        handler = registry.get(key) if None not in key else None
+        if handler is None:
+            handler = next((h for h in registry.values()
+                            if getattr(getattr(h, "client", None), "id", None) == client.id), None)
+        if handler is None:
+            return False
+        writer = getattr(handler.transports.get(handler.client), "writer", None)
+        if writer is None:
+            return False
+        transport = getattr(writer, "transport", None)
+        if transport is not None and hasattr(transport, "abort"):
+            transport.abort()
+        else:
+            writer.close()
+        return True
+    except Exception:  # noqa: BLE001 — best effort; the kill already stands
+        return False
+
+
+def _record_verdict(flow, verdict: tjor_policy.Verdict) -> None:
+    """Keep the headers-stage verdict on the flow for the `request` hook, as
+    primitives: flow metadata is serialised with the flow (save-stream files,
+    flow copies), which rejects a NamedTuple."""
+    flow.metadata["tjor_verdict"] = {
+        "allowed": bool(verdict.allowed), "rule": str(verdict.rule), "pattern": str(verdict.pattern or "")}
+
+
+def _recorded_verdict(flow) -> "tjor_policy.Verdict | None":
+    meta = getattr(flow, "metadata", None)
+    raw = meta.get("tjor_verdict") if isinstance(meta, dict) else None
+    if not isinstance(raw, dict):
+        return None
+    return tjor_policy.Verdict(bool(raw.get("allowed")), str(raw.get("rule", "")), str(raw.get("pattern", "")))
+
+
+_abort_miss_count = 0
+
+
+def _enforce_denial(flow, agent_rule: str, pattern: str = "") -> None:
+    """Deny at the headers stage so no byte of the request is forwarded (ADR
+    0012). A bounded body — none, or a Content-Length at or below the streaming
+    threshold — on a flow that is not already streaming gets the 403: mitmproxy
+    consumes the body the client declared and answers without an upstream
+    request; `Expect` is dropped so no `100 Continue` invites the body before
+    the answer. Otherwise (chunked, or declared past the threshold, where
+    mitmproxy would open the upstream and send the headers before the `request`
+    hook) the flow is killed and the client socket closed at once (see
+    _abort_client_connection): no response, no body byte consumed. A flow that
+    cannot be killed falls back to the 403, the next-best denial."""
+    size = _declared_body_size(flow)
+    streaming = bool(getattr(flow.request, "stream", False))
+    # A chunked body (size None) is unbounded whatever the threshold: with
+    # streaming off mitmproxy would buffer all of it before answering, and a
+    # denied request is not worth that memory.
+    if _STREAM_THRESHOLD is None:
+        bounded = size is not None and not streaming
+    else:
+        bounded = size is not None and size <= _STREAM_THRESHOLD and not streaming
+    # `Expect: 100-continue` with a body: mitmproxy sends a response only after
+    # the body, and a well-behaved client sends the body only after a `100` —
+    # a 403 could never arrive promptly. Close at once instead (the README
+    # states this exception); with no body to wait for, the 403 is fine.
+    expects_continue = "100-continue" in str(flow.request.headers.get("expect") or "").lower()
+    if bounded and expects_continue and size != 0:
+        bounded = False
+    if not bounded:
+        try:
+            flow.kill()
+        except Exception:  # noqa: BLE001 — not killable: the 403 is the next-best denial
+            pass
+        else:
+            if not _abort_client_connection(flow):
+                _log_abort_miss()
+            return
+    if "expect" in flow.request.headers:
+        del flow.request.headers["expect"]
+    flow.response = _deny_response(agent_rule, pattern)
+
+
+def _log_abort_miss() -> None:
+    """Rate-limited operator signal: the kill stood but the client transport
+    could not be aborted (the proxyserver registry lookup failed), so that
+    client learns of the denial only when its send times out or it reads.
+    First 20, then every 100th — like the identity-forgery logger."""
+    global _abort_miss_count
+    _abort_miss_count += 1
+    if _abort_miss_count <= 20 or _abort_miss_count % 100 == 0:
+        _safe_log(f"tjor: killed a denied request but could not abort its client transport "
+                  f"(#{_abort_miss_count}); the client sees the close late")
 
 
 def _apply_identity(flow) -> None:
@@ -890,6 +1164,15 @@ class TjorPolicy:
                    "so credential injection keyed on SNI would be forgeable; refusing to run")
             print(msg, file=sys.stderr, flush=True)
             raise exceptions.OptionsError(msg)
+        # The headers-stage body rule (ADR 0012) is keyed on the SAME threshold
+        # mitmproxy streams at; read it rather than assume compose.yaml's value.
+        global _STREAM_THRESHOLD
+        try:
+            from mitmproxy.utils import human
+            raw = getattr(ctx.options, "stream_large_bodies", None)
+            _STREAM_THRESHOLD = int(human.parse_size(raw)) if raw else None
+        except Exception as exc:  # noqa: BLE001 — keep the compose.yaml-matching default
+            _safe_log(f"tjor: could not read stream_large_bodies, keeping {_STREAM_THRESHOLD}: {exc!r}")
 
     def server_connect(self, data) -> None:
         # Resolve-and-pin (#41): validate the destination HERE — the hook that
@@ -942,8 +1225,19 @@ class TjorPolicy:
         # _log_denial) would otherwise skip the 403 and forward the request, as a
         # mitmproxy hook exception is logged but does not re-run the hook.
         try:
-            verdict = connect_verdict(flow.request.host)
-            if not verdict.allowed:
+            # The CONNECT target in its one canonical form (an IDN target
+            # arrives from mitmproxy as a U-label; the matcher, the SNI and the
+            # registry all speak A-labels). An unparseable target is judged raw
+            # and fails the matcher's host grammar — closed.
+            target = _ident_host(flow.request.host) or flow.request.host
+            verdict = connect_verdict(target)
+            if verdict.allowed:
+                # Tunnel registry (ADR 0012): every request inside this tunnel
+                # is judged on THIS host, the one the CONNECT was judged on.
+                cid = _client_id(flow)
+                if cid is not None:
+                    _tunnel_host[cid] = target
+            else:
                 _log_denial(flow.request.host, verdict.rule)  # operator log keeps the full reason
                 agent_rule = _agent_rule(verdict.rule)         # agent gets the class only (#60)
                 flow.response = http.Response.make(
@@ -959,40 +1253,74 @@ class TjorPolicy:
                 {"x-tjor-policy": "deny", "x-tjor-rule": "fail-closed:hook-error"})
             _safe_log(f"tjor: http_connect hook error — failing closed: {exc!r}")
 
-    def request(self, flow) -> None:
+    def client_disconnected(self, client) -> None:
+        _tunnel_host.pop(getattr(client, "id", None), None)
+
+    def requestheaders(self, flow) -> None:
         from mitmproxy import http
 
-        # Fail-closed guard, same invariant as http_connect. Covers both the
-        # deny-enforcement body AND the allowed-path credential injection: a
-        # throw in _apply_broker/_apply_gateway must deny, never forward the
-        # request without the intended handling.
+        # Headers stage (ADR 0012): verdict, denial and every rewrite happen
+        # HERE. mitmproxy sizes the body BEFORE this hook and, for a streamed
+        # request, opens the upstream and sends the headers right AFTER it —
+        # the `request` hook only fires once the body has gone. Fail-closed
+        # guard, same invariant as http_connect: a throw anywhere in here must
+        # deny, never forward a request without the intended handling.
         try:
-            host = _logical_host(flow)   # the judged hostname, not the pinned IP (see _logical_host)
-            verdict = request_verdict(flow.request.pretty_url, host)
+            host, mismatch = _connection_host(flow)
+            if mismatch:
+                verdict = tjor_policy.Verdict(False, "fail-closed:host-mismatch")
+            else:
+                verdict = request_verdict(_judged_url(flow, host), host)
+            _record_verdict(flow, verdict)
             if verdict.allowed:
                 _apply_identity(flow)
                 _apply_broker(flow)
                 _apply_gateway(flow)
-                _scan_request_body(flow)   # #62 observe-only tripwire; self-guarded, never denies
                 return
             _log_denial(host, verdict.rule)  # operator log keeps the full reason
-            agent_rule = _agent_rule(verdict.rule)         # agent gets the class only (#60)
-            flow.response = http.Response.make(
-                403,
-                (
-                    f"tjor egress policy: DENY ({agent_rule}"
-                    + (f": {verdict.pattern}" if verdict.pattern else "")
-                    + ")\n"
-                ).encode(),
-                {
-                    "content-type": "text/plain",
-                    "x-tjor-policy": "deny",
-                    "x-tjor-rule": agent_rule,
-                },
-            )
+            _enforce_denial(flow, _agent_rule(verdict.rule), verdict.pattern or "")
         except Exception as exc:  # noqa: BLE001 — never forward on an addon error
-            # Set the fail-closed 403 FIRST, then log — a failure in stderr I/O
-            # must never leave the request un-denied (review v0.18.9).
+            # Take the fail-closed action FIRST, then log — a failure in stderr
+            # I/O must never leave the request un-denied (review v0.18.9).
+            try:
+                _record_verdict(flow, tjor_policy.Verdict(False, "fail-closed:hook-error"))
+                _enforce_denial(flow, "fail-closed:hook-error")
+            except Exception:  # noqa: BLE001 — kill if we can, else the plain 403 is the last resort
+                try:
+                    flow.kill()
+                    if not _abort_client_connection(flow):
+                        _log_abort_miss()
+                except Exception:  # noqa: BLE001
+                    flow.response = http.Response.make(
+                        403, b"tjor egress policy: DENY (fail-closed)\n",
+                        {"content-type": "text/plain", "x-tjor-policy": "deny",
+                         "x-tjor-rule": "fail-closed:hook-error"})
+            _safe_log(f"tjor: requestheaders hook error — failing closed: {exc!r}")
+            try:  # best effort, after the denial stands: `tjor denials` should still show it
+                try:
+                    host = _logical_host(flow)
+                except Exception:  # noqa: BLE001 — the identity itself may be what failed
+                    host = "?"
+                _log_denial(host, "fail-closed:hook-error")
+            except Exception:  # noqa: BLE001 — a failing logger must not undo the denial
+                pass
+
+    def request(self, flow) -> None:
+        from mitmproxy import http
+
+        # The body is in; the verdict was taken at the headers stage and a
+        # denial already enforced there. Only the observe-only body scan (#62)
+        # needs the body. Defense in depth, not the enforcement point: a flow
+        # that reached here without a recorded verdict is denied.
+        try:
+            verdict = _recorded_verdict(flow)
+            if verdict is None:
+                flow.response = _deny_response("fail-closed:hook-error")
+                _log_denial(_logical_host(flow), "fail-closed:hook-error")
+                return
+            if verdict.allowed and flow.response is None:
+                _scan_request_body(flow)   # #62 observe-only tripwire; self-guarded, never denies
+        except Exception as exc:  # noqa: BLE001 — never forward on an addon error
             flow.response = http.Response.make(
                 403, b"tjor egress policy: DENY (fail-closed)\n",
                 {"content-type": "text/plain", "x-tjor-policy": "deny",

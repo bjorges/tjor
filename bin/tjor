@@ -2862,6 +2862,42 @@ cmd_gateway() {
     esac
 }
 
+# Denial-log check for `tjor conformance` (ADR 0012). Every probe that provokes
+# a denial declares it (`expect-denial<TAB>host<TAB>rule` lines in the probe
+# output), so the session's denial log must be EXACTLY the declared multiset:
+# per-pair counts match AND the line totals match, so neither a missing
+# declaration nor an undeclared denial can pass; a run that declared nothing is
+# a broken run, not a clean one. A killed request leaves no 403 to read, so this
+# is how a closed connection is shown to have been a denial by the right rule.
+# Tokens are whitespace-free by construction: the addon writes hosts through its
+# ASCII sanitizer and the declared rules are literals. Exercised without docker
+# by tests/integration/conformance_runtime_test.sh.
+conformance_denials_match() { # <probe output file> <denials.log>; prints the summary, returns 1 on mismatch
+    local out="$1" dlog="$2" cnt host rule have nmatch=0 ntotal=0 declared logged status=0
+    while read -r cnt host rule; do
+        [[ -n "${host}" ]] || continue
+        ntotal=$((ntotal + 1))
+        have="$(awk -F'\t' -v h="${host}" -v r="${rule}" '$1 == h && $2 == r' "${dlog}" 2>/dev/null | wc -l | tr -d ' ')"
+        if [[ "${have}" == "${cnt}" ]]; then
+            nmatch=$((nmatch + 1))
+        else
+            loud "conformance: denial log has ${have} line(s) for '${host} ${rule}', the probes expected ${cnt}"
+            status=1
+        fi
+    done < <(sed -n $'s/^expect-denial\t//p' "${out}" | sort | uniq -c | awk '{print $1, $2, $3}')
+    declared="$(grep -c $'^expect-denial\t' "${out}" || true)"
+    logged="$(grep -c . "${dlog}" 2>/dev/null || true)"
+    if ((ntotal == 0)); then
+        loud "conformance: the probes declared no denials — the suite did not run as expected"
+        status=1
+    elif [[ "${declared}" != "${logged}" ]]; then
+        loud "conformance: the denial log holds ${logged} line(s) but the probes declared ${declared} — an undeclared or missing denial"
+        status=1
+    fi
+    echo "tjor: denials: ${nmatch}/${ntotal} expected rules recorded, ${logged} log line(s) for ${declared} declared" >&2
+    return "${status}"
+}
+
 cmd_conformance() {
     export TJOR_POLICY_OVERRIDE="${TJOR_ROOT}/images/conformance/policy.toml"
     export TJOR_SESSION="conformance"
@@ -2903,6 +2939,38 @@ cmd_conformance() {
     # (non-global) address; the rebind guard would rightly deny that, so it
     # is off HERE ONLY. The guard itself is covered by unit tests.
     export TJOR_IP_GUARD="off"
+    # Conformance-only TLS upstream (ADR 0012): a self-signed certificate for
+    # the echo aliases the TLS probes use — NOT echo-inject.tjor-test, the
+    # negative control — trusted by the proxy through its confdir config.yaml
+    # for THIS temporary session only (ssl_verify_upstream_trusted_ca replaces
+    # the default bundle; no probe reaches a real TLS upstream; verification
+    # and hostname checking stay on). Written BEFORE ensure_topology, which
+    # starts the proxy. Explicit extensions, not the host openssl's defaults.
+    command -v openssl >/dev/null 2>&1 || die "conformance: openssl is required for the TLS fixture certificate"
+    local tlsdir="${TJOR_SESSION_DIR}/conformance-tls" cadir="${TJOR_SESSION_DIR}/proxy-ca"
+    mkdir -p "${tlsdir}" "${cadir}"
+    chmod 700 "${cadir}"
+    if ! openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
+        -keyout "${tlsdir}/key.pem" -out "${tlsdir}/cert.pem" \
+        -subj "/CN=tjor conformance upstream/O=tjor" \
+        -addext "subjectAltName=DNS:readonly.test,DNS:echo-noinject.tjor-test,DNS:echo-broker.tjor-test" \
+        -addext "basicConstraints=critical,CA:TRUE" \
+        -addext "keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign" \
+        -addext "extendedKeyUsage=serverAuth" >/dev/null 2>"${tlsdir}/openssl.err"; then
+        cat "${tlsdir}/openssl.err" >&2
+        die "conformance: could not generate the TLS fixture certificate (an openssl without -addext? OpenSSL >= 1.1.1 is needed)"
+    fi
+    # The echo container runs as root with cap_drop ALL — no DAC override — so
+    # a 0600 key owned by the host user would be unreadable there; 0644 it is:
+    # a throwaway two-day key for test aliases on a closed network, in a temp
+    # session directory that is removed when the run ends.
+    chmod 644 "${tlsdir}/cert.pem" "${tlsdir}/key.pem"
+    cp "${tlsdir}/cert.pem" "${cadir}/conformance-upstream.pem"
+    printf '%s\n' \
+        "# tjor conformance ONLY: written by 'tjor conformance' into its temporary session" \
+        "# directory. Trusts the echo fixture's self-signed certificate as the upstream anchor." \
+        "ssl_verify_upstream_trusted_ca: /home/mitmproxy/.mitmproxy/conformance-upstream.pem" \
+        > "${cadir}/config.yaml"
     build_conformance
     ensure_topology
     "${COMPOSE[@]}" -f "${TJOR_ROOT}/compose.yaml" up -d echo >/dev/null 2>&1
@@ -2917,6 +2985,13 @@ cmd_conformance() {
     runtime="$(detect_runtime)"
     probes="$(sed -n 's/.*conformance: [0-9][0-9]*\/\([0-9][0-9]*\) probes passed.*/\1/p' "${out}" | tail -1)"
     [[ -n "${probes}" ]] || probes="?"
+    # Denial-log check (ADR 0012): the probes declare every denial they
+    # provoke; each (host, rule) pair must appear in the session's denial log
+    # EXACTLY that many times. A killed request leaves no 403 to read, so this
+    # is how a closed connection is shown to have been a denial by the right
+    # rule — and a count, not presence, means an unrelated failure in one
+    # probe cannot hide behind another probe's denial.
+    conformance_denials_match "${out}" "${TJOR_SESSION_DIR}/denials.log" || rc=1
     rm -f "${out}"
     if ((rc == 0)); then
         result="PASS"

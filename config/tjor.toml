@@ -265,6 +265,9 @@ publish = true
 registry = "ghcr.io/bjorges"
 
 # Sidecar and base images pinned by digest (charter L11).
+# mitmproxy: proxy/addon.py reaches into the proxyserver addon's connection
+# registry to abort a killed client's transport and reads stream_large_bodies
+# (ADR 0012); a bump of this pin is verified by a green `tjor conformance`.
 mitmproxy = "mitmproxy/mitmproxy:12.1.2@sha256:0d7b2a14b4a71a908cd6f31b8f50e29bbc5c8720fe6caa706acf782da558e5c7"
 coredns = "coredns/coredns:1.12.4@sha256:986f04c2e15e147d00bdd51e8c51bcef3644b13ff806be7d2ff1b261d6dfbae1"
 debian = "debian:trixie-slim@sha256:d7e12182ce18b85b93007c1dedf31f2d29e01ccf3182cc4017c709b6259bc132"
