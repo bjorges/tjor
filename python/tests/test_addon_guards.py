@@ -1455,6 +1455,19 @@ def _hflow(host, path="/x", scheme="https", port=None, headers=None, sni=None,
     return flow
 
 
+def _enforcement_addon(tmp_path):
+    """The addon with a denial log in tmp_path, a public resolver stub and an
+    empty tunnel registry — shared by the headers-stage and host-identity suites."""
+    pytest.importorskip("mitmproxy")
+    addon = load_addon()
+    addon.DENIAL_LOG = str(tmp_path / "denials.log")
+    addon._denial_log_count = 0
+    addon._abort_miss_count = 0
+    addon._resolver = lambda host: {"140.82.121.3"}
+    addon._tunnel_host.clear()
+    return addon
+
+
 class TestHeadersStageEnforcement:
     """The verdict and its enforcement happen in requestheaders, before mitmproxy
     can open the upstream for a streamed request. Bounded body -> 403 with the
@@ -1464,13 +1477,7 @@ class TestHeadersStageEnforcement:
     MIB = 1024 * 1024
 
     def _addon(self, tmp_path):
-        pytest.importorskip("mitmproxy")
-        addon = load_addon()
-        addon.DENIAL_LOG = str(tmp_path / "denials.log")
-        addon._denial_log_count = 0
-        addon._resolver = lambda host: {"140.82.121.3"}
-        addon._tunnel_host.clear()
-        return addon
+        return _enforcement_addon(tmp_path)
 
     def test_chunked_denied_is_killed_without_response(self, tmp_path):
         addon = self._addon(tmp_path)
@@ -1478,7 +1485,7 @@ class TestHeadersStageEnforcement:
         addon.TjorPolicy().requestheaders(flow)
         assert flow.killed and flow.response is None
         assert "blocked.test\thost-block" in (tmp_path / "denials.log").read_text()
-        assert flow.metadata["tjor_verdict"].rule == "host-block"
+        assert flow.metadata["tjor_verdict"] == {"allowed": False, "rule": "host-block", "pattern": "blocked.test"}
 
     def test_kill_also_aborts_the_client_connection(self, tmp_path, monkeypatch):
         # mitmproxy does not close a killed client's socket while it is still
@@ -1499,6 +1506,62 @@ class TestHeadersStageEnforcement:
         assert addon._abort_client_connection(flow) is False   # no ctx.master here: silently no-op
         addon.TjorPolicy().requestheaders(flow)
         assert flow.killed and flow.response is None
+
+    def test_verdict_metadata_is_primitive_and_survives_flow_serialisation(self, tmp_path):
+        import io
+        from mitmproxy import io as mio
+        from mitmproxy.connection import Client, Server
+        from mitmproxy.http import HTTPFlow, Request
+        addon = self._addon(tmp_path)
+        client = Client(peername=("10.9.8.7", 4), sockname=("10.0.0.2", 8080), timestamp_start=0.0)
+        flow = HTTPFlow(client, Server(address=None))
+        flow.request = Request.make("POST", "http://blocked.test/x", content=b"abc")
+        addon.TjorPolicy().requestheaders(flow)
+        assert flow.response.status_code == 403
+        assert flow.metadata["tjor_verdict"] == {"allowed": False, "rule": "host-block", "pattern": "blocked.test"}
+        flow.copy(); flow.get_state()                       # both reject a non-primitive
+        buf = io.BytesIO(); mio.FlowWriter(buf).add(flow)
+        back = list(mio.FlowReader(io.BytesIO(buf.getvalue())).stream())[0]
+        assert addon._recorded_verdict(back) == addon.tjor_policy.Verdict(False, "host-block", "blocked.test")
+
+    def test_abort_goes_through_the_proxyserver_registry(self, tmp_path, monkeypatch):
+        import types
+        from mitmproxy import ctx
+        addon = self._addon(tmp_path)
+        calls = []
+
+        class FakeClient:                       # hashable, like mitmproxy's Client
+            id = "c-live"; peername = ("10.9.8.7", 4); sockname = ("10.0.0.2", 8080)
+        client = FakeClient()
+        transport = types.SimpleNamespace(abort=lambda: calls.append("abort"))
+        handler = types.SimpleNamespace(client=client, transports={client: types.SimpleNamespace(writer=types.SimpleNamespace(transport=transport))})
+        proxyserver = types.SimpleNamespace(connections={(client.peername, client.sockname): handler})
+        monkeypatch.setattr(ctx, "master", types.SimpleNamespace(addons=types.SimpleNamespace(get=lambda name: proxyserver)), raising=False)
+        flow = _hflow("blocked.test", headers={"transfer-encoding": "chunked"})
+        flow.client_conn = client
+        addon.TjorPolicy().requestheaders(flow)
+        assert flow.killed and calls == ["abort"]
+        calls.clear()
+        proxyserver.connections = {"other-key": handler}   # found by client id when the key differs
+        addon.TjorPolicy().requestheaders(_hflow("blocked.test", headers={"transfer-encoding": "chunked"}, client_id="c-live"))
+        assert calls == ["abort"]
+
+    def test_abort_miss_is_signalled(self, tmp_path, capsys):
+        addon = self._addon(tmp_path)
+        capsys.readouterr()
+        flow = _hflow("blocked.test", headers={"transfer-encoding": "chunked"}, client_id="c9")
+        addon.TjorPolicy().requestheaders(flow)    # no live proxy: the lookup fails, the kill stands
+        assert flow.killed
+        assert "could not abort its client transport" in capsys.readouterr().err
+
+    def test_configure_reads_the_streaming_threshold(self, tmp_path, monkeypatch):
+        import types
+        from mitmproxy import ctx
+        addon = self._addon(tmp_path)
+        for raw, want in (("1m", 1024 * 1024), ("2m", 2 * 1024 * 1024), ("512k", 512 * 1024), ("", None), (None, None), ("0", 0)):
+            monkeypatch.setattr(ctx, "options", types.SimpleNamespace(ssl_insecure=False, stream_large_bodies=raw), raising=False)
+            addon.TjorPolicy().configure(set())
+            assert addon._STREAM_THRESHOLD == want, raw
 
     def test_declared_past_threshold_is_killed(self, tmp_path):
         addon = self._addon(tmp_path)
@@ -1530,11 +1593,19 @@ class TestHeadersStageEnforcement:
         addon.TjorPolicy().requestheaders(flow)
         assert not flow.killed and flow.response.status_code == 403
 
-    def test_expect_is_dropped_on_a_bounded_denial(self, tmp_path):
+    def test_expect_with_a_body_is_closed_at_once(self, tmp_path):
+        # The 403 could only follow the body, which a client honouring Expect
+        # sends only after a 100 — so the connection is closed instead.
         addon = self._addon(tmp_path)
         flow = _hflow("blocked.test", headers={"content-length": "10", "expect": "100-continue"})
         addon.TjorPolicy().requestheaders(flow)
-        assert flow.response.status_code == 403
+        assert flow.killed and flow.response is None
+
+    def test_expect_without_a_body_gets_the_403(self, tmp_path):
+        addon = self._addon(tmp_path)
+        flow = _hflow("blocked.test", headers={"content-length": "0", "expect": "100-continue"})
+        addon.TjorPolicy().requestheaders(flow)
+        assert not flow.killed and flow.response.status_code == 403
         assert "expect" not in flow.request.headers     # mitmproxy will send no 100 Continue
 
     def test_malformed_content_length_is_killed(self, tmp_path):
@@ -1571,7 +1642,7 @@ class TestHeadersStageEnforcement:
         assert flow.response is None and not flow.killed
         assert flow.request.headers["authorization"] == "token real-secret"
         assert "x-agent-session-id" not in flow.request.headers
-        assert flow.metadata["tjor_verdict"].allowed
+        assert flow.metadata["tjor_verdict"]["allowed"] is True
 
     def test_request_without_recorded_verdict_fails_closed(self, tmp_path):
         addon = self._addon(tmp_path)
@@ -1604,8 +1675,9 @@ class TestHeadersStageEnforcement:
         monkeypatch.setattr(addon, "_connection_host", lambda flow: (_ for _ in ()).throw(RuntimeError("boom")))
         flow = _hflow("allowed.test", headers={"transfer-encoding": "chunked"})
         addon.TjorPolicy().requestheaders(flow)
-        assert flow.killed or flow.response.status_code == 403
-        assert flow.metadata["tjor_verdict"].rule == "fail-closed:hook-error"
+        assert flow.killed and flow.response is None             # chunked: the kill path, specifically
+        assert flow.metadata["tjor_verdict"]["rule"] == "fail-closed:hook-error"
+        assert "?\tfail-closed:hook-error" in (tmp_path / "denials.log").read_text()   # the identity itself raised
 
     def test_headers_hook_error_with_broken_flow_still_sets_403(self, tmp_path, monkeypatch):
         import types
@@ -1623,13 +1695,7 @@ class TestHostIdentity:
     URL host. A Host header must agree, else fail-closed:host-mismatch."""
 
     def _addon(self, tmp_path):
-        pytest.importorskip("mitmproxy")
-        addon = load_addon()
-        addon.DENIAL_LOG = str(tmp_path / "denials.log")
-        addon._denial_log_count = 0
-        addon._resolver = lambda host: {"140.82.121.3"}
-        addon._tunnel_host.clear()
-        return addon
+        return _enforcement_addon(tmp_path)
 
     def _connect(self, addon, host, cid):
         import types
@@ -1684,7 +1750,7 @@ class TestHostIdentity:
         allowed = _hflow("10.1.2.3", path="/v1/ok", sni="api.vendor.test",
                          client_id="c1", host_header="api.vendor.test:443")
         pol.requestheaders(allowed)
-        assert allowed.response is None and allowed.metadata["tjor_verdict"].allowed
+        assert allowed.response is None and allowed.metadata["tjor_verdict"]["allowed"]
         assert addon._logical_host(allowed) == "api.vendor.test"
 
     def test_pretty_url_is_never_consulted(self, tmp_path):
@@ -1708,7 +1774,7 @@ class TestHostIdentity:
         self._connect(addon, "allowed.test", "c1")
         flow = _hflow("10.1.2.3", scheme="http", port=8080, client_id="c1", host_header="allowed.test:8080")
         addon.TjorPolicy().requestheaders(flow)
-        assert flow.response is None and flow.metadata["tjor_verdict"].allowed
+        assert flow.response is None and flow.metadata["tjor_verdict"]["allowed"]
 
     def test_absolute_form_mismatch_is_denied(self, tmp_path):
         addon = self._addon(tmp_path)
@@ -1720,7 +1786,7 @@ class TestHostIdentity:
         addon = self._addon(tmp_path)
         flow = _hflow("allowed.test", scheme="http", host_header=False)
         addon.TjorPolicy().requestheaders(flow)
-        assert flow.response is None and flow.metadata["tjor_verdict"].allowed
+        assert flow.response is None and flow.metadata["tjor_verdict"]["allowed"]
         assert addon._logical_host(flow) == "allowed.test"
 
     def test_sni_without_a_recorded_tunnel_still_wins_over_the_pinned_ip(self, tmp_path):
@@ -1741,6 +1807,38 @@ class TestHostIdentity:
         addon.TjorPolicy().requestheaders(flow)
         assert flow.response.status_code == 403
         assert "real-secret" not in str(flow.request.headers)
+
+    def test_absolute_form_target_inside_a_tunnel_is_denied(self, tmp_path):
+        # Host matches the tunnel, the request line names another host; the
+        # retained authority would go upstream as absolute-form.
+        addon = self._addon(tmp_path)
+        self._connect(addon, "allowed.test", "c1")
+        flow = _hflow("10.1.2.3", client_id="c1", host_header="allowed.test")
+        flow.request.authority = "blocked.test"
+        addon.TjorPolicy().requestheaders(flow)
+        assert flow.response.headers["x-tjor-rule"] == "fail-closed:host-mismatch"
+        ok = _hflow("10.1.2.3", client_id="c1", host_header="allowed.test")
+        ok.request.authority = "Allowed.test:443"
+        addon.TjorPolicy().requestheaders(ok)
+        assert ok.response is None and ok.metadata["tjor_verdict"]["allowed"]
+
+    def test_authority_parsing(self, tmp_path):
+        addon = self._addon(tmp_path)
+        assert addon._authority_host("example.test.:8443") == "example.test"
+        assert addon._authority_host("EXAMPLE.test") == "example.test"
+        assert addon._authority_host("[2001:db8::1]:8443") == "2001:db8::1"
+        assert addon._authority_host("bücher.example") == "xn--bcher-kva.example"
+        assert addon._authority_host(b"a.test:80") == "a.test"
+        assert addon._authority_host("bad host") is None
+        assert addon._authority_host("a.test/x") is None
+        assert addon._authority_host("[2001:db8::1]x") is None
+        assert addon._authority_host("") is None
+
+    def test_u_label_host_header_matches_a_label_sni(self, tmp_path):
+        addon = self._addon(tmp_path)
+        flow = _hflow("10.1.2.3", sni="xn--bcher-kva.allowed.test", host_header="bücher.allowed.test")
+        addon.TjorPolicy().requestheaders(flow)
+        assert flow.response is None and flow.metadata["tjor_verdict"]["allowed"]
 
     def test_judged_url_shapes(self, tmp_path):
         addon = self._addon(tmp_path)

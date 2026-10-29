@@ -120,17 +120,29 @@ def in_tunnel(conn: http.client.HTTPConnection, method: str, path: str,
 
 def seen() -> dict:
     """The echo fixture's record of connections and requests (its own /_seen
-    requests excluded)."""
-    resp = via_proxy(f"http://{ECHO}:8080/_seen")
-    assert resp.status == 200, f"/_seen unreachable: {resp.status}"
-    return json.loads(resp.read())
+    requests excluded). Polls until two consecutive snapshots agree, so a
+    request the fixture is still recording in a handler thread is in the
+    record before it is compared."""
+    last = None
+    for _ in range(40):
+        resp = via_proxy(f"http://{ECHO}:8080/_seen")
+        assert resp.status == 200, f"/_seen unreachable: {resp.status}"
+        snap = json.loads(resp.read())
+        if snap == last:
+            return snap
+        last = snap
+        time.sleep(0.1)
+    return last
 
 
 def nothing_forwarded(before: dict, what: str) -> None:
     """After a denied attempt: send a sentinel allowed request and assert the
-    record grew by exactly that sentinel. A forwarded request precedes the
-    proxy's answer to the client, which precedes the sentinel, so a late
-    arrival cannot slip past the assertion."""
+    record grew by exactly that sentinel. The sentinel orders the proxy's side
+    (a forwarded request leaves the proxy before its answer to the client,
+    which precedes the sentinel); on the fixture's side a connection is
+    recorded in the accept loop before any thread runs and `seen()` waits for
+    a settled snapshot, so the fixture's own threads cannot reorder the
+    record past the comparison."""
     sentinel = f"/sentinel-{time.time_ns()}"
     resp = via_proxy(f"http://{ECHO}:8080{sentinel}")
     assert resp.status == 200, f"{what}: sentinel request failed ({resp.status})"
@@ -199,6 +211,7 @@ def p_dns_unlisted():
 def p_blocked_host():
     resp = via_proxy("http://blocked.test/secret")
     assert is_policy_deny(resp), f"expected policy deny, got {resp.status if resp else 'no response'}"
+    expect_denial("blocked.test", "host-block")
 
 
 @probe("path carve-out on a blocked host passes policy")
@@ -212,18 +225,21 @@ def p_carveout_passes():
 def p_encoded_allow_widening():
     resp = via_proxy("http://blocked.test/%64ocs/guide")
     assert is_policy_deny(resp), "encoded path slipped through a carve-out (allow widened by encoding)"
+    expect_denial("blocked.test", "host-block")
 
 
 @probe("encoding cannot evade a path block")
 def p_encoded_block_bypass():
     resp = via_proxy("http://api.vendor.test/v1/%74elemetry/send")
     assert is_policy_deny(resp), "encoded path evaded a block rule"
+    expect_denial("api.vendor.test", "path-block")
 
 
 @probe("dot-segments cannot escape a carve-out")
 def p_dot_segment_escape():
     resp = via_proxy("http://blocked.test/docs/../secret")
     assert is_policy_deny(resp), "dot-segment path escaped the carve-out"
+    expect_denial("blocked.test", "host-block")
 
 
 @probe("CONNECT to a non-allowed host is denied before TLS")
@@ -232,12 +248,14 @@ def p_connect_denied():
         sock.sendall(b"CONNECT unknown.test:443 HTTP/1.1\r\nHost: unknown.test:443\r\n\r\n")
         line = sock.makefile("rb").readline().decode("latin1")
     assert " 403" in line, f"CONNECT not denied: {line.strip()!r}"
+    expect_denial("unknown.test", "default-deny")
 
 
 @probe("strict-allow default-deny holds for unknown hosts")
 def p_default_deny():
     resp = via_proxy("http://notlisted.test/")
     assert is_policy_deny(resp), "unknown host was not denied in strict-allow mode"
+    expect_denial("notlisted.test", "default-deny")
 
 
 @probe("no sidecar admin surface is reachable from the agent network")
@@ -414,26 +432,36 @@ def p_enf_bounded_denied():
 
 @probe("enforcement: a denied request with Expect gets no 100 Continue")
 def p_enf_expect():
+    # With a body to wait for, the connection is closed at once: the proxy can
+    # only answer after the body, and a client that honours Expect sends the
+    # body only after a 100 — so a 403 could never arrive promptly, and a
+    # client that never sends its body must not be left hanging.
     with socket.create_connection((PROXY_IP, PROXY_PORT), timeout=15) as sock:
         sock.sendall(
             f"POST http://{ECHO}:8080/phone-home/expect HTTP/1.1\r\nHost: {ECHO}:8080\r\n"
             f"Content-Length: 10\r\nExpect: 100-continue\r\n\r\n".encode())
-        sock.settimeout(1.5)
-        early = b""
+        sock.settimeout(10)
         try:
-            early = sock.recv(4096)
-        except (TimeoutError, OSError):
-            pass
-        assert not early.startswith(b"HTTP/1.1 100"), f"a 100 Continue was sent for a denied request: {early[:40]!r}"
-        sock.sendall(b"0123456789")
-        sock.settimeout(15)
-        data = early
+            data = sock.recv(4096)
+        except OSError:
+            data = b""                       # a reset is a close too
+    assert data == b"", f"expected the connection closed at once (no 100, no body wait), got {data[:60]!r}"
+    expect_denial(ECHO, "path-block")
+    # With no body to wait for, the 403 is the answer, and no 100 precedes it.
+    with socket.create_connection((PROXY_IP, PROXY_PORT), timeout=15) as sock:
+        sock.sendall(
+            f"POST http://{ECHO}:8080/phone-home/expect-empty HTTP/1.1\r\nHost: {ECHO}:8080\r\n"
+            f"Content-Length: 0\r\nExpect: 100-continue\r\n\r\n".encode())
+        data = b""
         while b"\r\n\r\n" not in data:
-            chunk = sock.recv(4096)
+            try:
+                chunk = sock.recv(4096)
+            except OSError:
+                break
             if not chunk:
                 break
             data += chunk
-    assert data.startswith(b"HTTP/1.1 403"), f"expected the 403 as the first response, got {data[:60]!r}"
+    assert data.startswith(b"HTTP/1.1 403") and b" 100 " not in data, f"expected a 403 and no 100, got {data[:60]!r}"
     expect_denial(ECHO, "path-block")
 
 
@@ -525,19 +553,36 @@ def p_transport_http11_only():
 
 @probe("transport: the conformance trust anchor does not disable upstream verification")
 def p_transport_trust_anchor_scoped():
-    # echo-inject.tjor-test is deliberately NOT in the fixture certificate's SAN:
-    # the proxy's upstream verification must refuse it even though the anchor
-    # that trusts the certificate for the other names is installed.
+    # Positive control first: the anchor trusts the fixture certificate for
+    # readonly.test, so that tunnel is served — a down fixture cannot pass as
+    # a refusal below.
+    conn = tunnel("readonly.test", 8443, tls=True)
+    resp = in_tunnel(conn, "GET", "/items")
+    assert resp.status == 200, f"positive control: TLS tunnel to readonly.test not served ({resp.status})"
+    resp.read()
+    # echo-inject.tjor-test is deliberately NOT in the certificate's SAN: the
+    # proxy's upstream verification must refuse it, which mitmproxy reports to
+    # the client as its own 502 naming the verification failure.
     before = seen()
-    try:
-        conn = tunnel("echo-inject.tjor-test", 8443, tls=True)
-        resp = in_tunnel(conn, "GET", "/items")
-        assert resp.status != 200, "a name the fixture certificate does not cover was served: upstream verification is off"
-    except (Closed, OSError):   # ssl.SSLError is an OSError: the handshake through the proxy fails
-        pass
+    conn = tunnel("echo-inject.tjor-test", 8443, tls=True)
+    resp = in_tunnel(conn, "GET", "/items")
+    body = resp.read()
+    assert resp.status == 502 and b"Certificate verify failed" in body, (
+        f"expected the proxy's own verification failure (502), got {resp.status} {body[:80]!r}")
     after = seen()
     reached = [r for r in after["requests"][len(before["requests"]):] if r["path"] == "/items"]
     assert not reached, f"the upstream served a request the proxy should have refused to verify: {reached}"
+
+
+@probe("host identity: an absolute-form target inside a tunnel cannot steer the verdict")
+def p_host_authority_in_tunnel():
+    # The request line names another host while Host matches the tunnel; the
+    # retained authority would be re-emitted upstream as absolute-form.
+    conn = tunnel(ECHO, 8080)
+    resp = in_tunnel(conn, "GET", "http://readonly.test:8080/x", headers={"Host": f"{ECHO}:8080"})
+    assert resp.status == 403 and resp.getheader("x-tjor-rule") == "fail-closed:host-mismatch", (
+        f"an absolute-form target inside a tunnel was not refused: {resp.status} {resp.getheader('x-tjor-rule')!r}")
+    expect_denial(ECHO, "fail-closed:host-mismatch")
 
 
 # Multi-cluster kube isolation (#57): cross-cluster token isolation — cluster

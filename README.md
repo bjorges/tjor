@@ -200,15 +200,18 @@ whose body names the rule. A denied request with a declared body above the
 proxy's streaming threshold (1 MiB) or a chunked body has its connection
 closed without a response instead: the proxy decides at the headers stage,
 before any byte of the request is forwarded, and does not buffer such a body
-just to answer politely. `tjor denials` has the rule either way.
+just to answer politely. The same applies to a denied request that sends
+`Expect: 100-continue` with a body: no `100` is sent and the connection is
+closed, since a 403 could only follow the body. `tjor denials` has the rule
+either way.
 
 **Residuals, stated.** The cage speaks HTTP/1.1 only: clients that offer both
 fall back transparently, but gRPC and other HTTP/2-only protocols are
 unavailable inside it, and there is no HTTP/2 multiplexing. Every request is
 judged on the host its connection was opened to (the `CONNECT` target, which
-must equal the TLS server name), never on a `Host` header; a `Host` header
-that names another host is denied with `fail-closed:host-mismatch`. ADR 0012
-(`docs/decisions/`) records why.
+must equal the TLS server name), never on a `Host` header or an
+absolute-form request target; either naming another host is denied with
+`fail-closed:host-mismatch`. ADR 0012 (`docs/decisions/`) records why.
 
 ## Per-repo config (`.tjor/`)
 

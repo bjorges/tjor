@@ -27,14 +27,26 @@ import ssl
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
-TLS_CERT = "/tls/cert.pem"
-TLS_KEY = "/tls/key.pem"
+TLS_DIR = os.environ.get("TJOR_ECHO_TLS_DIR", "/tls")   # overridable for a local harness
+TLS_CERT = os.path.join(TLS_DIR, "cert.pem")
+TLS_KEY = os.path.join(TLS_DIR, "key.pem")
 CHUNK = 65536
 
 _LOCK = threading.Lock()
 _NEXT_CONN = [0]
 _CONNECTIONS: dict[int, dict] = {}   # id -> {"observer": bool, "requests": int}
+_BY_FD: dict[int, int] = {}          # accepted socket fd -> connection id (set at accept time)
 _REQUESTS: list[dict] = []           # every non-/_seen request, in arrival order
+
+
+def _record_accept(sock) -> None:
+    """Record a connection in the server's accept loop, BEFORE a handler
+    thread exists for it, so a connection the proxy opened is in the record
+    as soon as the kernel handed it over — not once a thread got scheduled."""
+    with _LOCK:
+        _NEXT_CONN[0] += 1
+        _CONNECTIONS[_NEXT_CONN[0]] = {"observer": False, "requests": 0}
+        _BY_FD[sock.fileno()] = _NEXT_CONN[0]
 
 
 def _snapshot() -> dict:
@@ -45,20 +57,23 @@ def _snapshot() -> dict:
 
 class Echo(BaseHTTPRequestHandler):
     protocol_version = "HTTP/1.1"
+    timeout = 30   # a stalled peer releases its handler thread
 
     # --- recording --------------------------------------------------------
     def setup(self):  # noqa: D102 — socketserver hook
         super().setup()
         with _LOCK:
-            _NEXT_CONN[0] += 1
-            self.conn_id = _NEXT_CONN[0]
-            _CONNECTIONS[self.conn_id] = {"observer": False, "requests": 0}
+            self.conn_id = _BY_FD.pop(self.request.fileno(), None)
+            if self.conn_id is None:            # not seen at accept (should not happen)
+                _NEXT_CONN[0] += 1
+                self.conn_id = _NEXT_CONN[0]
+                _CONNECTIONS[self.conn_id] = {"observer": False, "requests": 0}
         # TLS connections are wrapped without a handshake (so a failing
         # handshake never blocks the accept loop); handshake here, per thread.
         if hasattr(self.request, "do_handshake"):
             try:
                 self.request.do_handshake()
-            except (ssl.SSLError, OSError):
+            except OSError:            # ssl.SSLError is an OSError
                 self.close_connection = True
                 self._handshake_failed = True
                 return
@@ -105,7 +120,7 @@ class Echo(BaseHTTPRequestHandler):
                 "headers": {k.lower(): v for k, v in self.headers.items()},
                 "body_len": entry["received"],
             })
-        except (ConnectionError, TimeoutError, OSError):
+        except OSError:                # ConnectionError and TimeoutError are OSErrors
             self.close_connection = True
 
     # --- body framing -----------------------------------------------------
@@ -135,11 +150,17 @@ class Echo(BaseHTTPRequestHandler):
         if declared is not None:
             self._read_exact(entry, declared)
             return
-        while True:  # chunked
+        while True:  # chunked; strict: a fixture meant to notice mis-framing
             line = self.rfile.readline(1024)
             if not line:
                 raise ConnectionError("chunked body cut short")
-            size = int(line.split(b";", 1)[0].strip() or b"0", 16)
+            token = line.split(b";", 1)[0].strip()
+            if not token:
+                raise ConnectionError("empty chunk-size line")
+            try:
+                size = int(token, 16)
+            except ValueError:
+                raise ConnectionError(f"malformed chunk size {token[:16]!r}") from None
             if size == 0:
                 while self.rfile.readline(1024) not in (b"\r\n", b""):
                     pass  # trailers
@@ -161,6 +182,13 @@ class Echo(BaseHTTPRequestHandler):
         pass
 
 
+class PlainEcho(ThreadingHTTPServer):
+    def get_request(self):  # noqa: D102 — record in the accept loop
+        sock, addr = super().get_request()
+        _record_accept(sock)
+        return sock, addr
+
+
 class TlsEcho(ThreadingHTTPServer):
     """Wraps each accepted socket without handshaking; Echo.setup handshakes."""
 
@@ -168,19 +196,25 @@ class TlsEcho(ThreadingHTTPServer):
         super().__init__(address, handler)
         self.ctx = ctx
 
-    def get_request(self):  # noqa: D102
+    def get_request(self):  # noqa: D102 — record in the accept loop, never leak the raw socket
         sock, addr = super().get_request()
-        return self.ctx.wrap_socket(sock, server_side=True, do_handshake_on_connect=False), addr
+        _record_accept(sock)
+        try:
+            return self.ctx.wrap_socket(sock, server_side=True, do_handshake_on_connect=False), addr
+        except OSError:
+            sock.close()
+            raise
 
 
 def main() -> None:
-    plain = ThreadingHTTPServer(("0.0.0.0", 8080), Echo)
+    bind = os.environ.get("TJOR_ECHO_BIND", "")   # all interfaces: the fixture is reachable only on the egress network
+    plain = PlainEcho((bind, 8080), Echo)
     plain.daemon_threads = True
     if os.path.isfile(TLS_CERT) and os.path.isfile(TLS_KEY):
         ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
         ctx.load_cert_chain(TLS_CERT, TLS_KEY)
         ctx.set_alpn_protocols(["http/1.1"])
-        tls = TlsEcho(("0.0.0.0", 8443), Echo, ctx)
+        tls = TlsEcho((bind, 8443), Echo, ctx)
         tls.daemon_threads = True
         threading.Thread(target=tls.serve_forever, daemon=True).start()
     plain.serve_forever()

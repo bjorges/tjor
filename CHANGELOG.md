@@ -15,9 +15,10 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
   and interrupted denials with positive controls and a sentinel-bounded
   observation; the streamed broker rewrite; `Host` lies over plain and TLS
   tunnels and in absolute form; HTTP/1.1-only negotiation; the scoped trust
-  anchor. Every denial a probe provokes is declared and `tjor conformance`
-  checks the session denial log for each `(host, rule)` pair by count
-  (boundary matrix: 30 probes).
+  anchor; an absolute-form target inside a tunnel. Every probe that provokes
+  a denial declares it, older probes included, and `tjor conformance` requires
+  the session denial log to be exactly that multiset (boundary matrix: 31
+  probes).
 - **Overview deck on GitHub Pages** (`slides/`): the problems tjor solves and
   how, one or more slides per problem, every slide tagged with the OpenSpec
   capability and ADRs it describes. Built with Slidev, published at
@@ -94,7 +95,9 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
   `requestheaders` hook, before any byte of the request can be forwarded. A
   denied request with no body or a `Content-Length` at or below the streaming
   threshold (1 MiB) gets the 403 as before (no `100 Continue` is sent first;
-  the connection survives); a denied request with a larger declared body or a
+  the connection survives), except that a denied request sending `Expect:
+  100-continue` with a body is closed at once, since a 403 could only follow
+  the body; a denied request with a larger declared body or a
   chunked body now has its connection closed without a response, at once: the
   addon aborts the client transport itself, because mitmproxy 12.1.2 leaves a
   killed client's socket open while that client is still sending (its own
@@ -107,8 +110,8 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
   ADR 0012).
 - **One host identity**: every request is judged on the host its connection
   was opened to (the `CONNECT` target, which must equal the TLS server name),
-  and a `Host` header that names another host is denied with
-  `fail-closed:host-mismatch`.
+  and a `Host` header or an absolute-form request target that names another
+  host is denied with `fail-closed:host-mismatch`.
 - Lifecycle commands (`down`, `reset`, `status`, `denials`, `git-check`,
   `ls --state`, `prune`) no longer create the session's state directory when
   they resolve its name; only a launch does (#68).

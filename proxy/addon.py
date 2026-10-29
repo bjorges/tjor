@@ -754,6 +754,37 @@ def _server_sni(flow) -> str:
     return sni.decode() if isinstance(sni, bytes) else str(sni)
 
 
+def _authority_host(value) -> "str | None":
+    """The canonical host named by a Host header or a request-target authority,
+    or None when it cannot be parsed. The port is split off BEFORE
+    canonicalising (so a trailing dot survives `_canon_host`'s rstrip only
+    when it is really trailing), a bracketed IPv6 literal is unwrapped, and a
+    non-ASCII name is converted to its A-label so a U-label and the A-label the
+    SNI carries compare equal. Anything that does not parse compares unequal —
+    a mismatch, which fails closed."""
+    try:
+        text = value.decode("ascii") if isinstance(value, bytes) else str(value)
+        text = text.strip()
+        if text.startswith("["):
+            end = text.index("]")
+            host, rest = text[1:end], text[end + 1:]
+            if rest and not (rest.startswith(":") and rest[1:].isdigit()):
+                return None
+        else:
+            host, sep, port = text.rpartition(":")
+            if sep and port.isdigit():
+                pass
+            else:
+                host = text
+            if not host or " " in host or "/" in host:
+                return None
+        if not host.isascii():
+            host = host.encode("idna").decode("ascii")
+        return tjor_policy._canon_host(host)
+    except Exception:  # noqa: BLE001 — unparseable authority: compare unequal
+        return None
+
+
 def _connection_host(flow) -> tuple[str, str]:
     """The host this request's connection was opened to, and why it may not be
     trusted: ``(judged_host, mismatch)`` where ``mismatch`` is ``""`` or a
@@ -784,8 +815,15 @@ def _connection_host(flow) -> tuple[str, str]:
         judged = tjor_policy._canon_host(flow.request.host)
     headers = getattr(flow.request, "headers", None)
     host_header = headers.get("host") if headers is not None else None
-    if host_header is not None and tjor_policy._canon_host(host_header) != judged:
+    if host_header is not None and _authority_host(host_header) != judged:
         return judged, "host-header"
+    # An absolute-form target inside a tunnel keeps its authority (mitmproxy
+    # clears it in regular mode only) and is re-emitted upstream as such, so a
+    # request line naming B with Host: A would reach A as `GET http://B/…`.
+    # The authority must name the judged host too.
+    authority = getattr(flow.request, "authority", "") or ""
+    if authority and _authority_host(authority) != judged:
+        return judged, "authority"
     return judged, ""
 
 
@@ -867,7 +905,8 @@ def _abort_client_connection(flow) -> bool:
 
         client = flow.client_conn
         registry = ctx.master.addons.get("proxyserver").connections
-        handler = registry.get((client.peername, client.sockname))
+        key = (getattr(client, "peername", None), getattr(client, "sockname", None))
+        handler = registry.get(key) if None not in key else None
         if handler is None:
             handler = next((h for h in registry.values()
                             if getattr(getattr(h, "client", None), "id", None) == client.id), None)
@@ -884,6 +923,25 @@ def _abort_client_connection(flow) -> bool:
         return True
     except Exception:  # noqa: BLE001 — best effort; the kill already stands
         return False
+
+
+def _record_verdict(flow, verdict: tjor_policy.Verdict) -> None:
+    """Keep the headers-stage verdict on the flow for the `request` hook, as
+    primitives: flow metadata is serialised with the flow (save-stream files,
+    flow copies), which rejects a NamedTuple."""
+    flow.metadata["tjor_verdict"] = {
+        "allowed": bool(verdict.allowed), "rule": str(verdict.rule), "pattern": str(verdict.pattern or "")}
+
+
+def _recorded_verdict(flow) -> "tjor_policy.Verdict | None":
+    meta = getattr(flow, "metadata", None)
+    raw = meta.get("tjor_verdict") if isinstance(meta, dict) else None
+    if not isinstance(raw, dict):
+        return None
+    return tjor_policy.Verdict(bool(raw.get("allowed")), str(raw.get("rule", "")), str(raw.get("pattern", "")))
+
+
+_abort_miss_count = 0
 
 
 def _enforce_denial(flow, agent_rule: str, pattern: str = "") -> None:
@@ -903,17 +961,37 @@ def _enforce_denial(flow, agent_rule: str, pattern: str = "") -> None:
         bounded = not streaming
     else:
         bounded = size is not None and size <= _STREAM_THRESHOLD and not streaming
+    # `Expect: 100-continue` with a body: mitmproxy sends a response only after
+    # the body, and a well-behaved client sends the body only after a `100` —
+    # a 403 could never arrive promptly. Close at once instead (the README
+    # states this exception); with no body to wait for, the 403 is fine.
+    expects_continue = "100-continue" in str(flow.request.headers.get("expect") or "").lower()
+    if bounded and expects_continue and size:
+        bounded = False
     if not bounded:
         try:
             flow.kill()
         except Exception:  # noqa: BLE001 — not killable: the 403 is the next-best denial
             pass
         else:
-            _abort_client_connection(flow)
+            if not _abort_client_connection(flow):
+                _log_abort_miss()
             return
     if "expect" in flow.request.headers:
         del flow.request.headers["expect"]
     flow.response = _deny_response(agent_rule, pattern)
+
+
+def _log_abort_miss() -> None:
+    """Rate-limited operator signal: the kill stood but the client transport
+    could not be aborted (the proxyserver registry lookup failed), so that
+    client learns of the denial only when its send times out or it reads.
+    First 20, then every 100th — like the identity-forgery logger."""
+    global _abort_miss_count
+    _abort_miss_count += 1
+    if _abort_miss_count <= 20 or _abort_miss_count % 100 == 0:
+        _safe_log(f"tjor: killed a denied request but could not abort its client transport "
+                  f"(#{_abort_miss_count}); the client sees the close late")
 
 
 def _apply_identity(flow) -> None:
@@ -1173,7 +1251,7 @@ class TjorPolicy:
                 verdict = tjor_policy.Verdict(False, "fail-closed:host-mismatch")
             else:
                 verdict = request_verdict(_judged_url(flow, host), host)
-            flow.metadata["tjor_verdict"] = verdict
+            _record_verdict(flow, verdict)
             if verdict.allowed:
                 _apply_identity(flow)
                 _apply_broker(flow)
@@ -1185,14 +1263,26 @@ class TjorPolicy:
             # Take the fail-closed action FIRST, then log — a failure in stderr
             # I/O must never leave the request un-denied (review v0.18.9).
             try:
-                flow.metadata["tjor_verdict"] = tjor_policy.Verdict(False, "fail-closed:hook-error")
+                _record_verdict(flow, tjor_policy.Verdict(False, "fail-closed:hook-error"))
                 _enforce_denial(flow, "fail-closed:hook-error")
-            except Exception:  # noqa: BLE001 — the plain 403 is the last resort
-                flow.response = http.Response.make(
-                    403, b"tjor egress policy: DENY (fail-closed)\n",
-                    {"content-type": "text/plain", "x-tjor-policy": "deny",
-                     "x-tjor-rule": "fail-closed:hook-error"})
+            except Exception:  # noqa: BLE001 — kill if we can, else the plain 403 is the last resort
+                try:
+                    flow.kill()
+                    _abort_client_connection(flow)
+                except Exception:  # noqa: BLE001
+                    flow.response = http.Response.make(
+                        403, b"tjor egress policy: DENY (fail-closed)\n",
+                        {"content-type": "text/plain", "x-tjor-policy": "deny",
+                         "x-tjor-rule": "fail-closed:hook-error"})
             _safe_log(f"tjor: requestheaders hook error — failing closed: {exc!r}")
+            try:  # best effort, after the denial stands: `tjor denials` should still show it
+                try:
+                    host = _logical_host(flow)
+                except Exception:  # noqa: BLE001 — the identity itself may be what failed
+                    host = "?"
+                _log_denial(host, "fail-closed:hook-error")
+            except Exception:  # noqa: BLE001 — a failing logger must not undo the denial
+                pass
 
     def request(self, flow) -> None:
         from mitmproxy import http
@@ -1202,7 +1292,7 @@ class TjorPolicy:
         # needs the body. Defense in depth, not the enforcement point: a flow
         # that reached here without a recorded verdict is denied.
         try:
-            verdict = flow.metadata.get("tjor_verdict") if hasattr(flow, "metadata") else None
+            verdict = _recorded_verdict(flow)
             if verdict is None:
                 flow.response = _deny_response("fail-closed:hook-error")
                 _log_denial(_logical_host(flow), "fail-closed:hook-error")

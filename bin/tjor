@@ -2910,20 +2910,24 @@ cmd_conformance() {
     # the default bundle; no probe reaches a real TLS upstream; verification
     # and hostname checking stay on). Written BEFORE ensure_topology, which
     # starts the proxy. Explicit extensions, not the host openssl's defaults.
+    command -v openssl >/dev/null 2>&1 || die "conformance: openssl is required for the TLS fixture certificate"
     local tlsdir="${TJOR_SESSION_DIR}/conformance-tls" cadir="${TJOR_SESSION_DIR}/proxy-ca"
     mkdir -p "${tlsdir}" "${cadir}"
     chmod 700 "${cadir}"
-    command -v openssl >/dev/null 2>&1 || die "conformance: openssl is required for the TLS fixture certificate"
-    openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
+    if ! openssl req -x509 -newkey rsa:2048 -nodes -days 2 \
         -keyout "${tlsdir}/key.pem" -out "${tlsdir}/cert.pem" \
         -subj "/CN=tjor conformance upstream/O=tjor" \
         -addext "subjectAltName=DNS:readonly.test,DNS:echo-noinject.tjor-test,DNS:echo-broker.tjor-test" \
         -addext "basicConstraints=critical,CA:TRUE" \
         -addext "keyUsage=critical,digitalSignature,keyEncipherment,keyCertSign" \
-        -addext "extendedKeyUsage=serverAuth" >/dev/null 2>&1 \
-        || die "conformance: could not generate the TLS fixture certificate"
-    # The echo container (cap_drop ALL, its own uid) reads both; a throwaway
-    # two-day key for test aliases on a closed network, in a temp session dir.
+        -addext "extendedKeyUsage=serverAuth" >/dev/null 2>"${tlsdir}/openssl.err"; then
+        cat "${tlsdir}/openssl.err" >&2
+        die "conformance: could not generate the TLS fixture certificate (an openssl without -addext? OpenSSL >= 1.1.1 is needed)"
+    fi
+    # The echo container runs as root with cap_drop ALL — no DAC override — so
+    # a 0600 key owned by the host user would be unreadable there; 0644 it is:
+    # a throwaway two-day key for test aliases on a closed network, in a temp
+    # session directory that is removed when the run ends.
     chmod 644 "${tlsdir}/cert.pem" "${tlsdir}/key.pem"
     cp "${tlsdir}/cert.pem" "${cadir}/conformance-upstream.pem"
     printf '%s\n' \
@@ -2951,7 +2955,11 @@ cmd_conformance() {
     # is how a closed connection is shown to have been a denial by the right
     # rule — and a count, not presence, means an unrelated failure in one
     # probe cannot hide behind another probe's denial.
-    local dlog="${TJOR_SESSION_DIR}/denials.log" cnt host rule have nmatch=0 ntotal=0
+    # Every probe that provokes a denial declares it, so the log must be EXACTLY
+    # the declared multiset: per-pair counts match AND the line totals match, so
+    # neither a missing declaration nor an undeclared denial can pass. A run
+    # that declared nothing at all is a broken run, not a clean one.
+    local dlog="${TJOR_SESSION_DIR}/denials.log" cnt host rule have nmatch=0 ntotal=0 declared logged
     while read -r cnt host rule; do
         [[ -n "${host}" ]] || continue
         ntotal=$((ntotal + 1))
@@ -2963,7 +2971,16 @@ cmd_conformance() {
             rc=1
         fi
     done < <(sed -n $'s/^expect-denial\t//p' "${out}" | sort | uniq -c | awk '{print $1, $2, $3}')
-    echo "tjor: denials: ${nmatch}/${ntotal} expected rules recorded in the session denial log" >&2
+    declared="$(grep -c $'^expect-denial\t' "${out}" || true)"
+    logged="$(grep -c . "${dlog}" 2>/dev/null || true)"
+    if ((ntotal == 0)); then
+        loud "conformance: the probes declared no denials — the suite did not run as expected"
+        rc=1
+    elif [[ "${declared}" != "${logged}" ]]; then
+        loud "conformance: the denial log holds ${logged} line(s) but the probes declared ${declared} — an undeclared or missing denial"
+        rc=1
+    fi
+    echo "tjor: denials: ${nmatch}/${ntotal} expected rules recorded, ${logged} log line(s) for ${declared} declared" >&2
     rm -f "${out}"
     if ((rc == 0)); then
         result="PASS"

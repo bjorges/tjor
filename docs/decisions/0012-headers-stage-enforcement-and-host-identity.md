@@ -72,8 +72,12 @@ the facts they rest on, so a later refactor cannot undo them by accident.
    `Content-Length` at or below the streaming threshold, on a flow not already
    streaming → the 403 (mitmproxy consumes the declared body and answers;
    `Expect` is removed first so no `100 Continue` invites the body before the
-   answer; the connection survives for the next request). Otherwise — chunked,
-   or declared past the threshold — the flow is killed and, because mitmproxy
+   answer; the connection survives for the next request). One exception: a
+   denied request that sends `Expect: 100-continue` *with* a body is closed
+   at once, because mitmproxy can only answer after the body and a client
+   honouring `Expect` sends the body only after a `100` — a 403 could never
+   arrive promptly, and a client that never sends its body must not hang.
+   Otherwise — chunked, or declared past the threshold — the flow is killed and, because mitmproxy
    alone would leave the socket open (Context), the addon aborts the client
    transport itself through the proxyserver addon's connection registry:
    connection closed now, no response, no body byte consumed; the kernel
@@ -123,9 +127,14 @@ the facts they rest on, so a later refactor cannot undo them by accident.
    upstream certificate against it, so this is the identity injection already
    trusts); without a recorded tunnel, the server name; for a plain
    absolute-form request, the URL host from the request line. A `Host` header,
-   when present, must name that host, else `fail-closed:host-mismatch`. The
-   URL the matcher evaluates is rebuilt on the judged host; `pretty_url` is no
-   longer consulted for any security decision. The same host keys injection,
+   when present, must name that host, and so must a request-target authority
+   a request inside a tunnel retains (mitmproxy clears it in regular mode only
+   and re-emits it upstream as absolute-form), else
+   `fail-closed:host-mismatch`. Hosts are compared after the port is split
+   off and a non-ASCII name is converted to its A-label, so `example.test.:8443`
+   and a U-label `Host` compare as the SNI does. The URL the matcher evaluates
+   is rebuilt on the judged host; `pretty_url` is no longer consulted for any
+   security decision. The same host keys injection,
    identity handling, the resolved-address guard, the #62 scan and the #50
    counter. No known client sends a `Host` that disagrees with its connection
    host; the denial names itself so it is diagnosable.
@@ -134,16 +143,20 @@ the facts they rest on, so a later refactor cannot undo them by accident.
 
 Conformance (`images/conformance/`) now has an upstream that would notice: the
 echo fixture records every accepted connection and every request it starts
-reading (method, path, bytes received, complete or not), serves TLS from a
-conformance-only certificate, and advertises ALPN `http/1.1`. Eleven probes
+reading (method, path, bytes received, complete or not; connections are
+recorded in the accept loop, before any handler thread runs), serves TLS from
+a conformance-only certificate, and advertises ALPN `http/1.1`. Twelve probes
 cover large, chunked, bounded (403 and a surviving connection), `Expect` and
 interrupted denials with positive controls of the same shape and a sentinel
-request bounding the observation; the streamed broker rewrite; `Host` lies
-over plain and TLS tunnels and in absolute form; the ALPN outcome; and a
-negative control showing the conformance trust anchor does not disable
-upstream verification. Every denial a probe provokes is declared, and `tjor
-conformance` requires the session's denial log to hold each `(host, rule)`
-pair exactly that many times.
+request bounding the observation (snapshots are read until two agree); the
+streamed broker rewrite; `Host` lies over plain and TLS tunnels and in
+absolute form, and an absolute-form target inside a tunnel; the ALPN outcome;
+and a negative control, after a positive one, showing the conformance trust
+anchor does not disable upstream verification (the proxy's own 502 naming
+the verification failure). Every probe that provokes a denial declares it,
+older probes included, and `tjor conformance` requires the session's denial
+log to be exactly that multiset: per-pair counts and line totals match, and a
+run that declared nothing fails.
 
 ## Consequences
 
@@ -156,3 +169,8 @@ pair exactly that many times.
   does not cover is refused.
 - The method gate (#66) builds on this hook, this host identity and this
   fixture.
+- When the mitmproxy pin is bumped: the client abort reaches into the
+  proxyserver addon's `connections` registry and the transport behind it, and
+  the body rule reads `stream_large_bodies`; the conformance suite (the
+  enforcement probes in particular) is the check that both still hold, so a
+  bump is not done without a green conformance run.

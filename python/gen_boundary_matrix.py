@@ -115,6 +115,8 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
         (CONFORMANCE, "egress-policy", "An absolute-form Host header cannot steer the verdict", True),
     "host identity: a TLS tunnel is judged on its server name":
         (CONFORMANCE, "egress-policy", "A TLS tunnel is judged on its server name", True),
+    "host identity: an absolute-form target inside a tunnel cannot steer the verdict":
+        (CONFORMANCE, "egress-policy", "An absolute-form target inside a tunnel cannot steer the verdict", True),
     "transport: HTTP/2 is not negotiated":
         (CONFORMANCE, "egress-policy", "HTTP/2 is not negotiated: HTTP/1.1 only, so every body is declared", True),
     "transport: the conformance trust anchor does not disable upstream verification":

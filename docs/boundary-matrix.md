@@ -4,7 +4,7 @@
      Regenerate: python3 python/gen_boundary_matrix.py
      Drift-checked by tests/doc_consistency.sh (`--check`). -->
 
-Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount` and `gitcheck` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (273 checks total; 104 adversarial guarantees below, the rest functional/config checks the suites also run).
+Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount` and `gitcheck` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (274 checks total; 105 adversarial guarantees below, the rest functional/config checks the suites also run).
 
 ## cage-network
 
@@ -28,6 +28,7 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | A denied request never receives 100 Continue | `enforcement: a denied request with Expect gets no 100 Continue` | conformance |
 | A path carve-out on a blocked host is allowed (precedence) | `path carve-out on a blocked host passes policy` | conformance |
 | An absolute-form Host header cannot steer the verdict | `host identity: an absolute-form Host header cannot steer the verdict` | conformance |
+| An absolute-form target inside a tunnel cannot steer the verdict | `host identity: an absolute-form target inside a tunnel cannot steer the verdict` | conformance |
 | An interrupted denied upload is denied and logged at the headers stage | `enforcement: an interrupted denied upload is still logged` | conformance |
 | CONNECT to a non-allowed host is denied before TLS | `CONNECT to a non-allowed host is denied before TLS` | conformance |
 | Dot-segments cannot escape a carve-out | `dot-segments cannot escape a carve-out` | conformance |

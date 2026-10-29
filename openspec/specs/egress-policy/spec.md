@@ -66,8 +66,10 @@ The proxy SHALL compute the verdict, enforce a denial, and perform credential in
 - **THEN** it receives the 403 with the rule, nothing is forwarded, and a following request on the same connection is judged on its own
 
 #### Scenario: A denied request with Expect gets no 100 Continue
-- **WHEN** the agent sends a denied request with `Expect: 100-continue`
-- **THEN** the first response it reads is the 403, never a `100`
+- **WHEN** the agent sends a denied request with `Expect: 100-continue` and a body to send
+- **THEN** no `100` is sent and the connection is closed at once, since a 403 could only follow a body the client is waiting to be invited to send
+- **WHEN** the agent sends a denied request with `Expect: 100-continue` and no body
+- **THEN** it reads the 403, never a `100`
 
 #### Scenario: An interrupted denied upload is still logged
 - **WHEN** the agent sends the headers of a denied upload, part of its body, and closes the connection
@@ -106,6 +108,10 @@ A request SHALL be judged on the host its connection was opened to: the CONNECT 
 #### Scenario: Absolute-form request with a mismatching Host header
 - **WHEN** the agent sends `GET http://a.test/ HTTP/1.1` to the proxy with `Host: b.test`
 - **THEN** the request is denied with `fail-closed:host-mismatch`
+
+#### Scenario: Absolute-form target inside a tunnel
+- **WHEN** the agent sends `GET http://b.test/x HTTP/1.1` inside a tunnel to `a.test` with `Host: a.test`
+- **THEN** the request is denied with `fail-closed:host-mismatch`, because the retained request-target authority would be re-emitted upstream
 
 #### Scenario: A request without a Host header is judged on its URL
 - **WHEN** the agent sends an HTTP/1.0 absolute-form request with no `Host` header
