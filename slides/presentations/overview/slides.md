@@ -116,7 +116,7 @@ What the agent can talk to. The network boundary is the cage's primary guarantee
 ---
 layout: problem
 title: The agent can reach any host
-specs: [cage-network@b36c84fa, egress-policy@6f18b695]
+specs: [cage-network@b36c84fa, egress-policy@e97ae0b4]
 adrs: ['0004']
 ---
 
@@ -149,7 +149,7 @@ specs: [cage-network@b36c84fa]
 ---
 layout: problem
 title: Policy has to see the request, not just the host
-specs: [cage-network@b36c84fa, egress-policy@6f18b695]
+specs: [cage-network@b36c84fa, egress-policy@e97ae0b4]
 adrs: ['0007', '0012']
 ---
 
@@ -195,7 +195,7 @@ specs: [cage-network@b36c84fa]
 ---
 layout: problem
 title: A policy that can be bent
-specs: [egress-policy@6f18b695]
+specs: [egress-policy@e97ae0b4]
 ---
 
 ::problem::
