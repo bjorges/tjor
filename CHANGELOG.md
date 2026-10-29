@@ -6,6 +6,19 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 ## [Unreleased]
 
 ### Added
+- **Conformance: an upstream that would notice** (ADR 0012). The echo fixture
+  records every accepted connection and every request it starts reading,
+  serves TLS from a conformance-only certificate (the proxy trusts it through
+  its confdir `config.yaml` for that temporary session alone, with a negative
+  control for a name it does not cover), and advertises ALPN `http/1.1`.
+  Eleven probes: large, chunked, bounded (403, connection survives), `Expect`
+  and interrupted denials with positive controls and a sentinel-bounded
+  observation; the streamed broker rewrite; `Host` lies over plain and TLS
+  tunnels and in absolute form; HTTP/1.1-only negotiation; the scoped trust
+  anchor; an absolute-form target inside a tunnel. Every probe that provokes
+  a denial declares it, older probes included, and `tjor conformance` requires
+  the session denial log to be exactly that multiset (boundary matrix: 31
+  probes).
 - **Overview deck on GitHub Pages** (`slides/`): the problems tjor solves and
   how, one or more slides per problem, every slide tagged with the OpenSpec
   capability and ADRs it describes. Built with Slidev, published at
@@ -77,6 +90,28 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
   gains a live section that interleaves a real launch with a prune.
 
 ### Changed
+- **Egress enforcement at the headers stage** (ADR 0012): the verdict, the
+  denial, credential injection and identity handling run in mitmproxy's
+  `requestheaders` hook, before any byte of the request can be forwarded. A
+  denied request with no body or a `Content-Length` at or below the streaming
+  threshold (1 MiB) gets the 403 as before (no `100 Continue` is sent first;
+  the connection survives), except that a denied request sending `Expect:
+  100-continue` with a body is closed at once, since a 403 could only follow
+  the body; a denied request with a larger declared body or a
+  chunked body now has its connection closed without a response, at once: the
+  addon aborts the client transport itself, because mitmproxy 12.1.2 leaves a
+  killed client's socket open while that client is still sending (its own
+  `body_size_limit` refusal shows the same). `tjor denials` has the rule
+  either way.
+- **HTTP/1.1 only**: the proxy no longer negotiates HTTP/2 (`http2=false`,
+  `validate_inbound_headers=true` made explicit). Clients offering both ALPN
+  values fall back; gRPC and other HTTP/2-only protocols are unavailable
+  inside the cage (README residual; the narrower alternative is recorded in
+  ADR 0012).
+- **One host identity**: every request is judged on the host its connection
+  was opened to (the `CONNECT` target, which must equal the TLS server name),
+  and a `Host` header or an absolute-form request target that names another
+  host is denied with `fail-closed:host-mismatch`.
 - Lifecycle commands (`down`, `reset`, `status`, `denials`, `git-check`,
   `ls --state`, `prune`) no longer create the session's state directory when
   they resolve its name; only a launch does (#68).
@@ -103,6 +138,16 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
   sweep.
 
 ### Fixed
+- A request streamed past the proxy's 1 MiB threshold (a declared body above
+  it, or a chunked body growing past it) escaped path blocks: mitmproxy had
+  sent its headers upstream before the `request` hook denied it. The same
+  request was forwarded with the agent's placeholder credential and any forged
+  `x-agent-*` header, because broker, gateway and identity handling ran in that
+  late hook too. Both are now decided at the headers stage (ADR 0012).
+- A `Host` header could steer the verdict away from the host the connection
+  was opened to: inside a tunnel to A, `Host: B` was judged under B's rules and
+  sent to A with A's credential. The verdict now uses the connection's host
+  and rejects a disagreeing `Host`.
 - `tjor ls` and `tjor gc` died with `unbound variable` on bash 5.3 when no
   session existed (an empty associative array is unbound under `set -u`
   there); they now say "no sessions" / "nothing to reap" as intended.
