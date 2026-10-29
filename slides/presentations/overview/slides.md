@@ -116,7 +116,7 @@ What the agent can talk to. The network boundary is the cage's primary guarantee
 ---
 layout: problem
 title: The agent can reach any host
-specs: [cage-network@b36c84fa, egress-policy@484f4e5a]
+specs: [cage-network@b36c84fa, egress-policy@bbf2f492]
 adrs: ['0004']
 ---
 
@@ -149,7 +149,7 @@ specs: [cage-network@b36c84fa]
 ---
 layout: problem
 title: Policy has to see the request, not just the host
-specs: [cage-network@b36c84fa, egress-policy@484f4e5a]
+specs: [cage-network@b36c84fa, egress-policy@bbf2f492]
 adrs: ['0007', '0012']
 ---
 
@@ -195,7 +195,7 @@ specs: [cage-network@b36c84fa]
 ---
 layout: problem
 title: A policy that can be bent
-specs: [egress-policy@484f4e5a]
+specs: [egress-policy@bbf2f492]
 ---
 
 ::problem::
@@ -220,7 +220,7 @@ specs: [egress-policy@484f4e5a]
 ---
 layout: problem
 title: Blocked, and no idea why
-specs: [policy-ergonomics@1774a891]
+specs: [policy-ergonomics@c7016dac]
 ---
 
 ::problem::
@@ -298,7 +298,7 @@ specs: [credential-broker@036bd52a]
 ---
 layout: problem
 title: One LLM endpoint, no admin hole
-specs: [llm-gateway@8a0193e8]
+specs: [llm-gateway@fb5869e4]
 adrs: ['0009']
 ---
 
