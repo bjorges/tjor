@@ -51,6 +51,8 @@ The launcher SHALL run the check when an attached session's harness exits, at `t
 
 Exactly one other path removes a pending marker: `tjor prune --session <id> --discard-unreviewed` deletes the session's whole state directory — baseline and marker together — and SHALL say that unreviewed findings were discarded. An age-based prune, a credential-only prune, `tjor reset` (whose `all` tier SHALL refuse while the marker is pending, naming that path) and every other command SHALL leave a pending marker and its baseline in place.
 
+Every command that sets or clears the marker — the exit check, `tjor down` for its whole teardown, and `tjor git-check` — SHALL hold the session lock while it does so, and `tjor reset all` SHALL look for the marker under that lock, so a marker is never written into a directory being deleted and never deleted unprotected. A check refused for the lock SHALL say so and leave the marker as it was. The marker and the baseline SHALL never be read through a symbolic link at the session entry, the check directory or the file.
+
 #### Scenario: Findings keep the marker
 - **WHEN** `tjor git-check --session <id>` finds a dangerous key
 - **THEN** it prints the finding and a token, exits non-zero, and the marker remains
@@ -70,6 +72,10 @@ Exactly one other path removes a pending marker: `tjor prune --session <id> --di
 #### Scenario: Clean check clears the marker
 - **WHEN** a check finds nothing
 - **THEN** the marker is removed
+
+#### Scenario: A marker written after reset took the lock still refuses
+- **WHEN** `tjor reset all --session a` holds the session lock and a pending marker appears before it looks for one
+- **THEN** the reset refuses and the state directory stays
 
 #### Scenario: Only an explicit per-session prune discards a pending marker
 - **WHEN** a session's marker is pending and it has no container

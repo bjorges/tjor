@@ -167,8 +167,17 @@ swept by age. The lock is a kernel file lock on `<session.root>/.locks/<id>`,
 released the moment its holder exits — a crashed launch leaves nothing to
 clean up — and a refusal names the holder; it needs a session root on a
 filesystem with working file locks (that failing is fatal, never silently
-unlocked), and a long-lived child that inherited the launcher's descriptor
-would keep it (the launcher starts none).
+unlocked), and a process that inherited the launcher's descriptor would keep
+it until it exits (the launcher starts none). `tjor down` holds it for its
+whole teardown and `tjor git-check` per session, since both may write the
+git-check marker; the launcher takes it again for the exit check and says so
+if it cannot. The lock path is never followed through a symlink — a planted
+link there is fatal, and nothing behind it is touched. `reset` exits non-zero
+when the symlink guard refuses a path. A profile that cannot be used (unknown
+name, a source that is not a directory, managed config that is not JSON)
+refuses before the launch's first write, so it leaves no directory either.
+The session root is read once per command, so a trusted repo config cannot
+move it between two sessions of one `prune`.
 
 ## Egress policy — and growing it
 

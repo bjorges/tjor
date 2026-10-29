@@ -62,7 +62,12 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
   session's state cannot interleave. The kernel releases it when its holder
   exits, so a crash leaves nothing stale; a held one refuses and names its
   holder. Age-selected sessions are re-checked under the lock; a dry run
-  reports a held lock where a real run would refuse.
+  reports a held lock where a real run would refuse. `tjor down` holds the
+  lock for its whole teardown and `tjor git-check` per session (both may
+  write the git-check marker), and the launcher takes it again for the exit
+  check. The lock path is never followed through a symlink: a planted link
+  at `.locks` or the lock file is fatal and its target untouched; the
+  holder's line is written through the held descriptor.
 - One definition of the state tiers (`python/tjor_state.py`) shared by
   `reset`, `ls --state` and `prune --creds-only`. The credential tier now also
   covers Claude Code's `.credentials.json`, `.claude.json` and its backups;
@@ -80,10 +85,22 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
   credentials and topology (#68).
 - `tjor reset all` refuses while the session's git-check marker is pending
   (the explicit path is `prune --session <id> --discard-unreviewed`), and
-  `reset` checks for a running agent under the session lock with the query's
-  status captured — a failed query refuses instead of reading as "no agent".
+  `reset` checks for the directory, a running agent and the marker under the
+  session lock with the query's status captured — a failed query refuses
+  instead of reading as "no agent". A path refused by the symlink guard now
+  makes `reset` exit non-zero (it used to warn and exit 0).
+- A launch refused at a profile gate (unknown `--profile`, a `--profile-dir`
+  that is not a directory, managed config that is not JSON) no longer leaves
+  an empty state directory behind: the profile is validated before the first
+  write, like the path gates.
+- The session root is read once per command, before any session is
+  resolved, so a trusted repo config cannot move it between two sessions of
+  one `prune`; `prune` skips a selected directory that vanished before it
+  took the lock instead of failing.
 - `tests/integration/lifecycle_test.sh` runs against its own session root
-  under `~/.tjor/tmp`, never an operator's real sessions.
+  under `~/.tjor/tmp`, never an operator's real sessions: it clears an
+  inherited `TJOR_REPO_ROOT` and asserts the effective root before its age
+  sweep.
 
 ### Fixed
 - `tjor ls` and `tjor gc` died with `unbound variable` on bash 5.3 when no

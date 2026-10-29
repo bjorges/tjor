@@ -79,7 +79,7 @@ Lifecycle commands taking `--session` (`down`, `status`, `denials`, `reset`) SHA
 
 ### Requirement: Tiered state reset
 
-`tjor reset {cache|sessions|creds|all}` SHALL delete only the corresponding tier of the current repo's session state (harness caches; harness session/history data; credential material including the session CA; everything), SHALL support `--dry-run`, and SHALL require the tier argument — there is no default tier.
+`tjor reset {cache|sessions|creds|all}` SHALL delete only the corresponding tier of the current repo's session state (harness caches; harness session/history data; credential material including the session CA; everything), SHALL support `--dry-run`, and SHALL require the tier argument — there is no default tier. A path the symlink guard refuses SHALL make the command exit non-zero, dry run or not, so a script sees the refusal; every check that decides a deletion — the state directory's existence, the running agent, the pending marker — SHALL run under the session lock.
 
 #### Scenario: Wiping caches keeps auth
 - **WHEN** `tjor reset cache` runs
@@ -89,9 +89,13 @@ Lifecycle commands taking `--session` (`down`, `status`, `denials`, `reset`) SHA
 - **WHEN** `tjor reset all --dry-run` runs
 - **THEN** every path that would be deleted is printed and nothing is deleted
 
+#### Scenario: A refused path is a non-zero exit
+- **WHEN** `tjor reset creds` meets a tier path behind a symlinked ancestor
+- **THEN** that path is refused and left on disk, the other paths are deleted, and the command exits non-zero
+
 ### Requirement: State root inventory
 
-`tjor ls --state` SHALL list every session state directory under the session root: session id, workspace, last activity, container state and credentials present. Last activity SHALL be the newest timestamp over the whole directory, never following symbolic links, floored by the recorded last launch; a directory that cannot be fully read SHALL report unknown, never old. An entry that is not a real directory SHALL be reported, never descended. The inventory SHALL require the container daemon.
+`tjor ls --state` SHALL list every session state directory under the session root: session id, workspace, last activity, container state and credentials present. Last activity SHALL be the newest timestamp over the whole directory, never following symbolic links, floored by the recorded last launch; a directory that cannot be fully read SHALL report unknown, never old. An entry that is not a real directory SHALL be reported, never descended. The inventory SHALL require the container daemon. Every command SHALL read the session root once, before it resolves any session, so a trusted repository configuration cannot move the root between two sessions of the same command.
 
 #### Scenario: Legacy and current directories side by side
 - **WHEN** the session root holds a directory written by an earlier version and one with metadata
@@ -116,6 +120,10 @@ Lifecycle commands taking `--session` (`down`, `status`, `denials`, `reset`) SHA
 #### Scenario: A planted symlink is reported, not followed
 - **WHEN** an entry under the session root is a symbolic link to a directory elsewhere
 - **THEN** the listing reports the entry as not a directory and no path behind the link is read or counted
+
+#### Scenario: One root per command
+- **WHEN** a trusted repository configuration names a different session root than the user configuration, and `tjor prune --session a --session b --dry-run` runs from that repository
+- **THEN** both sessions are looked up under the root the command started with
 
 ### Requirement: Prune is explicit and dry-runnable
 
@@ -163,7 +171,7 @@ Lifecycle commands taking `--session` (`down`, `status`, `denials`, `reset`) SHA
 
 ### Requirement: Prune decides under the lock
 
-Age selection is discovery only: for every session selected by `--older-than`, prune SHALL recompute last activity under the session lock and SHALL skip a session that became active since it was selected. A dry run SHALL take the lock the same way, so it reports a held lock exactly where a real run would refuse.
+Age selection is discovery only: for every session selected by `--older-than`, prune SHALL recompute last activity under the session lock and SHALL skip a session that became active since it was selected. A dry run SHALL take the lock the same way, so it reports a held lock exactly where a real run would refuse. A selected session whose directory is gone by the time prune holds its lock SHALL be reported and skipped, never treated as an error.
 
 #### Scenario: A session that became active is skipped
 - **WHEN** a session selected by `--older-than 30d` is written to after selection and before prune reaches it
@@ -172,6 +180,10 @@ Age selection is discovery only: for every session selected by `--older-than`, p
 #### Scenario: A dry run reports a held lock
 - **WHEN** a launch of session `a` holds its lock and `tjor prune --session a --dry-run` runs
 - **THEN** the dry run reports the session as refused for the lock
+
+#### Scenario: A directory gone before the lock is skipped
+- **WHEN** another command removes a selected session's state directory before prune takes that session's lock
+- **THEN** prune reports that it has no state directory and continues with the next session
 
 ### Requirement: Prune refuses unreviewed state unless told so per session
 

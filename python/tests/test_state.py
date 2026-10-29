@@ -315,7 +315,7 @@ def test_read_meta_never_follows_a_symlink(tmp_path):
     d.mkdir()
     (d / "meta.json").symlink_to(real)
     assert ts.read_meta(str(d)) is None
-    [rec] = ts.inventory(str(tmp_path / "s").rsplit("/", 1)[0]) if False else [r for r in ts.inventory(str(tmp_path)) if r["id"] == "s"]
+    [rec] = [r for r in ts.inventory(str(tmp_path)) if r["id"] == "s"]
     assert rec["workspace"] is None
 
 
@@ -343,6 +343,11 @@ def test_activity_cli_unknown_when_unreadable(tmp_path):
     assert r.returncode == 0 and r.stdout.strip() == "-"
 
 
+def _lock_try(fd, path):
+    return subprocess.run([sys.executable, str(HELPER), "lock-try", str(fd), str(path)],
+                          pass_fds=[fd], capture_output=True, text=True)
+
+
 def test_lock_try_is_exclusive_and_outlives_the_helper(tmp_path):
     lock = tmp_path / "lock"
     a = os.open(str(lock), os.O_WRONLY | os.O_CREAT | os.O_APPEND)
@@ -350,18 +355,61 @@ def test_lock_try_is_exclusive_and_outlives_the_helper(tmp_path):
     try:
         # The helper locks the inherited description; the lock stays with fd a
         # after the helper exits, so a second description is refused ...
-        r = subprocess.run([sys.executable, str(HELPER), "lock-try", str(a)], pass_fds=[a])
-        assert r.returncode == 0
-        r = subprocess.run([sys.executable, str(HELPER), "lock-try", str(b)], pass_fds=[b])
-        assert r.returncode == 1
+        assert _lock_try(a, lock).returncode == 0
+        assert _lock_try(b, lock).returncode == 1
         # ... until it is closed.
         os.close(a)
-        r = subprocess.run([sys.executable, str(HELPER), "lock-try", str(b)], pass_fds=[b])
-        assert r.returncode == 0
+        assert _lock_try(b, lock).returncode == 0
     finally:
         os.close(b)
 
 
-def test_lock_try_bad_descriptor():
-    r = _run("lock-try", "999")
+def test_lock_try_empties_the_file_so_the_owner_line_appended_next_is_alone(tmp_path):
+    lock = tmp_path / "lock"
+    lock.write_text("pid=1 cmd=run\n")   # a dead holder's line
+    fd = os.open(str(lock), os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+    try:
+        assert _lock_try(fd, lock).returncode == 0
+        assert lock.read_text() == ""
+        os.write(fd, b"pid=2 cmd=prune\n")   # what the launcher does, through the held descriptor
+        assert lock.read_text() == "pid=2 cmd=prune\n"
+    finally:
+        os.close(fd)
+
+
+def test_lock_try_refuses_a_symlinked_lock_path_and_touches_nothing(tmp_path):
+    target = tmp_path / "victim"
+    target.write_text("precious\n")
+    link = tmp_path / "lock"
+    link.symlink_to(target)
+    fd = os.open(str(link), os.O_WRONLY | os.O_APPEND)   # as a shell `>>` would, following the link
+    try:
+        r = _lock_try(fd, link)
+        assert r.returncode == 2 and "not a regular file" in r.stderr
+        assert target.read_text() == "precious\n"
+    finally:
+        os.close(fd)
+
+
+def test_lock_try_refuses_a_descriptor_that_is_not_the_named_file(tmp_path):
+    other = tmp_path / "other"
+    lock = tmp_path / "lock"
+    lock.write_text("")
+    fd = os.open(str(other), os.O_WRONLY | os.O_CREAT | os.O_APPEND)
+    try:
+        r = _lock_try(fd, lock)
+        assert r.returncode == 2 and "is not the file at" in r.stderr
+    finally:
+        os.close(fd)
+
+
+def test_lock_try_bad_descriptor(tmp_path):
+    lock = tmp_path / "lock"
+    lock.write_text("")
+    r = _run("lock-try", "999", str(lock))
     assert r.returncode == 2 and "lock-try" in r.stderr
+
+
+def test_lock_try_missing_path_is_usage_or_error():
+    r = _run("lock-try", "999")
+    assert r.returncode == 2

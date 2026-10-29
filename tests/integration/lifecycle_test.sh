@@ -24,6 +24,17 @@ LIFECYCLE_CONFIG_DIR="${HOME}/.tjor/tmp/lifecycle-config"
 mkdir -p "${SROOT}" "${LIFECYCLE_CONFIG_DIR}"
 printf '[session]\nroot = "%s"\n' "${SROOT}" > "${LIFECYCLE_CONFIG_DIR}/config.toml"
 export TJOR_USER_CONFIG="${LIFECYCLE_CONFIG_DIR}/config.toml"
+# Isolation is unconditional (review round 3): an inherited TJOR_REPO_ROOT
+# could let a trusted repo config move session.root, so it is cleared, and the
+# effective root is asserted here and again right before the age sweep.
+unset TJOR_REPO_ROOT
+TJOR_PY="$(cd "$(dirname "${T}")/../python" && pwd)"
+assert_scratch_root() {
+    local eff
+    eff="$(python3 "${TJOR_PY}/tjor_cfg.py" get session.root)"
+    [[ "${eff}" == "${SROOT}" ]] || { echo "lifecycle: REFUSING to run — effective session.root is '${eff}', not the scratch root ${SROOT}" >&2; exit 1; }
+}
+assert_scratch_root
 PASS=0; FAIL=0
 
 ok()  { echo "ok   $1"; PASS=$((PASS + 1)); }
@@ -238,9 +249,10 @@ mkdir -p "${OUTSIDE}/storage"
 echo escape-victim > "${OUTSIDE}/storage/victim"
 rm -rf "${SDIR}/home/.local/share/opencode"
 ln -s "${OUTSIDE}" "${SDIR}/home/.local/share/opencode"
-"${T}" reset sessions --session a > "${SCRATCH}/reset-nested.out" 2>&1
+"${T}" reset sessions --session a > "${SCRATCH}/reset-nested.out" 2>&1 && RESET_RC=0 || RESET_RC=$?
 check "reset refuses a tier with an intermediate symlink ancestor" \
     grep -qi "REFUSING" "${SCRATCH}/reset-nested.out"
+check "a refused path makes reset exit non-zero (review round 3)" test "${RESET_RC}" -ne 0
 check "intermediate-symlink escape failed: outside victim survived" test -f "${OUTSIDE}/storage/victim"
 rm -f "${SDIR}/home/.local/share/opencode"   # remove the planted link
 rm -rf "${OUTSIDE}/storage"
@@ -265,7 +277,7 @@ check "reset all removed the state dir" bash -c "! test -d '${SDIR}'"
 # Session a: no containers, no state dir (reset all above). Session b: running.
 SDIR_A="${SROOT}/${SID_A}"; SDIR_B="${SROOT}/${SID_B}"
 wait_for_file() { local f="$1" n="${2:-300}" i; for ((i = 0; i < n; i++)); do [[ -e "${f}" ]] && return 0; sleep 0.1; done; return 1; }
-lock_free() { bash -c 'exec 7>>"$1"; python3 "$2" lock-try 7' _ "${SROOT}/.locks/$1" "$(dirname "${T}")/../python/tjor_state.py"; }   # a separate process can take it
+lock_free() { bash -c 'exec 7>>"$1"; python3 "$2" lock-try 7 "$1"' _ "${SROOT}/.locks/$1" "${TJOR_PY}/tjor_state.py"; }   # a separate process can take it
 age_tree() { # $1 dir, $2 days -> every lstat time under it set that old (deep files stay the newest signal)
     python3 - "$1" "$2" <<'PY'
 import os, sys, time
@@ -286,7 +298,9 @@ PY
 check "lifecycle commands naming a never-launched session create no state directory (#68)" bash -c \
     "! test -e '${SROOT}/${BASE_SID}-never' && ! test -e '${SROOT}/.locks/${BASE_SID}-never'"
 check "a launch of a never-launched session refused at a path gate (--dir /etc) creates no state directory and holds no lock (#68)" bash -c \
-    "cd '${REPO}' && ! '${T}' run --detach --session fresh --dir /etc sleep 1 >/dev/null 2>&1 && ! test -e '${SROOT}/${BASE_SID}-fresh' && $(declare -f lock_free); SROOT='${SROOT}'; T='${T}'; lock_free '${BASE_SID}-fresh' >/dev/null 2>&1"
+    "cd '${REPO}' && ! '${T}' run --detach --session fresh --dir /etc sleep 1 >/dev/null 2>&1 && ! test -e '${SROOT}/${BASE_SID}-fresh' && $(declare -f lock_free); SROOT='${SROOT}'; TJOR_PY='${TJOR_PY}'; lock_free '${BASE_SID}-fresh' >/dev/null 2>&1"
+check "a launch refused at a profile gate (unknown --profile) creates no state directory and holds no lock (review round 3)" bash -c \
+    "cd '${REPO}' && ! '${T}' run --detach --session fresh --profile nosuch sleep 1 > '${SCRATCH}/run-prof.out' 2>&1 && grep -q 'no profile named' '${SCRATCH}/run-prof.out' && ! test -e '${SROOT}/${BASE_SID}-fresh' && $(declare -f lock_free); SROOT='${SROOT}'; TJOR_PY='${TJOR_PY}'; lock_free '${BASE_SID}-fresh' >/dev/null 2>&1"
 # (b) metadata from the real launch; inventory of a legacy dir beside it
 check "launch wrote meta.json: workspace, harness, no task, launch count 1, the documented keys only (#68)" bash -c \
     "python3 -c \"import json,sys; m=json.load(open('${SDIR_B}/meta.json')); sys.exit(0 if m['workspace']=='${REPO}' and m['harness']=='opencode' and m['task'] is None and m['launches']==1 and m['created']==m['last_launch'] and set(m)=={'schema','session','workspace','harness','profile','task','created','last_launch','launches'} else 1)\""
@@ -387,10 +401,10 @@ check "prune --dry-run while the launch holds the lock says so as well" bash -c 
 : > "${RELEASE}"; wait "${HOLD_PID}" || true
 CTR_A4="$(wait_for_agent "${SID_A}")" || true
 check "the held launch completed and released its lock once the agent container existed" bash -c \
-    "test -n '${CTR_A4}' && $(declare -f lock_free); SROOT='${SROOT}'; T='${T}'; lock_free '${SID_A}' >/dev/null 2>&1"
+    "test -n '${CTR_A4}' && $(declare -f lock_free); SROOT='${SROOT}'; TJOR_PY='${TJOR_PY}'; lock_free '${SID_A}' >/dev/null 2>&1"
 check "launch metadata records the task; a refused launch after the lock (sensitive --dir) leaves no lock behind" bash -c \
     "python3 -c \"import json,sys; m=json.load(open('${SDIR_A}/meta.json')); sys.exit(0 if m['task']=='LIFE-2' and m['launches']==1 else 1)\" \
-     && cd '${REPO}' && ! '${T}' run --detach --session a --dir /etc sleep 1 >/dev/null 2>&1 && $(declare -f lock_free); SROOT='${SROOT}'; T='${T}'; lock_free '${SID_A}' >/dev/null 2>&1"
+     && cd '${REPO}' && ! '${T}' run --detach --session a --dir /etc sleep 1 >/dev/null 2>&1 && $(declare -f lock_free); SROOT='${SROOT}'; TJOR_PY='${TJOR_PY}'; lock_free '${SID_A}' >/dev/null 2>&1"
 docker stop -t 2 "${CTR_A4}" >/dev/null 2>&1 || true
 ( cd "${REPO}" && "${T}" run --detach --session a --task LIFE-3 sleep 600 >/dev/null 2>&1 )
 CTR_A5="$(wait_for_agent "${SID_A}")" || true
@@ -411,6 +425,7 @@ mkdir -p "${STALE}/home" "${SROOT}/.locks"; printf 'pid=%s cmd=run\n' "$(bash -c
 check "a lock file whose recorded holder is long gone is simply free: prune proceeds without a reclaim step" bash -c \
     "cd '${REPO}' && '${T}' prune --session ${STALE_SID} > '${SCRATCH}/prune-stale.out' 2>&1 && ! grep -q 'locked' '${SCRATCH}/prune-stale.out' && ! test -e '${STALE}'"
 # (j) a real age sweep: the legacy dir goes, the running session's dir stays (refused, exit non-zero)
+assert_scratch_root   # never against an operator's real sessions
 check "prune --older-than 30d removes the legacy dir and leaves the running session's dir (refused)" bash -c \
     "! '${T}' prune --older-than 30d > '${SCRATCH}/prune-real.out' 2>&1; grep -q 'removed ${LEGACY}' '${SCRATCH}/prune-real.out' && ! test -e '${LEGACY}' && test -d '${SDIR_A}'"
 check "gc --dry-run is unchanged by prune: it still names only containers and networks, never state" bash -c \

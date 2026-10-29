@@ -110,19 +110,38 @@ def activity(state_dir: str) -> int | None:
     return last
 
 
-def lock_try(fd: int) -> int:
+def lock_try(fd: int, path: str) -> int:
     """Take an exclusive, non-blocking flock on an inherited descriptor.
     The lock belongs to the OPEN FILE DESCRIPTION the launcher keeps open, so
     it outlives this process and the kernel drops it when every descriptor
-    on it closes - a crashed holder leaves nothing stale. 0 = acquired,
-    1 = held elsewhere, 2 = the descriptor is not usable."""
+    on it closes - a crashed holder leaves nothing stale. The descriptor must
+    be the regular file at `path` (the launcher opened the path; a symlink
+    planted there must never be followed, so the path is lstat'ed and must
+    be the same inode as the descriptor). On success the file is emptied
+    through the descriptor, so the caller's owner line - appended through
+    the same descriptor - is the only content. 0 = acquired, 1 = held
+    elsewhere, 2 = the descriptor or the path is not usable."""
     import fcntl
+    import stat
     try:
+        st = os.lstat(path)
+        if not stat.S_ISREG(st.st_mode):
+            print(f"tjor_state: lock-try: {path} is not a regular file (a symlink is never followed)", file=sys.stderr)
+            return 2
+        fst = os.fstat(fd)
+        if (st.st_dev, st.st_ino) != (fst.st_dev, fst.st_ino):
+            print(f"tjor_state: lock-try: descriptor {fd} is not the file at {path}", file=sys.stderr)
+            return 2
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         return 1
     except OSError as e:
         print(f"tjor_state: lock-try: {e}", file=sys.stderr)
+        return 2
+    try:
+        os.ftruncate(fd, 0)   # ours now: the previous holder's line goes
+    except OSError as e:
+        print(f"tjor_state: lock-try: cannot reset {path}: {e}", file=sys.stderr)
         return 2
     return 0
 
@@ -251,7 +270,7 @@ USAGE = ("usage: tjor_state.py tier {cache|sessions|creds|all} STATE_DIR"
          " | duration TEXT"
          " | meta-write STATE_DIR --session ID --workspace PATH --harness NAME"
          " [--profile-name NAME | --profile-dir PATH] [--task ID]"
-         " | inventory ROOT | activity STATE_DIR | lock-try FD")
+         " | inventory ROOT | activity STATE_DIR | lock-try FD PATH")
 
 
 def main(argv: list[str]) -> int:
@@ -292,8 +311,8 @@ def main(argv: list[str]) -> int:
                 return 1
             print(_field(activity(argv[2])))
             return 0
-        if cmd == "lock-try" and len(argv) == 3 and argv[2].isdigit():
-            return lock_try(int(argv[2]))
+        if cmd == "lock-try" and len(argv) == 4 and argv[2].isdigit():
+            return lock_try(int(argv[2]), argv[3])
     except (OSError, StateError) as e:
         print(f"tjor_state: {e}", file=sys.stderr)
         return 1

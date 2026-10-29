@@ -613,9 +613,13 @@ Resolving a session name or id for any command other than `tjor run` SHALL NOT c
 - **WHEN** `tjor run --session fresh --dir /etc` is refused for the sensitive path, and `fresh` was never launched before
 - **THEN** no state directory for `fresh` exists afterwards and no lock for it is held
 
+#### Scenario: A launch refused at a profile gate leaves no directory
+- **WHEN** `tjor run --session fresh --profile nosuch` is refused for the unknown profile — likewise a `--profile-dir` that is not a directory, or a managed config that is not JSON — and `fresh` was never launched before
+- **THEN** no state directory for `fresh` exists afterwards and no lock for it is held
+
 ### Requirement: A launch holds the session lock while it writes state
 
-From its first write into the session's state directory until the agent container exists, a launch SHALL hold a per-session lock stored outside the state directory. A launch that finds the lock held SHALL refuse, naming the lock and its holder, before writing into the state root or minting a credential. The lock SHALL be released when its holder exits, however it exits: no lock outlives the command that took it, and nothing is ever reclaimed from a dead holder.
+From its first write into the session's state directory until the agent container exists, a launch SHALL hold a per-session lock stored outside the state directory. A launch that finds the lock held SHALL refuse, naming the lock and its holder, before writing into the state root or minting a credential. The lock SHALL be released when its holder exits, however it exits, and nothing is ever reclaimed from a dead holder; the stated residual is a process that inherited the holder's descriptor, which keeps the lock until it exits too (the launcher starts no such process). The lock path SHALL never be followed through a symbolic link: a link at the lock directory or the lock file is refused before anything is opened, and the holder's line is written through the held descriptor, never through the path.
 
 #### Scenario: Launch refused while the session is being pruned
 - **WHEN** `tjor prune --session a` holds the lock of session `a` and `tjor run --session a` starts
@@ -632,3 +636,11 @@ From its first write into the session's state directory until the agent containe
 #### Scenario: A refused launch releases the lock
 - **WHEN** a launch takes the lock and is then refused (a sensitive `--dir`, a missing image)
 - **THEN** the lock is released and the next launch of that session is not refused for it
+
+#### Scenario: A process that inherited the descriptor keeps the lock
+- **WHEN** a holder exits while a process it started still holds the lock's descriptor
+- **THEN** the lock stays held until that process exits, and a command refused meanwhile names the holder recorded in the lock file
+
+#### Scenario: A planted link at the lock path is refused, not followed
+- **WHEN** the lock file or the lock directory for a session is a symbolic link
+- **THEN** the command refuses before opening anything, and the link's target is neither truncated nor written

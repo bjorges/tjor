@@ -90,9 +90,9 @@ newest() { python3 -c 'import os,sys; print(max(os.lstat(os.path.join(dp,n)).st_
 # === 1. the per-session lock (a kernel flock: nothing stale outlives a holder) ===
 LOCK="${STATE}/.locks/$(sid l)"
 HELPER="${ROOT}/python/tjor_state.py"; export HELPER   # the contenders below run in fresh bash -c processes
-contend() { bash -c 'exec 7>>"$1"; python3 "$2" lock-try 7' _ "$1" "${HELPER}"; }   # a separate process tries the lock once
-hold_lock() { # $1 lock file -> pid of a separate process holding it until killed
-    bash -c 'exec 7>>"$1"; python3 "$2" lock-try 7 >/dev/null 2>&1 || exit 1; printf "pid=%s cmd=holder\n" "$$" > "$1"; exec sleep 300' _ "$1" "${HELPER}" >/dev/null 2>&1 &   # exec: no child inherits the descriptor, so a kill frees the lock at once
+contend() { bash -c 'exec 7>>"$1"; python3 "$2" lock-try 7 "$1"' _ "$1" "${HELPER}"; }   # a separate process tries the lock once
+hold_lock() { # $1 lock file, $2 ready file -> pid of a process holding it (touches $2 once it does)
+    bash -c 'exec 7>>"$1"; python3 "$2" lock-try 7 "$1" >/dev/null 2>&1 || exit 1; printf "pid=%s cmd=holder\n" "$$" >&7; : > "$3"; exec sleep 300' _ "$1" "${HELPER}" "$2" >/dev/null 2>&1 &   # exec: no child inherits the descriptor, so a kill frees the lock at once
     echo $!
 }
 wait_for_file() { local f="$1" n="${2:-100}" i; for ((i = 0; i < n; i++)); do [[ -e "${f}" ]] && return 0; sleep 0.1; done; return 1; }
@@ -102,7 +102,8 @@ check "lock: a second process is refused while we hold it" bash -c "$(declare -f
 session_lock_release
 check "lock: our release frees it for another process" bash -c "$(declare -f contend); contend '${LOCK}' 2>/dev/null"
 check "lock: release with nothing held is a no-op" session_lock_release
-HOLD_PID="$(hold_lock "${LOCK}")"; sleep 0.5
+HREADY="${WORK}/holder-ready"; rm -f "${HREADY}"
+HOLD_PID="$(hold_lock "${LOCK}" "${HREADY}")"; wait_for_file "${HREADY}" || bad "the lock holder never signalled readiness"
 refuse_check "lock: held by a live process -> refused, naming the lock and its holder" \
     "grep -q 'locked by another tjor command' '${OUT}' && grep -q 'cmd=holder' '${OUT}' && grep -q '${LOCK}' '${OUT}'" \
     session_lock_acquire "${STATE}" "$(sid l)" prune
@@ -111,7 +112,7 @@ kill -9 "${HOLD_PID}"; wait "${HOLD_PID}" 2>/dev/null || true; HOLD_PID=""
 check "lock: a holder killed -9 leaves nothing stale; the next acquire succeeds at once (no reclaim step)" \
     session_lock_acquire "${STATE}" "$(sid l)" prune
 session_lock_release
-( for _ in 1 2 3; do ( bash -c 'exec 7>>"$1"; python3 "$2" lock-try 7 >/dev/null 2>&1 && echo got; sleep 1' _ "${LOCK}" "${HELPER}" ) & done; wait ) > "${OUT}" 2>&1
+( for _ in 1 2 3; do ( bash -c 'exec 7>>"$1"; python3 "$2" lock-try 7 "$1" >/dev/null 2>&1 && echo got; sleep 1' _ "${LOCK}" "${HELPER}" ) & done; wait ) > "${OUT}" 2>&1
 check "lock: three simultaneous contenders -> exactly one acquires" test "$(grep -c '^got$' "${OUT}")" -eq 1
 READY="${WORK}/ready"; RELEASE="${WORK}/release"; rm -f "${READY}" "${RELEASE}"
 ( TJOR_TEST_HOLD_LOCK=30 TJOR_TEST_HOLD_LOCK_READY="${READY}" TJOR_TEST_HOLD_LOCK_RELEASE="${RELEASE}" session_lock_acquire "${STATE}" "$(sid l)" test >/dev/null 2>&1; sleep 0.2 ) &
@@ -120,6 +121,28 @@ check "lock: the test seam signals readiness once it holds the lock" wait_for_fi
 check "lock: ... and holds it until released" bash -c "$(declare -f contend); ! contend '${LOCK}' 2>/dev/null"
 SECONDS=0; : > "${RELEASE}"; wait "${HOLD_PID}" || true; HOLD_PID=""
 check "lock: the release file ends the hold promptly (no fixed sleep)" test "${SECONDS}" -lt 5
+# The lock path is never followed through a symlink (review round 3): a
+# planted link at the file or at .locks is fatal, and its target is untouched.
+echo precious > "${OUTSIDE}/lock-victim"
+ln -s "${OUTSIDE}/lock-victim" "${STATE}/.locks/$(sid planted)"
+refuse_check "lock: a symlinked lock file is refused, and what it points at is not truncated" \
+    "grep -q 'refusing to lock through a symlink' '${OUT}' && [ \"\$(cat '${OUTSIDE}/lock-victim')\" = precious ]" \
+    session_lock_acquire "${STATE}" "$(sid planted)" prune
+rm -f "${STATE}/.locks/$(sid planted)"
+mv "${STATE}/.locks" "${WORK}/locks-elsewhere"; ln -s "${WORK}/locks-elsewhere" "${STATE}/.locks"
+refuse_check "lock: a symlinked .locks directory is refused" \
+    "grep -q 'refusing to lock through a symlink' '${OUT}' && ! test -e '${WORK}/locks-elsewhere/$(sid planted)'" \
+    session_lock_acquire "${STATE}" "$(sid planted)" prune
+rm "${STATE}/.locks"; mv "${WORK}/locks-elsewhere" "${STATE}/.locks"
+# Stated residual: a process that inherited the descriptor keeps the lock
+# after the holder is gone (the launcher starts no such process).
+CHILD_PID_FILE="${WORK}/child.pid"; rm -f "${CHILD_PID_FILE}" "${HREADY}"
+bash -c 'exec 7>>"$1"; python3 "$2" lock-try 7 "$1" >/dev/null 2>&1 || exit 1; sleep 300 & echo $! > "$3"; : > "$4"; exit 0' _ "${LOCK}" "${HELPER}" "${CHILD_PID_FILE}" "${HREADY}" >/dev/null 2>&1 || true
+wait_for_file "${HREADY}" || bad "the holder with a child never signalled readiness"
+check "lock: residual — a child that inherited the descriptor keeps the lock after its parent exited" \
+    bash -c "$(declare -f contend); ! contend '${LOCK}' 2>/dev/null"
+kill -9 "$(cat "${CHILD_PID_FILE}")" 2>/dev/null || true
+check "lock: ... and the lock is free once that child is gone" bash -c "$(declare -f contend); contend '${LOCK}' 2>/dev/null"
 
 # === 2. lifecycle commands create no state ====================================
 ( cd "${HOME}/proj" && resolve_session opencode "" never >/dev/null 2>&1 )
@@ -133,6 +156,13 @@ check "prune --session of a never-launched session: no state directory, none cre
 refuse_check "a launch of a never-launched session refused at a path gate (--dir /etc) creates no state directory and holds no lock" \
     "! test -e '$(sdir fresh)' && grep -q 'refusing' '${OUT}' && $(declare -f contend); contend '${STATE}/.locks/$(sid fresh)' 2>/dev/null" \
     cmd_run --detach --session fresh --dir /etc sleep 1
+refuse_check "a launch refused at a profile gate (unknown --profile) creates no state directory either (review round 3)" \
+    "! test -e '$(sdir fresh)' && grep -q 'no profile named' '${OUT}'" cmd_run --detach --session fresh --profile nosuch sleep 1
+refuse_check "a launch refused at a profile gate (--profile-dir that is not a directory) creates no state directory" \
+    "! test -e '$(sdir fresh)' && grep -q 'not a directory' '${OUT}'" cmd_run --detach --session fresh --profile-dir "${WORK}/nope" sleep 1
+mkdir -p "${WORK}/badprof/managed"; echo '{not json' > "${WORK}/badprof/managed/opencode.json"
+refuse_check "a launch refused for a managed profile config that is not JSON creates no state directory" \
+    "! test -e '$(sdir fresh)' && grep -q 'not valid JSON' '${OUT}'" cmd_run --detach --session fresh --profile-dir "${WORK}/badprof" sleep 1
 
 # === 3. reset reads the tier from the helper, and dies when it cannot ==========
 plant r
@@ -159,8 +189,28 @@ run cmd_reset cache --session r
 check "reset below all still deletes its tier under a pending marker, and releases the lock" bash -c \
     "! test -e '$(sdir r)/home/.cache' && test -f '$(sdir r)/gitcheck/pending' && $(declare -f contend); contend '${STATE}/.locks/$(sid r)' 2>/dev/null"
 rm -f "$(sdir r)/gitcheck/pending"
+# The marker is looked for UNDER the lock (review round 3): one planted while
+# reset already holds the lock still refuses `reset all`.
+rm -f "${READY}" "${RELEASE}"
+( cd "${HOME}/proj" && TJOR_TEST_HOLD_LOCK=30 TJOR_TEST_HOLD_LOCK_READY="${READY}" TJOR_TEST_HOLD_LOCK_RELEASE="${RELEASE}" cmd_reset all --session r > "${OUT}" 2>&1 ) &
+HOLD_PID=$!
+wait_for_file "${READY}" || bad "reset never signalled that it holds the lock"
+: > "$(sdir r)/gitcheck/pending"
+: > "${RELEASE}"; wait "${HOLD_PID}" && RESET_RC=0 || RESET_RC=$?; HOLD_PID=""
+check "reset all checks for the git-check marker under the lock: one planted after the lock was taken still refuses" \
+    bash -c "[ ${RESET_RC} -ne 0 ] && grep -q 'pending git-check' '${OUT}' && test -d '$(sdir r)'"
+rm -f "$(sdir r)/gitcheck/pending"
 run cmd_reset all --session r
 check "reset all removes the directory once the marker is gone" bash -c "! test -e '$(sdir r)'"
+plant rs
+rm -rf "$(sdir rs)/home/.local/share/opencode"; mkdir -p "${OUTSIDE}/rs-opencode"; echo victim > "${OUTSIDE}/rs-opencode/auth.json"
+ln -s "${OUTSIDE}/rs-opencode" "$(sdir rs)/home/.local/share/opencode"
+refuse_check "reset refuses the path behind a planted intermediate symlink AND exits non-zero (review round 3)" \
+    "grep -q 'REFUSING $(sdir rs)/home/.local/share/opencode/auth.json' '${OUT}' && grep -q 'some paths were refused' '${OUT}' && test -f '${OUTSIDE}/rs-opencode/auth.json' && ! test -e '$(sdir rs)/broker'" \
+    cmd_reset creds --session rs
+refuse_check "reset --dry-run reports the same refusal with the same exit status" \
+    "grep -q 'REFUSING' '${OUT}' && test -f '${OUTSIDE}/rs-opencode/auth.json'" cmd_reset creds --session rs --dry-run
+rm -rf "$(sdir rs)"
 
 # === 4. prune: selectors ======================================================
 plant old; age_all "$(sdir old)" $((40 * 86400))
@@ -215,7 +265,7 @@ refuse_check "prune refuses when the container query fails, never assuming none"
 refuse_check "ls --state fails when the container query fails, never guessing" "grep -q 'refusing to guess' '${OUT}'" cmd_ls --state
 TJOR_MOCK_DOCKER_FAIL=""
 check "prune holds no lock after a refusal" bash -c "$(declare -f contend); contend '${STATE}/.locks/$(sid used)' 2>/dev/null"
-HOLD_PID="$(hold_lock "${STATE}/.locks/$(sid used)")"; sleep 0.5
+rm -f "${HREADY}"; HOLD_PID="$(hold_lock "${STATE}/.locks/$(sid used)" "${HREADY}")"; wait_for_file "${HREADY}" || bad "the lock holder never signalled readiness"
 refuse_check "prune refuses a session whose lock another command holds, naming the holder" \
     "grep -q 'refused: $(sid used) — locked' '${OUT}' && grep -q 'cmd=holder' '${OUT}' && test -d '$(sdir used)'" cmd_prune --session used
 refuse_check "prune --dry-run reports the held lock too (the preview matches the real run)" \
@@ -238,6 +288,9 @@ check "prune --creds-only is not blocked by the marker: credentials gone, baseli
 run cmd_prune --session used --discard-unreviewed
 check "prune --session --discard-unreviewed removes the directory and says the findings were discarded" bash -c \
     "! test -e '$(sdir used)' && grep -q 'unreviewed git-check findings discarded' '${OUT}'"
+
+ok_check "prune_one on a directory that vanished before its lock reports it and is not an error (review round 3)" \
+    "grep -q 'no state directory (removed since it was selected)' '${OUT}'" prune_one "$(sid gone)" "$(sdir gone)" "${STATE}" "" "" "" ""
 
 # === 6. prune: the symlink guard, from the canonical root =====================
 plant esc
@@ -276,6 +329,22 @@ check "ls --state: only exited containers show as stopped" bash -c "grep -E '^$(
 TJOR_MOCK_CONTAINERS=""
 run cmd_ls
 check "plain ls is unchanged (no containers -> no sessions)" grep -q 'no sessions' "${OUT}"
+
+# === 8. one session root per command (review round 3) =========================
+# A TRUSTED repo config that moves session.root must not move it mid-command:
+# resolve_session exports TJOR_REPO_ROOT after the first session, and the
+# root read for the second would otherwise differ.
+ELSEWHERE="${WORK}/elsewhere"; mkdir -p "${ELSEWHERE}" "${HOME}/proj/.tjor"
+printf '[session]\nroot = "%s"\n' "${ELSEWHERE}" > "${HOME}/proj/.tjor/config.toml"
+python3 -c 'import sys; sys.path.insert(0, sys.argv[1]); import tjor_trust; tjor_trust.approve(sys.argv[2])' "${ROOT}/python" "${HOME}/proj/.tjor/config.toml"
+check "the repo config is trusted (precondition)" bash -c "cd '${HOME}/proj' && TJOR_REPO_ROOT='${HOME}/proj' python3 '${ROOT}/python/tjor_cfg.py' get session.root | grep -q '${ELSEWHERE}'"
+plant one; plant two
+ok_check "prune --session a --session b previews both under the root the command started with, never the repo config's" \
+    "grep -q 'would remove $(sdir one)' '${OUT}' && grep -q 'would remove $(sdir two)' '${OUT}' && ! grep -q '${ELSEWHERE}' '${OUT}'" \
+    cmd_prune --session one --session two --dry-run
+( cd "${HOME}/proj" && resolve_session opencode "" one >/dev/null 2>&1 && resolve_session opencode "" two >/dev/null 2>&1 && [[ "${TJOR_SESSION_DIR}" == "${STATE}/"* && "$(session_root)" == "${STATE}" ]] ) && ok "resolve_session twice in one command: the second session resolves under the same root as the first" || bad "resolve_session twice in one command: the second session resolves under the same root as the first"
+( cd "${HOME}/proj" && export TJOR_REPO_ROOT="${HOME}/proj" && [[ "$(session_root)" == "${ELSEWHERE}" ]] && resolve_session opencode "" one >/dev/null 2>&1 && [[ "${TJOR_SESSION_DIR}" == "${ELSEWHERE}/"* ]] ) && ok "a trusted repo root inherited from the environment applies to the whole command, consistently" || bad "a trusted repo root inherited from the environment applies to the whole command, consistently"
+rm -rf "${HOME}/proj/.tjor"
 
 echo
 echo "state: ${PASS} passed, ${FAIL} failed"
