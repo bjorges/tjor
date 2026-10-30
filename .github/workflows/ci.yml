@@ -19,6 +19,9 @@ jobs:
   unit:
     name: unit + parity + lint
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read     # the required-check parity step lists this run's jobs
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
@@ -55,6 +58,10 @@ jobs:
         run: tests/doc_consistency.sh
       - name: slides-consistency (every spec capability has a reviewed slide)
         run: tests/slides_consistency.sh
+      - name: required-check parity (every ci.yml job is a required check on main, and nothing else is)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: tests/ruleset_consistency.sh
 
   # The launcher's Python helpers must run on the minimum python3 the README
   # names (3.11): the unit job above runs the newest, and a 3.13-only call in

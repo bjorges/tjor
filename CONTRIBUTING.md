@@ -46,7 +46,10 @@ The flow above is enforced by repository settings, not by files, so this is the 
 maintainer enables (and what a reader should expect): a ruleset on `main` that blocks direct pushes
 and requires every `ci.yml` job before a merge (not `slides.yml`, which deploys after it); squash
 and rebase merges only, the squash message taken from the pull request body; branches deleted on
-merge; private vulnerability reporting enabled so the `SECURITY.md` link works.
+merge; private vulnerability reporting enabled so the `SECURITY.md` link works. The required-check
+list cannot drift from `ci.yml`: `tests/ruleset_consistency.sh`, run by the unit job, compares the
+run's jobs with the ruleset's required checks in both directions (a new job must be added to the
+ruleset by name before its pull request can merge).
 
 ## Releasing
 

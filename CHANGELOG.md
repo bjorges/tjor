@@ -43,6 +43,11 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
   capability and ADRs it describes. Built with Slidev, published at
   https://bjorges.github.io/tjor/overview/ by `slides.yml` on every merge to
   `main` (pull requests build but never deploy).
+- **Required-check parity gate** (`tests/ruleset_consistency.sh`, in the CI
+  unit job): every job of the `ci.yml` run must be a required status check on
+  `main`, and every required check must be a job of the run, so a job added
+  to CI cannot go red without blocking a merge and a stale entry cannot block
+  every merge. The minimum-Python job is now required.
 - **Spec↔slide consistency gate** (`tests/slides_consistency.sh`, in the CI
   unit job): every capability under `openspec/specs/` must be tagged by a
   slide, and the tag pins the spec file's content hash, so any change to a
