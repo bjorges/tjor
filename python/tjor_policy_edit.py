@@ -27,7 +27,10 @@ _ALLOW_OPEN = re.compile(r"^[ \t]*allow[ \t]*=[ \t]*\[", re.M)
 
 
 def add_hosts(path: str, hosts: list[str]) -> None:
-    text = Path(path).read_text(newline="") if Path(path).is_file() else ""
+    text = ""
+    if Path(path).is_file():
+        with open(path, encoding="utf-8", newline="") as fh:   # no newline translation (read_text
+            text = fh.read()                                   # grew `newline=` only in Python 3.13)
     nl = "\r\n" if "\r\n" in text else "\n"        # keep the file's own line endings
     # Three shapes of file (#66, design D9). Only the `[hosts]` table's own
     # `allow` list is an insertion point: a `[[methods.restrict]]` rule has an
@@ -75,7 +78,8 @@ def add_hosts(path: str, hosts: list[str]) -> None:
 
     out = Path(path)
     out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(text, newline="")                 # as composed: no newline translation
+    with open(out, "w", encoding="utf-8", newline="") as fh:  # as composed: no newline translation
+        fh.write(text)
 
 
 def _main(argv: list[str]) -> int:
