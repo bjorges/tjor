@@ -93,6 +93,7 @@ groups:
   - title: Operate & prove
     items:
       - A launch that behaves the same every time
+      - A task-aware start
       - Which session did what
       - Sessions you can find, reattach, and clean up
       - Does it hold on my machine?
@@ -413,7 +414,7 @@ specs: [session-launch@45d44f04]
 ---
 layout: problem
 title: A task's notes live in another repo
-specs: [task-notes@7af5f547]
+specs: [task-notes@e076f334]
 adrs: ['0013']
 ---
 
@@ -424,9 +425,9 @@ adrs: ['0013']
 
 ::solution::
 
-- **`[task] notes_dir = "~/scratch/tasks/{task}"`** in the user config: `--task <id>` mounts that directory writable at its host path, **through the same path as a `--dir`**, so every rule for extra writable roots applies unchanged; `TJOR_TASK_DIR` names it in the cage.
+- **`[task] notes_dir = "~/scratch/tasks/{task}"`** in the user config: `--task <id>` mounts that directory writable at its physical host path, **through the same path as a `--dir`**, so every rule for extra writable roots applies unchanged; `TJOR_TASK_DIR` names it in the cage, one spelling for the checks, the mount and the agent.
 - The notes **root** must exist and is never created; below it, one real directory at a time, never through a link, the template checked component by component.
-- **Refused, no override: a workspace that is the notes root or contains it** (by filesystem identity, not strings). The table is **user-config only**: a repository cannot name a host path to mount (ADR 0013).
+- **Refused, no override: a workspace that is the notes root or contains it** (by filesystem identity along physical paths, never through a link). The table is **user-config only**: a repository cannot name a host path to mount (ADR 0013).
 - Task ids become plain lower-case names; with `session_per_task` the session's short name **is** the id (`tjor down --session <id>`, `tjor attach --task <id>`), and ids the resolver would misread are refused.
 - A bounded, link-free scan names credential-shaped files; a probe file an isolated throwaway container must see proves the directory is really shared.
 
@@ -462,8 +463,8 @@ What travels with the code, what you bring from home, and what you did not build
 ---
 layout: problem
 title: Config that travels with the repo
-specs: [repo-config-trust@4ee51365]
-adrs: ['0013']
+specs: [repo-config-trust@bf175f0d]
+adrs: ['0013', '0014']
 ---
 
 ::problem::
@@ -481,7 +482,7 @@ $ tjor trust --show  # review only
 
 - A repo config is honored **only after you approve its exact content**. Any later edit makes it untrusted again until re-approved.
 - An unapproved config is ignored with a loud warning naming the file and the fix; the session falls back to your user and default config.
-- **Approval never extends to a host mount**: the `[task]` table (a notes directory tjor mounts writable) is user-config only, ignored in a repo config even when trusted (ADR 0013); a typo under it aborts the launch.
+- **Approval never extends to a host mount or to the harness's command line**: the `[task]` table (a notes directory tjor mounts writable, a task prompt) and the `[harness]` table (arguments passed to the harness) are user-config only, ignored in a trusted repo config with a warning (ADR 0013, ADR 0014); a typo under either aborts the launch.
 
 ---
 layout: problem
@@ -557,6 +558,37 @@ specs: [session-launch@45d44f04]
 
 ---
 layout: problem
+title: A task-aware start
+specs: [harness-launch@3487ce8b]
+adrs: ['0014']
+---
+
+::problem::
+
+- A wrapper that wants the agent to start on a task, with a first message naming it and its notes directory, or with yesterday's conversation continued, hand-builds the harness command after `--`: text spliced into a shell string, and a guess about when to pass `--continue`.
+- The splice differs per harness and sits outside what tjor already knows: which harness, what `--task` resolved, whether tjor started a conversation here before.
+
+::solution::
+
+```toml
+[harness.claude]
+args = ["--model", "opus"]                 # user config only (ADR 0014)
+[task]
+prompt = "Task {task}. Notes: {task_dir}."
+resume = "auto"
+```
+
+- **tjor owns the command line** when asked: `args` pass verbatim, before anything tjor adds; an explicit command after `tjor run` is passed as given, nothing added.
+- **The prompt is data on every harness**: opencode `--prompt=<text>`, Claude Code `-- <text>`, Copilot CLI `--interactive=<text>`; two placeholders, `{{ }}` for literal braces, a one-word prompt refused whatever the whitespace around it (`claude -- mcp` opens `mcp`).
+- **Resume from tjor's own record**, never from the harness's store: `conversation.json` where no container mounts, read as a bounded regular file, refused when a writable root would cover it, by identity where it exists and by a conservative name match where it does not; `--no-resume` forces fresh; `reset sessions` forgets it.
+- Built before the notes directory, the first write, the mint and the sidecars: **a refusal creates nothing**. The launch line shows the prompt by its length and tjor's decision.
+
+<Plainly>
+<p><code>args</code> are uninspected: a flag that relaxes the harness, selects a conversation or names a subcommand is yours, and <code>resume = "never"</code> only stops what tjor adds. The prompt is in the container's command line (<code>docker inspect</code>). The record says tjor started a conversation, not that the harness kept one, and it can be absent or stale after a crash between container creation and the write, an explicit command, or a conversation switched inside the harness; <code>--no-resume</code> or <code>reset sessions</code> is the remedy. Without <code>session_per_task</code> only the newest conversation can be continued. The coverage check, like every mount, judges a path the engine resolves again: a swap in between is outside what the launcher sees.</p>
+</Plainly>
+
+---
+layout: problem
 title: Which session did what
 specs: [session-identity@c542faab]
 adrs: ['0004']
@@ -577,7 +609,7 @@ adrs: ['0004']
 ---
 layout: problem
 title: Sessions you can find, reattach, and clean up
-specs: [session-lifecycle@98b50b8f, session-launch@45d44f04]
+specs: [session-lifecycle@fb11e08c, session-launch@45d44f04]
 adrs: ['0006']
 ---
 
@@ -601,7 +633,7 @@ $ tjor prune --older-than 30d --dry-run   # delete state, explicitly
 - `tjor ls` re-verifies each internal-only network and flags a tampered one **DEGRADED**.
 
 <Plainly>
-<p>A persistent container lingers until <code>down</code> or <code>gc</code>: a longer compromise window, accepted because the boundary is time-invariant (ADR 0006). <code>prune</code> forgets credentials rather than revoking them, covers only the credential files tjor knows, and never sweeps what it could not read.</p>
+<p>A persistent container lingers until <code>down</code> or <code>gc</code>: a longer compromise window, accepted because the boundary is time-invariant (ADR 0006). <code>prune</code> forgets credentials rather than revoking them, covers only the credential files tjor knows, and never sweeps what it could not read. <code>reset sessions</code> deletes opencode's session database, Copilot CLI's session state and tjor's launch record; Claude Code's transcripts stay, because their directory also holds its memory.</p>
 </Plainly>
 
 ---

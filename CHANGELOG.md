@@ -6,12 +6,46 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 ## [Unreleased]
 
 ### Added
+- **Task-aware harness launch** (#73). tjor owns the harness command line when
+  the user config asks it to: `[harness.<name>] args` (opencode, claude,
+  copilot) are passed verbatim as argv elements before anything tjor adds,
+  never through a shell and never interpreted; `[task] prompt` is a template
+  with exactly `{task}` and `{task_dir}` (`{{`/`}}` for literal braces) sent as
+  the first message of a fresh conversation started with `--task`, in the one
+  form each harness reads as data (opencode `--prompt=<text>`, Claude Code
+  `-- <text>`, Copilot CLI `--interactive=<text>`); a one-word prompt is
+  refused because Claude Code reads a bare positional naming one of its
+  subcommands as that subcommand. `[task] resume = "auto"` adds `--continue`
+  and sends no prompt when tjor's own launch record (`conversation.json` at
+  the session's state root, which no container mounts) says tjor already
+  started a conversation for this harness and task; `tjor run --no-resume`
+  forces a fresh one; the harness's store is never inspected, the record is
+  read as a bounded regular file (anything else refuses), and a launch that
+  relies on it is refused when a writable root would cover the state
+  directory. The whole command is built before the notes directory is
+  created, the first write, the mint and the sidecars, so a refusal creates
+  nothing. An explicit command after `tjor run` is unchanged: passed as given,
+  nothing added, the record left alone. The launch line shows the command
+  with the prompt by its length and tjor's fresh/continued decision. `[harness]`
+  is user-config only and a security table (ADR 0014). README "Task-aware
+  launch" states the limits (uninspected args, the prompt visible in `docker
+  inspect`, absent or stale records). New `harness-launch` capability spec
+  and slide; `python/tjor_launch.py`; a docker-free launcher test (boundary
+  matrix: the `harness-launch` suite) and a live lifecycle section.
+- **`--harness` accepts exactly `opencode`, `claude` and `copilot`** (#73); any
+  other name used to fall through to opencode's command line and fail later at
+  the image build. It is refused before anything exists.
+- **Image build checks the harness flags tjor relies on** (#73): each pinned
+  CLI's `--help` must still list its prompt and `--continue` flags, so a pin
+  bump that renames one fails the build, not an operator's launch.
+
 - **Task notes** (#69). A `[task]` table in the user config (`notes_dir =
   "~/scratch/tasks/{task}"`, `create`, `session_per_task`) makes `--task <id>`
   resolve a per-task notes directory and mount it writable at its host path
   through the same path as a `--dir`, so every rule for extra writable roots
-  applies to it unchanged; `TJOR_TASK_DIR` names it inside the cage, with no
-  identity header derived from it. The notes root must exist and is never
+  applies to it unchanged; `TJOR_TASK_DIR` names it inside the cage by its
+  physical path (the resolved root plus what lies below), with no identity
+  header derived from it. The notes root must exist and is never
   created; what lies below is created one real directory at a time, never
   through a link, with the template checked component by component. A launch
   is refused, with no override, when the workspace is the notes root or
@@ -134,6 +168,12 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
   gains a live section that interleaves a real launch with a prune.
 
 ### Changed
+- **`tjor reset sessions` covers the pinned harnesses' conversation stores**
+  (#73): opencode's SQLite database (`opencode.db`, `-wal`, `-shm`; the pinned
+  opencode no longer uses `storage/`), Copilot CLI's `session-state`, and
+  tjor's launch record join the `sessions` tier. Claude Code's transcripts
+  stay, because `~/.claude/projects` also holds its per-project memory
+  (stated residual).
 - `--task <id>`: once a notes directory or per-task sessions are configured
   (`[task]`), the id must match `[a-z0-9][a-z0-9_-]{0,31}` (lower-case,
   dot-free, at most 32 characters); without a `[task]` table the old grammar

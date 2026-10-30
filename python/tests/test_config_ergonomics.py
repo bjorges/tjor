@@ -88,6 +88,50 @@ class TestRepoConfigLayer:
         assert tjor_cfg.get(cfg, "task.notes_dir") == ""
         assert "NOT trusted" in capsys.readouterr().err
 
+    def test_trusted_repo_config_cannot_set_the_harness_table(self, tmp_path, monkeypatch, capsys):
+        # ADR 0014 / repo-config-trust: [harness] shapes the harness's own
+        # command line; a trusted repo layer carrying it is dropped with a
+        # warning naming the file and the table, and the user's value applies.
+        repo = self.setup_repo(tmp_path, monkeypatch)
+        (repo / ".tjor" / "config.toml").write_text(
+            '[proxy]\nport = 7777\n[harness.opencode]\nargs = ["--auto"]\n')
+        tjor_trust.approve(repo / ".tjor" / "config.toml")
+        user = tmp_path / "user.toml"
+        user.write_text('[harness.opencode]\nargs = ["--agent", "bob"]\n')
+        monkeypatch.setenv("TJOR_USER_CONFIG", str(user))
+        cfg = tjor_cfg.effective()
+        assert tjor_cfg.get(cfg, "proxy.port") == 7777
+        assert tjor_cfg.get(cfg, "harness.opencode.args") == ["--agent", "bob"]
+        assert tjor_cfg.get(cfg, "harness.claude.args") == []
+        err = capsys.readouterr().err
+        assert "[harness]" in err and "user-config only" in err and "ADR 0014" in err
+        assert str(repo / ".tjor" / "config.toml") in err
+        assert tjor_cfg.check() == 0
+        assert "[harness]" in capsys.readouterr().err
+
+    def test_unapproved_repo_harness_table_is_ignored_whole(self, tmp_path, monkeypatch, capsys):
+        # No table-specific warning is owed: the whole file is untrusted.
+        repo = self.setup_repo(tmp_path, monkeypatch)
+        (repo / ".tjor" / "config.toml").write_text('[harness.claude]\nargs = ["--model", "x"]\n')
+        cfg = tjor_cfg.effective()
+        assert tjor_cfg.get(cfg, "harness.claude.args") == []
+        err = capsys.readouterr().err
+        assert "NOT trusted" in err and "user-config only" not in err
+
+    @pytest.mark.parametrize("body,key", [
+        ('[harness.claude]\narg = ["--model", "opus"]\n', "harness.claude.arg"),
+        ('[harness.cluade]\nargs = ["--model", "opus"]\n', "harness.cluade"),
+        ('[task]\nprmpt = "x"\n', "task.prmpt"),
+    ])
+    def test_typo_under_a_harness_or_task_table_aborts(self, tmp_path, monkeypatch, body, key):
+        user = tmp_path / "user.toml"
+        user.write_text(body)
+        monkeypatch.setenv("TJOR_USER_CONFIG", str(user))
+        monkeypatch.delenv("TJOR_REPO_ROOT", raising=False)
+        with pytest.raises(SystemExit) as exc:
+            tjor_cfg.check()
+        assert key in str(exc.value) and "security-critical" in str(exc.value)
+
     def teardown_method(self):
         importlib.reload(tjor_cfg)
 

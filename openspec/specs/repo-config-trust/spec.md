@@ -35,7 +35,7 @@ A repo `.tjor/config.toml` or `.tjor/policy.toml` SHALL be honored only if the u
 
 ### Requirement: Settings that create host mounts come from the user config only
 
-The `[task]` table SHALL be read from the packaged defaults and the user config layer only. A `[task]` table in a repository config SHALL be ignored even when the file is trusted, with a warning naming the file and the table, because a value there would mount a host path the repository chose. An unknown key under `[task]` in the user config SHALL abort the launch, like one under `[landlock]` or `[broker]`.
+The user-only tables are `[task]`, whose values mount a host path the repository would choose (ADR 0013), and `[harness]`, whose values shape the harness's command line (ADR 0014). Both SHALL be read from the defaults and the user config only; either table in a trusted repository config SHALL be ignored with a warning naming the file and the table; an untrusted file is ignored whole, as today. An unknown key under either, nested `[harness.<name>]` included, SHALL abort the launch.
 
 #### Scenario: Table typos and the user layer
 - **WHEN** the user config holds a misspelled table `[tasks]`, or the operator's environment selects another user config file
@@ -48,3 +48,15 @@ The `[task]` table SHALL be read from the packaged defaults and the user config 
 #### Scenario: Typo under the task table aborts
 - **WHEN** the user config holds `[task]` with `note_dir = "..."`
 - **THEN** the launch aborts naming the unknown key
+
+#### Scenario: Repo config cannot set harness arguments
+- **WHEN** a trusted `.tjor/config.toml` sets `[harness.opencode] args = ["--auto"]`
+- **THEN** the table is ignored with a warning naming the file and `[harness]`, the launch uses the user config's arguments or none, and the configuration check reports the same
+
+#### Scenario: Unapproved file with a harness table
+- **WHEN** an unapproved `.tjor/config.toml` holds `[harness.claude] args`
+- **THEN** the whole file is ignored with the untrusted warning, as for any unapproved file; no table-specific warning is owed
+
+#### Scenario: Typo under a harness table aborts
+- **WHEN** the user config holds `[harness.claude]` with `arg = ["--model", "opus"]`, or a nested table `[harness.cluade]`
+- **THEN** the launch aborts naming the unknown key, `harness.claude.arg` or `harness.cluade`

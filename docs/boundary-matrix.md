@@ -4,7 +4,7 @@
      Regenerate: python3 python/gen_boundary_matrix.py
      Drift-checked by tests/doc_consistency.sh (`--check`). -->
 
-Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount`, `gitcheck` and `task-notes` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (391 checks total; 176 adversarial guarantees below, the rest functional/config checks the suites also run).
+Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount`, `gitcheck`, `task-notes` and `harness-launch` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (552 checks total; 251 adversarial guarantees below, the rest functional/config checks the suites also run).
 
 ## cage-network
 
@@ -146,16 +146,20 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | Guarantee | Probe | Suite |
 |---|---|---|
 | '..' as a task id is refused | `task notes: '..' as a task id is refused` | task-notes |
+| A --dir-ro naming the physical path conflicts with the link-spelled template | `task notes: a --dir-ro naming the physical path conflicts with the link-spelled template` | task-notes |
 | A 33-character id is refused | `task notes: a 33-character id is refused` | task-notes |
 | A FIFO does not block the scan | `task notes: a FIFO does not block the scan` | task-notes |
+| A coverage check whose helper dies with exit 1 refuses the launch | `task notes: a coverage check whose helper dies with exit 1 refuses the launch` | task-notes |
 | A directory covered by a --dir root is mounted with it, not again | `task notes: a directory covered by a --dir root is mounted with it, not again` | task-notes |
 | A dot-leading id is refused | `task notes: a dot-leading id is refused` | task-notes |
 | A dotted id is refused | `task notes: a dotted id is refused` | task-notes |
 | A malformed template leaves no directory | `task notes: a malformed template leaves no directory` | task-notes |
 | A notes root inside the workspace is the notes-root refusal (the code repo would be the notes repo) | `task notes: a notes root inside the workspace is the notes-root refusal (the code repo would be the notes repo)` | task-notes |
+| A notes-root check whose helper dies with exit 1 refuses the launch (exit 3 is the only "no") | `task notes: a notes-root check whose helper dies with exit 1 refuses the launch` | task-notes |
 | A relative template is refused | `task notes: a relative template is refused` | task-notes |
 | A sensitive template is refused by the --dir gate before anything is created | `task notes: a sensitive template is refused by the --dir gate before anything is created` | task-notes |
 | A symbolic link at the task directory is refused | `task notes: a symbolic link at the task directory is refused` | task-notes |
+| A template spelled through a link resolves TJOR_TASK_DIR to the physical path | `task notes: a template spelled through a link resolves TJOR_TASK_DIR to the physical path` | task-notes |
 | A template whose root does not exist is refused | `task notes: a template whose root does not exist is refused` | task-notes |
 | A template with a dot-dot component is refused | `task notes: a template with a dot-dot component is refused` | task-notes |
 | A template with a trailing separator is refused | `task notes: a template with a trailing separator is refused` | task-notes |
@@ -180,10 +184,14 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | The conflict names --dir-ro | `task notes: the conflict names --dir-ro` | task-notes |
 | The create=false refusal names task.create | `task notes: the create=false refusal names task.create` | task-notes |
 | The created directory is real | `task notes: the created directory is real` | task-notes |
+| The dead-helper coverage refusal says it cannot tell, not that the root is clear | `task notes: the dead-helper coverage refusal says it cannot tell, not that the root is clear` | task-notes |
+| The dead-helper refusal at resolution created no notes directory | `task notes: the dead-helper refusal at resolution created no notes directory` | task-notes |
+| The dead-helper refusal says it cannot tell, not that the workspace is clear | `task notes: the dead-helper refusal says it cannot tell, not that the workspace is clear` | task-notes |
 | The directory is created component by component below the root | `task notes: the directory is created component by component below the root` | task-notes |
 | The gate refusal created nothing | `task notes: the gate refusal created nothing` | task-notes |
 | The gate refusal left no session state dir | `task notes: the gate refusal left no session state dir` | task-notes |
 | The link refusal names it | `task notes: the link refusal names it` | task-notes |
+| The mount uses the physical path, not the template's spelling (one spelling for the checks, the mount and the cage) | `task notes: the mount uses the physical path, not the template's spelling` | task-notes |
 | The probe binds nothing else | `task notes: the probe binds nothing else` | task-notes |
 | The probe binds the notes directory read-only | `task notes: the probe binds the notes directory read-only` | task-notes |
 | The probe container has no network | `task notes: the probe container has no network` | task-notes |
@@ -193,6 +201,73 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | The probe passes no environment and no socket | `task notes: the probe passes no environment and no socket` | task-notes |
 | The root is never created by tjor | `task notes: the root is never created by tjor` | task-notes |
 | The same path via --dir-ro is a writability conflict | `task notes: the same path via --dir-ro is a writability conflict` | task-notes |
+
+## harness-launch
+
+| Guarantee | Probe | Suite |
+|---|---|---|
+| --harness outside the three names is refused | `harness launch: --harness outside the three names is refused` | harness-launch |
+| A FIFO where the record should be refuses | `harness launch: a FIFO where the record should be refuses` | harness-launch |
+| A bare -- entry is refused | `harness launch: a bare -- entry is refused` | harness-launch |
+| A corrupt record refuses the launch | `harness launch: a corrupt record refuses the launch` | harness-launch |
+| A misspelled nested harness table aborts the launch | `harness launch: a misspelled nested harness table aborts the launch` | harness-launch |
+| A non-string entry is refused | `harness launch: a non-string entry is refused` | harness-launch |
+| A one-word prompt is refused | `harness launch: a one-word prompt is refused` | harness-launch |
+| A refused launch with a notes template creates no notes directory | `harness launch: a refused launch with a notes template creates no notes directory` | harness-launch |
+| A stray brace is refused | `harness launch: a stray brace is refused` | harness-launch |
+| A symbolic link where the record should be refuses | `harness launch: a symbolic link where the record should be refuses` | harness-launch |
+| A workspace covering the session root is refused | `harness launch: a workspace covering the session root is refused` | harness-launch |
+| A writable --dir over the session root refuses the launch | `harness launch: a writable --dir over the session root refuses the launch` | harness-launch |
+| A writable root equal to the session root refuses | `harness launch: a writable root equal to the session root refuses` | harness-launch |
+| An absent record is the only no-conversation | `harness launch: an absent record is the only no-conversation` | harness-launch |
+| An args entry with a newline is refused on the launch path | `harness launch: an args entry with a newline is refused on the launch path` | harness-launch |
+| An empty entry is refused | `harness launch: an empty entry is refused` | harness-launch |
+| An explicit command with a covering root is not judged either | `harness launch: an explicit command with a covering root is not judged either` | harness-launch |
+| An invalid task.resume is refused on the launch path | `harness launch: an invalid task.resume is refused on the launch path` | harness-launch |
+| An operator's --continue collides when tjor is adding it | `harness launch: an operator's --continue collides when tjor is adding it` | harness-launch |
+| An operator's prompt flag collides when tjor is delivering the prompt | `harness launch: an operator's prompt flag collides when tjor is delivering the prompt` | harness-launch |
+| An oversize record refuses | `harness launch: an oversize record refuses` | harness-launch |
+| An unknown harness created no session state | `harness launch: an unknown harness created no session state` | harness-launch |
+| An unknown harness never reached docker | `harness launch: an unknown harness never reached docker` | harness-launch |
+| An unknown placeholder is refused on the launch path | `harness launch: an unknown placeholder is refused on the launch path` | harness-launch |
+| It was not refused for the corrupt record | `harness launch: it was not refused for the corrupt record` | harness-launch |
+| No session state for the refused task | `harness launch: no session state for the refused task` | harness-launch |
+| No session state under the covered root | `harness launch: no session state under the covered root` | harness-launch |
+| Refusals so far never reached docker | `harness launch: refusals so far never reached docker` | harness-launch |
+| Rendering created no notes directory | `harness launch: rendering created no notes directory` | harness-launch |
+| That refusal names both keys | `harness launch: that refusal names both keys` | harness-launch |
+| That refusal names the notes directory as the covering root | `harness launch: that refusal names the notes directory as the covering root` | harness-launch |
+| That refusal never reached docker | `harness launch: that refusal never reached docker` | harness-launch |
+| The bare form was not refused for the corrupt record either | `harness launch: the bare form was not refused for the corrupt record either` | harness-launch |
+| The builder itself created no state directory | `harness launch: the builder itself created no state directory` | harness-launch |
+| The corrupt record never reached docker | `harness launch: the corrupt record never reached docker` | harness-launch |
+| The corrupt-record refusal names the file | `harness launch: the corrupt-record refusal names the file` | harness-launch |
+| The corrupt-record refusal names the remedy | `harness launch: the corrupt-record refusal names the remedy` | harness-launch |
+| The coverage refusal names conversation.json | `harness launch: the coverage refusal names conversation.json` | harness-launch |
+| The coverage refusal names the root and the record | `harness launch: the coverage refusal names the root and the record` | harness-launch |
+| The coverage refusal on the launch path created nothing | `harness launch: the coverage refusal on the launch path created nothing` | harness-launch |
+| The coverage refusal on the launch path refuses --unsafe-dir over the session root | `harness launch: the coverage refusal on the launch path refuses --unsafe-dir over the session root` | harness-launch |
+| The existing state directory and record are byte-identical afterwards | `harness launch: the existing state directory and record are byte-identical afterwards` | harness-launch |
+| The explicit launches left the corrupt record untouched | `harness launch: the explicit launches left the corrupt record untouched` | harness-launch |
+| The launch-path coverage refusal names the root and the record | `harness launch: the launch-path coverage refusal names the root and the record` | harness-launch |
+| The link refusal says the link is never followed | `harness launch: the link refusal says the link is never followed` | harness-launch |
+| The newline refusal created no session state | `harness launch: the newline refusal created no session state` | harness-launch |
+| The newline refusal never reached docker | `harness launch: the newline refusal never reached docker` | harness-launch |
+| The notes directory for zz is absent | `harness launch: the notes directory for zz is absent` | harness-launch |
+| The notes directory over the session root refuses before it is mounted | `harness launch: the notes directory over the session root refuses before it is mounted` | harness-launch |
+| The notes-over-root refusal never reached docker | `harness launch: the notes-over-root refusal never reached docker` | harness-launch |
+| The one-word refusal explains the Claude subcommand reason | `harness launch: the one-word refusal explains the Claude subcommand reason` | harness-launch |
+| The placeholder refusal created nothing | `harness launch: the placeholder refusal created nothing` | harness-launch |
+| The placeholder refusal names the offending text | `harness launch: the placeholder refusal names the offending text` | harness-launch |
+| The prompt text is not in the launch line | `harness launch: the prompt text is not in the launch line` | harness-launch |
+| The refusal names the entry and the rule | `harness launch: the refusal names the entry and the rule` | harness-launch |
+| The refusal names the three harnesses | `harness launch: the refusal names the three harnesses` | harness-launch |
+| The resume refusal created nothing | `harness launch: the resume refusal created nothing` | harness-launch |
+| The resume refusal names the two values | `harness launch: the resume refusal names the two values` | harness-launch |
+| The same roots with [task] at its defaults are not judged | `harness launch: the same roots with [task] at its defaults are not judged` | harness-launch |
+| The workspace coverage refusal created nothing | `harness launch: the workspace coverage refusal created nothing` | harness-launch |
+| The workspace coverage refusal names the workspace | `harness launch: the workspace coverage refusal names the workspace` | harness-launch |
+| {task_dir} without a notes directory is refused | `harness launch: {task_dir} without a notes directory is refused` | harness-launch |
 
 ## session-lifecycle
 
@@ -206,7 +281,12 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | Guarantee | Probe | Suite |
 |---|---|---|
 | A TRUSTED repo config cannot move the notes directory | `task notes: a TRUSTED repo config cannot move the notes directory` | task-notes |
+| A TRUSTED repo config cannot set harness arguments | `harness launch: a TRUSTED repo config cannot set harness arguments` | harness-launch |
+| A typo under a harness table aborts the launch | `harness launch: a typo under a harness table aborts the launch` | harness-launch |
+| The nested typo refusal names the table | `harness launch: the nested typo refusal names the table` | harness-launch |
 | The repo config's [task] table is reported as ignored | `task notes: the repo config's [task] table is reported as ignored` | task-notes |
+| The typo refusal created nothing | `harness launch: the typo refusal created nothing` | harness-launch |
+| The typo refusal names the key | `harness launch: the typo refusal names the key` | harness-launch |
 
 ## launcher-integrity
 

@@ -111,11 +111,37 @@ class TestContains:
 
     def test_identity_not_string(self, home):
         tasks = home / "scratch" / "tasks"; (tasks / "a").mkdir()
-        alias = home / "alias"; alias.symlink_to(home / "scratch")
-        assert tt.contains(str(alias), str(tasks / "a"))               # another spelling of the same directory
         upper = Path(str(home / "scratch").upper())
         if upper.exists() and os.path.samefile(upper, home / "scratch"):   # a case-folding filesystem
             assert tt.contains(str(upper), str(tasks / "a"))
+
+    def test_links_are_refused_not_followed(self, home):
+        # The launcher passes physical paths (pwd -P, the resolved prefix); a
+        # link anywhere on either chain means something was swapped since, and
+        # following it would judge a directory the caller never named.
+        tasks = home / "scratch" / "tasks"; (tasks / "a").mkdir()
+        alias = home / "alias"; alias.symlink_to(home / "scratch")
+        with pytest.raises(tt.TaskError, match="symbolic link"):
+            tt.contains(str(alias), str(tasks / "a"))                  # the ancestor is a link
+        with pytest.raises(tt.TaskError, match="symbolic link"):
+            tt.contains(str(home), str(alias / "tasks" / "a"))         # a link on the path's chain
+        with pytest.raises(tt.TaskError, match="symbolic link"):
+            tt.contains(str(alias / "tasks"), str(tasks / "a"))        # a link on the ancestor's chain
+
+    def test_dot_components_and_relative_paths_are_refused(self, home):
+        # `L/../x` with L a link is `x` beside L lexically, and a chain walk
+        # would never see L: refused rather than collapsed.
+        tasks = home / "scratch" / "tasks"; (tasks / "a").mkdir()
+        alias = home / "alias"; alias.symlink_to(home / "scratch")
+        with pytest.raises(tt.TaskError, match="'\\.\\.' component"):
+            tt.contains(str(home / "scratch"), f"{alias}/../scratch/tasks/a")
+        with pytest.raises(tt.TaskError, match="'\\.' component"):
+            tt.contains(f"{home}/./scratch", str(tasks / "a"))
+        with pytest.raises(tt.TaskError, match="not an absolute path"):
+            tt.contains("scratch", str(tasks / "a"))
+        (home / "file").write_text("x")
+        with pytest.raises(tt.TaskError, match="not a directory"):
+            tt.contains(str(home / "file"), str(tasks / "a"))
 
     def test_error_is_an_error_not_a_no(self, home):
         with pytest.raises(tt.TaskError):
@@ -262,8 +288,15 @@ class TestCli:
     def test_contains_exit_codes(self, home, capsys):
         (home / "scratch" / "tasks" / "a").mkdir()
         assert tt._main(["contains", str(home / "scratch"), str(home / "scratch" / "tasks" / "a")]) == 0
-        assert tt._main(["contains", str(home / "scratch" / "tasks" / "a"), str(home / "scratch")]) == 1
+        assert tt._main(["contains", str(home / "scratch" / "tasks" / "a"), str(home / "scratch")]) == 3   # "no" is 3, never 1
         assert tt._main(["contains", str(home / "nope"), str(home)]) == 2
+
+    def test_contains_turns_any_fault_into_a_refusal(self, home, monkeypatch, capsys):
+        def boom(*_a, **_k):
+            raise RuntimeError("boom")
+        monkeypatch.setattr(tt, "contains", boom)
+        assert tt._main(["contains", str(home), str(home)]) == 2
+        assert "internal error" in capsys.readouterr().err
 
     def test_create_and_probe_cli(self, home, capsys):
         assert tt._main(["create", "--prefix", str(home / "scratch" / "tasks"), "--relative", "a/notes"]) == 0

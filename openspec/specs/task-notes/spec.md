@@ -7,7 +7,7 @@ A per-task notes directory the agent can write, resolved from `--task <id>` by u
 
 ### Requirement: A task resolves a notes directory by user configuration
 
-When `task.notes_dir` is configured, a launch with `--task <id>` SHALL resolve the directory from the template and mount it writable at its host path as an additional writable root, through the same path as a `--dir` argument, so every rule for extra writable roots applies unchanged. Workspace resolution SHALL be unaffected; the `[task]` table is read from the defaults and the user config only; with neither `task.notes_dir` nor `task.session_per_task` set, `--task` SHALL behave exactly as today.
+When `task.notes_dir` is configured, a launch with `--task <id>` SHALL resolve the directory from the template and mount it writable at its host path as an additional writable root, through the same path as a `--dir` argument, so every rule for extra writable roots applies unchanged. Workspace resolution SHALL be unaffected; the `[task]` table is read from the defaults and the user config only; with every `[task]` key at its default (`notes_dir`, `create`, `session_per_task`, `prompt`, `resume`), `--task` SHALL behave exactly as today.
 
 #### Scenario: Notes mounted beside the workspace
 - **WHEN** `task.notes_dir = "~/scratch/tasks/{task}"` is in the user config and `tjor run --task a` is launched from a repository
@@ -30,8 +30,8 @@ When `task.notes_dir` is configured, a launch with `--task <id>` SHALL resolve t
 - **THEN** the launch is refused naming the error; an error is never read as "not covered" or "not contained"
 
 #### Scenario: Unchanged without configuration
-- **WHEN** neither `task.notes_dir` nor `task.session_per_task` is set and `tjor run --task A` is launched
-- **THEN** nothing is mounted for the task, the task id grammar, the session name and every command behave as before
+- **WHEN** every `[task]` key is at its default and `tjor run --task A` is launched
+- **THEN** nothing is mounted for the task, no prompt is sent, no continue flag is added, no launch record is written, and the task id grammar, the session name and every command behave as before
 
 ### Requirement: The notes template is absolute and names the task once
 
@@ -87,7 +87,7 @@ Resolution SHALL have no side effect, so lifecycle commands never create anythin
 
 ### Requirement: The notes repository never becomes the workspace
 
-A launch SHALL be refused, with no override, when the resolved workspace is the notes root (the template's fixed prefix) or an ancestor of it. The comparison SHALL be by filesystem identity (device and inode along the parent chain), never by path string, so a case-insensitive or Unicode-normalising filesystem cannot make two spellings of one directory read as different. The refusal SHALL name both paths.
+A launch SHALL be refused, with no override, when the resolved workspace is the notes root (the template's fixed prefix) or an ancestor of it. The comparison SHALL be by filesystem identity (device and inode along the parent chain), never by path string, so a case-insensitive or Unicode-normalising filesystem cannot make two spellings of one directory read as different. Both paths SHALL be the launcher's physical spellings, walked without following a link: a link anywhere on either chain, or a `.` or `..` component, SHALL refuse the launch rather than be followed or collapsed. The refusal SHALL name both paths.
 
 #### Scenario: Launched from inside the notes repository
 - **WHEN** `~/scratch` is a git repository, `task.notes_dir = "~/scratch/tasks/{task}"`, and `tjor run --task a` is launched from `~/scratch/tasks/a`
@@ -119,7 +119,7 @@ Because a fresh directory is empty and the generic bind-source check compares co
 
 ### Requirement: The notes directory is named inside the cage only
 
-The agent environment SHALL carry `TJOR_TASK_DIR`, the notes directory's host path, which is also its path inside the cage. No identity header SHALL be derived from it; the task id travels as `x-agent-task-id` as today, the directory's path does not.
+The agent environment SHALL carry `TJOR_TASK_DIR`, the notes directory's host path in its physical spelling (the resolved prefix plus the components below it, even when the template spells the prefix through a link), which is also its path inside the cage; the sensitive-path gate, the coverage checks, the `--dir-ro` conflict check, the mount and the scan SHALL all use that one spelling. No identity header SHALL be derived from it; the task id travels as `x-agent-task-id` as today, the directory's path does not.
 
 #### Scenario: Visible to the agent, no header derived
 - **WHEN** a session with a notes directory sends a request toward an `inject_hosts` destination

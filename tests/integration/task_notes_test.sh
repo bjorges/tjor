@@ -126,6 +126,19 @@ check "task notes: a dotted id is refused" refused "${HOME}/proj" a.b
 check "task notes: no directory was created by any refusal" test -z "$(ls -A "${NOTES}")"
 check "task notes: refusals never reached docker" never_reached_docker
 
+# A template whose prefix is spelled through a link: TJOR_TASK_DIR is the
+# PHYSICAL path (the resolved prefix plus the components below it), so what
+# the checks judge, what is mounted, what a --dir-ro is compared with and
+# what the cage sees are one spelling.
+ln -s "${HOME}/scratch" "${HOME}/alias2"
+write_cfg $'[task]\nnotes_dir = "~/alias2/tasks/{task}"\ncreate = true\nsession_per_task = true'
+check "task notes: a template spelled through a link resolves TJOR_TASK_DIR to the physical path" launch_val "${HOME}/proj" a "" "${BASE}-a|a|${NOTES}/a"
+check "task notes: the mount uses the physical path, not the template's spelling" prepare_val "${HOME}/proj" a "${NOTES}/a"
+check "task notes: a --dir-ro naming the physical path conflicts with the link-spelled template" prepare_refused "${HOME}/proj" a ro:"${NOTES}/a"
+check "task notes: the conflict names the physical path" out_has "the task notes directory ${NOTES}/a is also given via --dir-ro"
+rm -f "${HOME:?}/alias2"; rm -rf "${NOTES:?}/a"
+write_cfg "${CFG_DEFAULT}"
+
 # === 2. The notes repository never becomes the workspace ====================
 mkdir -p "${NOTES}/a"
 check "task notes: launching from inside the notes repository is refused" refused "${NOTES}/a" a
@@ -138,6 +151,34 @@ check "task notes: a workspace below the notes root is not an ancestor and launc
 rm -rf "${NOTES:?}/a"
 ln -s "${HOME}/scratch" "${HOME}/alias"
 check "task notes: another spelling of the notes repository (a link) is refused by identity" refused "${HOME}/alias" a
+# The helper answers "not contained" with exit 3, never 1: a helper that dies
+# before answering (an import failure, a crash outside its main) exits 1 with
+# Python's own code, and both callers — the notes-root check at resolution
+# and the coverage check in prepare — must read that as "cannot tell" and
+# refuse. A sabotaged tree answers everything for real except the one
+# `contains` call whose path SABOTAGE_ON names, where it dies.
+SABOTAGE="${WORK}/sabotage"; mkdir -p "${SABOTAGE}"
+for entry in "${ROOT}"/* "${ROOT}"/.[!.]*; do
+    if [[ -e "${entry}" && "$(basename "${entry}")" != python ]]; then ln -s "${entry}" "${SABOTAGE}/"; fi
+done
+cp -R "${ROOT}/python" "${SABOTAGE}/python"
+cat > "${SABOTAGE}/python/tjor_task.py" <<PY
+import os, sys
+if sys.argv[1:2] == ["contains"] and sys.argv[3:4] == [os.environ.get("SABOTAGE_ON")]:
+    sys.exit(1)          # a crash before any answer: Python's own exit code, no message
+os.execv(sys.executable, [sys.executable, "${ROOT}/python/tjor_task.py", *sys.argv[1:]])
+PY
+REAL_ROOT="${TJOR_ROOT}"; TJOR_ROOT="${SABOTAGE}"
+export SABOTAGE_ON="${NOTES}"
+check "task notes: a notes-root check whose helper dies with exit 1 refuses the launch" refused "${HOME}/proj" a
+check "task notes: the dead-helper refusal says it cannot tell, not that the workspace is clear" out_has "cannot establish whether the workspace ${HOME}/proj contains the notes root"
+check "task notes: the dead-helper refusal at resolution created no notes directory" absent "${NOTES}/a"
+export SABOTAGE_ON="${NOTES}/a"
+check "task notes: a coverage check whose helper dies with exit 1 refuses the launch" prepare_refused "${HOME}/proj" a
+check "task notes: the dead-helper coverage refusal says it cannot tell, not that the root is clear" out_has "cannot establish whether ${HOME}/proj covers ${NOTES}/a"
+unset SABOTAGE_ON; TJOR_ROOT="${REAL_ROOT}"; rm -rf "${SABOTAGE:?}"
+check "task notes: with the real helper the same resolution passes" launch_from "${HOME}/proj" a
+rm -rf "${NOTES:?}/a"   # prepare creates the directory before its coverage check; the sections below expect none
 rm -f "${HOME:?}/alias"
 
 # === 3. Round trip: the derived name and what the resolver would misread ====

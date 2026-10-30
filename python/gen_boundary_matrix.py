@@ -44,6 +44,7 @@ SELF_MOUNT_FILE = ROOT / "tests" / "integration" / "self_mount_test.sh"
 GITCHECK_FILE = ROOT / "tests" / "integration" / "gitcheck_test.sh"
 WORKTREE_FILE = ROOT / "tests" / "integration" / "worktree_test.sh"
 TASK_NOTES_FILE = ROOT / "tests" / "integration" / "task_notes_test.sh"
+HARNESS_LAUNCH_FILE = ROOT / "tests" / "integration" / "harness_launch_test.sh"
 MATRIX_FILE = ROOT / "docs" / "boundary-matrix.md"
 
 CONFORMANCE = "conformance"
@@ -53,6 +54,7 @@ SELF_MOUNT = "self-mount"
 GITCHECK = "gitcheck"
 WORKTREE = "worktree"
 TASK_NOTES = "task-notes"
+HARNESS_LAUNCH = "harness-launch"
 
 # name -> (suite, capability, guarantee, boundary)
 # boundary=True  -> an adversarial cage guarantee (rendered in the matrix)
@@ -509,6 +511,14 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
         (TASK_NOTES, 'task-notes', 'No directory was created by any refusal', True),
     'task notes: refusals never reached docker':
         (TASK_NOTES, 'task-notes', 'Refusals never reached docker', True),
+    'task notes: a template spelled through a link resolves TJOR_TASK_DIR to the physical path':
+        (TASK_NOTES, 'task-notes', 'A template spelled through a link resolves TJOR_TASK_DIR to the physical path', True),
+    "task notes: the mount uses the physical path, not the template's spelling":
+        (TASK_NOTES, 'task-notes', "The mount uses the physical path, not the template's spelling (one spelling for the checks, the mount and the cage)", True),
+    'task notes: a --dir-ro naming the physical path conflicts with the link-spelled template':
+        (TASK_NOTES, 'task-notes', 'A --dir-ro naming the physical path conflicts with the link-spelled template', True),
+    'task notes: the conflict names the physical path':
+        (TASK_NOTES, 'task-notes', 'The conflict names the physical path', False),
     'task notes: launching from inside the notes repository is refused':
         (TASK_NOTES, 'task-notes', 'Launching from inside the notes repository is refused', True),
     'task notes: the refusal names the workspace and the notes root':
@@ -523,6 +533,18 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
         (TASK_NOTES, 'task-notes', 'A workspace below the notes root is not an ancestor and launches', False),
     'task notes: another spelling of the notes repository (a link) is refused by identity':
         (TASK_NOTES, 'task-notes', 'Another spelling of the notes repository (a link) is refused by identity', True),
+    'task notes: a notes-root check whose helper dies with exit 1 refuses the launch':
+        (TASK_NOTES, 'task-notes', 'A notes-root check whose helper dies with exit 1 refuses the launch (exit 3 is the only "no")', True),
+    'task notes: the dead-helper refusal says it cannot tell, not that the workspace is clear':
+        (TASK_NOTES, 'task-notes', 'The dead-helper refusal says it cannot tell, not that the workspace is clear', True),
+    'task notes: the dead-helper refusal at resolution created no notes directory':
+        (TASK_NOTES, 'task-notes', 'The dead-helper refusal at resolution created no notes directory', True),
+    'task notes: a coverage check whose helper dies with exit 1 refuses the launch':
+        (TASK_NOTES, 'task-notes', 'A coverage check whose helper dies with exit 1 refuses the launch', True),
+    'task notes: the dead-helper coverage refusal says it cannot tell, not that the root is clear':
+        (TASK_NOTES, 'task-notes', 'The dead-helper coverage refusal says it cannot tell, not that the root is clear', True),
+    'task notes: with the real helper the same resolution passes':
+        (TASK_NOTES, 'task-notes', 'With the real helper the same resolution passes', False),
     'task notes: --task <base id> is refused (it reads as the default session)':
         (TASK_NOTES, 'session-launch', '--task <base id> is refused (it reads as the default session)', True),
     'task notes: --task <base id>-x is refused (it reads as a qualified id)':
@@ -699,12 +721,315 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
         (TASK_NOTES, 'task-notes', 'Help text names the per-task notes directory', False),
     'task notes: help text names attach --task':
         (TASK_NOTES, 'session-lifecycle', 'Help text names attach --task', False),
+    # --- task-aware harness launch (launcher-side, #73; spec: harness-launch) ---
+    'harness launch: --harness outside the three names is refused':
+        (HARNESS_LAUNCH, 'harness-launch', '--harness outside the three names is refused', True),
+    'harness launch: the refusal names the three harnesses':
+        (HARNESS_LAUNCH, 'harness-launch', 'The refusal names the three harnesses', True),
+    'harness launch: an unknown harness created no session state':
+        (HARNESS_LAUNCH, 'harness-launch', 'An unknown harness created no session state', True),
+    'harness launch: an unknown harness never reached docker':
+        (HARNESS_LAUNCH, 'harness-launch', 'An unknown harness never reached docker', True),
+    'harness launch: an explicit command replaces everything':
+        (HARNESS_LAUNCH, 'harness-launch', 'An explicit command replaces everything', False),
+    'harness launch: the explicit command is passed as given':
+        (HARNESS_LAUNCH, 'harness-launch', 'The explicit command is passed as given', False),
+    'harness launch: an explicit command writes no record':
+        (HARNESS_LAUNCH, 'harness-launch', 'An explicit command writes no record', False),
+    "harness launch: the explicit command's note says nothing was added":
+        (HARNESS_LAUNCH, 'harness-launch', "The explicit command's note says nothing was added", False),
+    'harness launch: --no-resume with an explicit command is accepted':
+        (HARNESS_LAUNCH, 'harness-launch', '--no-resume with an explicit command is accepted', False),
+    'harness launch: --no-resume with an explicit command warns that it has no effect':
+        (HARNESS_LAUNCH, 'harness-launch', '--no-resume with an explicit command warns that it has no effect', False),
+    'harness launch: without [task] the command is the bare harness':
+        (HARNESS_LAUNCH, 'harness-launch', 'Without [task] the command is the bare harness', False),
+    'harness launch: the bare harness, nothing added':
+        (HARNESS_LAUNCH, 'harness-launch', 'The bare harness, nothing added', False),
+    'harness launch: without [task] no record is written':
+        (HARNESS_LAUNCH, 'harness-launch', 'Without [task] no record is written', False),
+    'harness launch: without [task] the note says fresh, no prompt':
+        (HARNESS_LAUNCH, 'harness-launch', 'Without [task] the note says fresh, no prompt', False),
+    'harness launch: without --task a configured prompt is not sent':
+        (HARNESS_LAUNCH, 'harness-launch', 'Without --task a configured prompt is not sent', False),
+    'harness launch: the prompt-less command is the bare harness':
+        (HARNESS_LAUNCH, 'harness-launch', 'The prompt-less command is the bare harness', False),
+    'harness launch: the record flag stays empty without a task':
+        (HARNESS_LAUNCH, 'harness-launch', 'The record flag stays empty without a task', False),
+    'harness launch: args pass verbatim, one argv element each, in order':
+        (HARNESS_LAUNCH, 'harness-launch', 'Args pass verbatim, one argv element each, in order', False),
+    'harness launch: the argv is harness then args':
+        (HARNESS_LAUNCH, 'harness-launch', 'The argv is harness then args', False),
+    'harness launch: the launch line shows the args':
+        (HARNESS_LAUNCH, 'harness-launch', 'The launch line shows the args', False),
+    'harness launch: args precede what the launcher adds':
+        (HARNESS_LAUNCH, 'harness-launch', 'Args precede what the launcher adds', False),
+    'harness launch: claude gets args, then -- and the prompt':
+        (HARNESS_LAUNCH, 'harness-launch', 'Claude gets args, then -- and the prompt', False),
+    'harness launch: the launch line shows the prompt by length only':
+        (HARNESS_LAUNCH, 'harness-launch', 'The launch line shows the prompt by length only', False),
+    'harness launch: the prompt text is not in the launch line':
+        (HARNESS_LAUNCH, 'harness-launch', 'The prompt text is not in the launch line', True),
+    'harness launch: an args entry with a newline is refused on the launch path':
+        (HARNESS_LAUNCH, 'harness-launch', 'An args entry with a newline is refused on the launch path', True),
+    'harness launch: the refusal names the entry and the rule':
+        (HARNESS_LAUNCH, 'harness-launch', 'The refusal names the entry and the rule', True),
+    'harness launch: the newline refusal created no session state':
+        (HARNESS_LAUNCH, 'harness-launch', 'The newline refusal created no session state', True),
+    'harness launch: the newline refusal never reached docker':
+        (HARNESS_LAUNCH, 'harness-launch', 'The newline refusal never reached docker', True),
+    'harness launch: a non-string entry is refused':
+        (HARNESS_LAUNCH, 'harness-launch', 'A non-string entry is refused', True),
+    'harness launch: a bare -- entry is refused':
+        (HARNESS_LAUNCH, 'harness-launch', 'A bare -- entry is refused', True),
+    'harness launch: an empty entry is refused':
+        (HARNESS_LAUNCH, 'harness-launch', 'An empty entry is refused', True),
+    'harness launch: args are not inspected beyond the collision rule':
+        (HARNESS_LAUNCH, 'harness-launch', 'Args are not inspected beyond the collision rule', False),
+    "harness launch: permission and conversation flags pass as the operator's own":
+        (HARNESS_LAUNCH, 'harness-launch', "Permission and conversation flags pass as the operator's own", False),
+    "harness launch: an operator's --continue passes while tjor adds none":
+        (HARNESS_LAUNCH, 'harness-launch', "An operator's --continue passes while tjor adds none", False),
+    "harness launch: that command carries the operator's flag once":
+        (HARNESS_LAUNCH, 'harness-launch', "That command carries the operator's flag once", False),
+    "harness launch: an operator's --continue collides when tjor is adding it":
+        (HARNESS_LAUNCH, 'harness-launch', "An operator's --continue collides when tjor is adding it", True),
+    'harness launch: the collision names the entry and task.resume':
+        (HARNESS_LAUNCH, 'harness-launch', 'The collision names the entry and task.resume', False),
+    "harness launch: an operator's prompt flag collides when tjor is delivering the prompt":
+        (HARNESS_LAUNCH, 'harness-launch', "An operator's prompt flag collides when tjor is delivering the prompt", True),
+    'harness launch: the prompt collision names task.prompt':
+        (HARNESS_LAUNCH, 'harness-launch', 'The prompt collision names task.prompt', False),
+    'harness launch: the same entry passes without --task (no prompt is being added)':
+        (HARNESS_LAUNCH, 'harness-launch', 'The same entry passes without --task (no prompt is being added)', False),
+    "harness launch: the operator's prompt flag is then passed as given":
+        (HARNESS_LAUNCH, 'harness-launch', "The operator's prompt flag is then passed as given", False),
+    'harness launch: a TRUSTED repo config cannot set harness arguments':
+        (HARNESS_LAUNCH, 'repo-config-trust', 'A TRUSTED repo config cannot set harness arguments', True),
+    "harness launch: the user config's arguments are used instead":
+        (HARNESS_LAUNCH, 'harness-launch', "The user config's arguments are used instead", False),
+    "harness launch: the repo config's [harness] table is reported as user-config only":
+        (HARNESS_LAUNCH, 'repo-config-trust', "The repo config's [harness] table is reported as user-config only", False),
+    'harness launch: the report names ADR 0014':
+        (HARNESS_LAUNCH, 'repo-config-trust', 'The report names ADR 0014', False),
+    'harness launch: a typo under a harness table aborts the launch':
+        (HARNESS_LAUNCH, 'repo-config-trust', 'A typo under a harness table aborts the launch', True),
+    'harness launch: the typo refusal names the key':
+        (HARNESS_LAUNCH, 'repo-config-trust', 'The typo refusal names the key', True),
+    'harness launch: the typo refusal created nothing':
+        (HARNESS_LAUNCH, 'repo-config-trust', 'The typo refusal created nothing', True),
+    'harness launch: a misspelled nested harness table aborts the launch':
+        (HARNESS_LAUNCH, 'harness-launch', 'A misspelled nested harness table aborts the launch', True),
+    'harness launch: the nested typo refusal names the table':
+        (HARNESS_LAUNCH, 'repo-config-trust', 'The nested typo refusal names the table', True),
+    'harness launch: refusals so far never reached docker':
+        (HARNESS_LAUNCH, 'harness-launch', 'Refusals so far never reached docker', True),
+    'harness launch: both placeholders render from the resolved task':
+        (HARNESS_LAUNCH, 'harness-launch', 'Both placeholders render from the resolved task', False),
+    'harness launch: opencode gets the attached --prompt= form':
+        (HARNESS_LAUNCH, 'harness-launch', 'Opencode gets the attached --prompt= form', False),
+    'harness launch: rendering created no notes directory':
+        (HARNESS_LAUNCH, 'harness-launch', 'Rendering created no notes directory', True),
+    'harness launch: doubled braces are literal braces':
+        (HARNESS_LAUNCH, 'harness-launch', 'Doubled braces are literal braces', False),
+    'harness launch: the rendered prompt holds the literal braces':
+        (HARNESS_LAUNCH, 'harness-launch', 'The rendered prompt holds the literal braces', False),
+    'harness launch: an unknown placeholder is refused on the launch path':
+        (HARNESS_LAUNCH, 'harness-launch', 'An unknown placeholder is refused on the launch path', True),
+    'harness launch: the placeholder refusal names the offending text':
+        (HARNESS_LAUNCH, 'harness-launch', 'The placeholder refusal names the offending text', True),
+    'harness launch: the placeholder refusal created nothing':
+        (HARNESS_LAUNCH, 'harness-launch', 'The placeholder refusal created nothing', True),
+    'harness launch: a stray brace is refused':
+        (HARNESS_LAUNCH, 'harness-launch', 'A stray brace is refused', True),
+    'harness launch: {task_dir} without a notes directory is refused':
+        (HARNESS_LAUNCH, 'harness-launch', '{task_dir} without a notes directory is refused', True),
+    'harness launch: that refusal names both keys':
+        (HARNESS_LAUNCH, 'harness-launch', 'That refusal names both keys', True),
+    'harness launch: a one-word prompt is refused':
+        (HARNESS_LAUNCH, 'harness-launch', 'A one-word prompt is refused', True),
+    'harness launch: the one-word refusal explains the Claude subcommand reason':
+        (HARNESS_LAUNCH, 'harness-launch', 'The one-word refusal explains the Claude subcommand reason', True),
+    'harness launch: a label-only dash-leading id is delivered as data':
+        (HARNESS_LAUNCH, 'harness-launch', 'A label-only dash-leading id is delivered as data', False),
+    'harness launch: the dash-leading id arrives inside the attached form':
+        (HARNESS_LAUNCH, 'harness-launch', 'The dash-leading id arrives inside the attached form', False),
+    'harness launch: a multi-line prompt is one argv element':
+        (HARNESS_LAUNCH, 'harness-launch', 'A multi-line prompt is one argv element', False),
+    'harness launch: the newlines, trailing one included, survive':
+        (HARNESS_LAUNCH, 'harness-launch', 'The newlines, trailing one included, survive', False),
+    'harness launch: a prompt whose JSON form exceeds an argv element still renders':
+        (HARNESS_LAUNCH, 'harness-launch', 'A prompt whose JSON form exceeds an argv element still renders (the template travels on stdin)', False),
+    'harness launch: the large prompt arrives whole in the attached form':
+        (HARNESS_LAUNCH, 'harness-launch', 'The large prompt arrives whole in the attached form', False),
+    'harness launch: the launch line shows the large prompt by its byte length':
+        (HARNESS_LAUNCH, 'harness-launch', 'The launch line shows the large prompt by its byte length', False),
+    'harness launch: claude gets -- then the positional prompt':
+        (HARNESS_LAUNCH, 'harness-launch', 'Claude gets -- then the positional prompt', False),
+    'harness launch: the claude command':
+        (HARNESS_LAUNCH, 'harness-launch', 'The claude command', False),
+    'harness launch: copilot gets the attached --interactive= form':
+        (HARNESS_LAUNCH, 'harness-launch', 'Copilot gets the attached --interactive= form', False),
+    'harness launch: the copilot command':
+        (HARNESS_LAUNCH, 'harness-launch', 'The copilot command', False),
+    'harness launch: a variadic option in args is ended by -- before the prompt':
+        (HARNESS_LAUNCH, 'harness-launch', 'A variadic option in args is ended by -- before the prompt', False),
+    'harness launch: the variadic command':
+        (HARNESS_LAUNCH, 'harness-launch', 'The variadic command', False),
+    'harness launch: first launch under auto is fresh with the prompt':
+        (HARNESS_LAUNCH, 'harness-launch', 'First launch under auto is fresh with the prompt', False),
+    'harness launch: the first-launch command carries the prompt, no --continue':
+        (HARNESS_LAUNCH, 'harness-launch', 'The first-launch command carries the prompt, no --continue', False),
+    'harness launch: the record is to be written once the container exists':
+        (HARNESS_LAUNCH, 'harness-launch', 'The record is to be written once the container exists', False),
+    'harness launch: the builder itself created no state directory':
+        (HARNESS_LAUNCH, 'harness-launch', 'The builder itself created no state directory', True),
+    'harness launch: a record for this harness and task continues':
+        (HARNESS_LAUNCH, 'harness-launch', 'A record for this harness and task continues', False),
+    'harness launch: the relaunch command is --continue without a prompt':
+        (HARNESS_LAUNCH, 'harness-launch', 'The relaunch command is --continue without a prompt', False),
+    'harness launch: the note names the recorded task':
+        (HARNESS_LAUNCH, 'harness-launch', 'The note names the recorded task', False),
+    "harness launch: the note says it is tjor's decision":
+        (HARNESS_LAUNCH, 'harness-launch', "The note says it is tjor's decision", False),
+    'harness launch: another task in the same session is fresh':
+        (HARNESS_LAUNCH, 'harness-launch', 'Another task in the same session is fresh', False),
+    'harness launch: the other task gets the prompt, not --continue':
+        (HARNESS_LAUNCH, 'harness-launch', 'The other task gets the prompt, not --continue', False),
+    'harness launch: another harness in the same session is fresh':
+        (HARNESS_LAUNCH, 'harness-launch', 'Another harness in the same session is fresh', False),
+    'harness launch: the other harness gets the prompt':
+        (HARNESS_LAUNCH, 'harness-launch', 'The other harness gets the prompt', False),
+    'harness launch: claude continues from its own record':
+        (HARNESS_LAUNCH, 'harness-launch', 'Claude continues from its own record', False),
+    'harness launch: the claude relaunch command is --continue':
+        (HARNESS_LAUNCH, 'harness-launch', 'The claude relaunch command is --continue', False),
+    'harness launch: copilot continues from its own record':
+        (HARNESS_LAUNCH, 'harness-launch', 'Copilot continues from its own record', False),
+    'harness launch: the copilot relaunch command is --continue':
+        (HARNESS_LAUNCH, 'harness-launch', 'The copilot relaunch command is --continue', False),
+    'harness launch: --no-resume forces a fresh conversation':
+        (HARNESS_LAUNCH, 'harness-launch', '--no-resume forces a fresh conversation', False),
+    'harness launch: the forced-fresh command carries the prompt':
+        (HARNESS_LAUNCH, 'harness-launch', 'The forced-fresh command carries the prompt', False),
+    'harness launch: resume = never ignores the record':
+        (HARNESS_LAUNCH, 'harness-launch', 'Resume = never ignores the record', False),
+    'harness launch: never sends the prompt every time':
+        (HARNESS_LAUNCH, 'harness-launch', 'Never sends the prompt every time', False),
+    'harness launch: never still writes the record':
+        (HARNESS_LAUNCH, 'harness-launch', 'Never still writes the record', False),
+    'harness launch: resume alone, no prompt: a record still decides':
+        (HARNESS_LAUNCH, 'harness-launch', 'Resume alone, no prompt: a record still decides', False),
+    'harness launch: resume alone continues the recorded conversation':
+        (HARNESS_LAUNCH, 'harness-launch', 'Resume alone continues the recorded conversation', False),
+    'harness launch: resume alone with no record is fresh and silent':
+        (HARNESS_LAUNCH, 'harness-launch', 'Resume alone with no record is fresh and silent', False),
+    'harness launch: resume alone, fresh: the bare harness':
+        (HARNESS_LAUNCH, 'harness-launch', 'Resume alone, fresh: the bare harness', False),
+    'harness launch: resume alone still writes the record':
+        (HARNESS_LAUNCH, 'harness-launch', 'Resume alone still writes the record', False),
+    'harness launch: an invalid task.resume is refused on the launch path':
+        (HARNESS_LAUNCH, 'harness-launch', 'An invalid task.resume is refused on the launch path', True),
+    'harness launch: the resume refusal names the two values':
+        (HARNESS_LAUNCH, 'harness-launch', 'The resume refusal names the two values', True),
+    'harness launch: the resume refusal created nothing':
+        (HARNESS_LAUNCH, 'harness-launch', 'The resume refusal created nothing', True),
+    'harness launch: a corrupt record refuses the launch':
+        (HARNESS_LAUNCH, 'harness-launch', 'A corrupt record refuses the launch', True),
+    'harness launch: the corrupt-record refusal names the file':
+        (HARNESS_LAUNCH, 'harness-launch', 'The corrupt-record refusal names the file', True),
+    'harness launch: the corrupt-record refusal names the remedy':
+        (HARNESS_LAUNCH, 'harness-launch', 'The corrupt-record refusal names the remedy', True),
+    'harness launch: the existing state directory and record are byte-identical afterwards':
+        (HARNESS_LAUNCH, 'harness-launch', 'The existing state directory and record are byte-identical afterwards', True),
+    'harness launch: the corrupt record never reached docker':
+        (HARNESS_LAUNCH, 'harness-launch', 'The corrupt record never reached docker', True),
+    'harness launch: a symbolic link where the record should be refuses':
+        (HARNESS_LAUNCH, 'harness-launch', 'A symbolic link where the record should be refuses', True),
+    'harness launch: the link refusal says the link is never followed':
+        (HARNESS_LAUNCH, 'harness-launch', 'The link refusal says the link is never followed', True),
+    'harness launch: a FIFO where the record should be refuses':
+        (HARNESS_LAUNCH, 'harness-launch', 'A FIFO where the record should be refuses', True),
+    'harness launch: an oversize record refuses':
+        (HARNESS_LAUNCH, 'harness-launch', 'An oversize record refuses', True),
+    'harness launch: an absent record is the only no-conversation':
+        (HARNESS_LAUNCH, 'harness-launch', 'An absent record is the only no-conversation', True),
+    'harness launch: with the record gone the launch is fresh with the prompt':
+        (HARNESS_LAUNCH, 'harness-launch', 'With the record gone the launch is fresh with the prompt', False),
+    'harness launch: a writable --dir over the session root refuses the launch':
+        (HARNESS_LAUNCH, 'harness-launch', 'A writable --dir over the session root refuses the launch', True),
+    'harness launch: the coverage refusal names the root and the record':
+        (HARNESS_LAUNCH, 'harness-launch', 'The coverage refusal names the root and the record', True),
+    'harness launch: the coverage refusal names conversation.json':
+        (HARNESS_LAUNCH, 'harness-launch', 'The coverage refusal names conversation.json', True),
+    'harness launch: a writable root equal to the session root refuses':
+        (HARNESS_LAUNCH, 'harness-launch', 'A writable root equal to the session root refuses', True),
+    'harness launch: a writable sibling of the session root is fine':
+        (HARNESS_LAUNCH, 'harness-launch', 'A writable sibling of the session root is fine', False),
+    'harness launch: the coverage refusal on the launch path refuses --unsafe-dir over the session root':
+        (HARNESS_LAUNCH, 'harness-launch', 'The coverage refusal on the launch path refuses --unsafe-dir over the session root', True),
+    'harness launch: the launch-path coverage refusal names the root and the record':
+        (HARNESS_LAUNCH, 'harness-launch', 'The launch-path coverage refusal names the root and the record', True),
+    'harness launch: the coverage refusal on the launch path created nothing':
+        (HARNESS_LAUNCH, 'harness-launch', 'The coverage refusal on the launch path created nothing', True),
+    'harness launch: a workspace covering the session root is refused':
+        (HARNESS_LAUNCH, 'harness-launch', 'A workspace covering the session root is refused', True),
+    'harness launch: the workspace coverage refusal names the workspace':
+        (HARNESS_LAUNCH, 'harness-launch', 'The workspace coverage refusal names the workspace', True),
+    'harness launch: the workspace coverage refusal created nothing':
+        (HARNESS_LAUNCH, 'harness-launch', 'The workspace coverage refusal created nothing', True),
+    'harness launch: that refusal never reached docker':
+        (HARNESS_LAUNCH, 'harness-launch', 'That refusal never reached docker', True),
+    'harness launch: a read-only root over the session root is allowed':
+        (HARNESS_LAUNCH, 'harness-launch', 'A read-only root over the session root is allowed', False),
+    'harness launch: the read-only case still delivers the prompt':
+        (HARNESS_LAUNCH, 'harness-launch', 'The read-only case still delivers the prompt', False),
+    'harness launch: the same roots with [task] at its defaults are not judged':
+        (HARNESS_LAUNCH, 'harness-launch', 'The same roots with [task] at its defaults are not judged', True),
+    'harness launch: the unjudged launch is the bare harness':
+        (HARNESS_LAUNCH, 'harness-launch', 'The unjudged launch is the bare harness', False),
+    'harness launch: an explicit command with a covering root is not judged either':
+        (HARNESS_LAUNCH, 'harness-launch', 'An explicit command with a covering root is not judged either', True),
+    'harness launch: the notes directory over the session root refuses before it is mounted':
+        (HARNESS_LAUNCH, 'harness-launch', 'The notes directory over the session root refuses before it is mounted', True),
+    'harness launch: that refusal names the notes directory as the covering root':
+        (HARNESS_LAUNCH, 'harness-launch', 'That refusal names the notes directory as the covering root', True),
+    'harness launch: no session state under the covered root':
+        (HARNESS_LAUNCH, 'harness-launch', 'No session state under the covered root', True),
+    'harness launch: the notes-over-root refusal never reached docker':
+        (HARNESS_LAUNCH, 'harness-launch', 'The notes-over-root refusal never reached docker', True),
+    'harness launch: a refused launch with a notes template creates no notes directory':
+        (HARNESS_LAUNCH, 'harness-launch', 'A refused launch with a notes template creates no notes directory', True),
+    'harness launch: the notes directory for zz is absent':
+        (HARNESS_LAUNCH, 'harness-launch', 'The notes directory for zz is absent', True),
+    'harness launch: no session state for the refused task':
+        (HARNESS_LAUNCH, 'harness-launch', 'No session state for the refused task', True),
+    'harness launch: nothing reached docker in the whole suite':
+        (HARNESS_LAUNCH, 'harness-launch', 'Nothing reached docker in the whole suite', False),
+    'harness launch: an explicit command after -- skips the builder on the launch path':
+        (HARNESS_LAUNCH, 'harness-launch', 'An explicit command after -- skips the builder on the launch path', False),
+    'harness launch: it was not refused for the corrupt record':
+        (HARNESS_LAUNCH, 'harness-launch', 'It was not refused for the corrupt record', True),
+    'harness launch: it ran on to docker instead':
+        (HARNESS_LAUNCH, 'harness-launch', 'It ran on to docker instead', False),
+    'harness launch: an explicit command without -- skips the builder on the launch path':
+        (HARNESS_LAUNCH, 'harness-launch', 'An explicit command without -- skips the builder on the launch path', False),
+    'harness launch: the bare form was not refused for the corrupt record either':
+        (HARNESS_LAUNCH, 'harness-launch', 'The bare form was not refused for the corrupt record either', True),
+    'harness launch: the bare form ran on to docker':
+        (HARNESS_LAUNCH, 'harness-launch', 'The bare form ran on to docker', False),
+    'harness launch: the explicit launches left the corrupt record untouched':
+        (HARNESS_LAUNCH, 'harness-launch', 'The explicit launches left the corrupt record untouched', True),
+    'harness launch: help text names --no-resume':
+        (HARNESS_LAUNCH, 'harness-launch', 'Help text names --no-resume', False),
+    'harness launch: help text says an explicit command is passed as given':
+        (HARNESS_LAUNCH, 'harness-launch', 'Help text says an explicit command is passed as given', False),
 }
 
 # Order capabilities are grouped in the rendered matrix.
 CAPABILITY_ORDER = [
     "cage-network", "egress-policy", "credential-broker",
-    "session-identity", "kernel-sandbox", "session-launch", "task-notes", "session-lifecycle",
+    "session-identity", "kernel-sandbox", "session-launch", "task-notes", "harness-launch", "session-lifecycle",
     "repo-config-trust", "launcher-integrity", "git-tamper-detection",
 ]
 
@@ -737,7 +1062,8 @@ def parsed_names() -> list[str]:
             + parse_landlock(SELF_MOUNT_FILE.read_text())
             + parse_landlock(GITCHECK_FILE.read_text())
             + parse_landlock(WORKTREE_FILE.read_text())
-            + parse_landlock(TASK_NOTES_FILE.read_text()))
+            + parse_landlock(TASK_NOTES_FILE.read_text())
+            + parse_landlock(HARNESS_LAUNCH_FILE.read_text()))
 
 
 def cross_check(names: list[str]) -> list[str]:
@@ -766,7 +1092,7 @@ def render(names: list[str]) -> str:
         f"CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "
         f"\"listed here\" means \"proven green in CI\". The `conformance` and "
         f"`landlock` suites probe the cage from inside; the `workspace-gate`, "
-        f"`self-mount`, `gitcheck` and `task-notes` suites are launcher-side (host guarantees the cage cannot "
+        f"`self-mount`, `gitcheck`, `task-notes` and `harness-launch` suites are launcher-side (host guarantees the cage cannot "
         f"re-check: what `tjor run` refuses before any container exists). Generated from the suite "
         f"sources ({len(names)} checks total; {n_boundary} adversarial guarantees "
         f"below, the rest functional/config checks the suites also run).",

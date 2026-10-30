@@ -1,5 +1,6 @@
 """Session state helper (#68): one tier definition, atomic metadata, an
 inventory that never follows a symlink and never calls unreadable state old."""
+import errno
 import json
 import os
 import stat
@@ -42,7 +43,17 @@ def test_reset_tiers_match_the_launcher_history(tmp_path):
         str(tmp_path / "home/.local/state"),
         str(tmp_path / "home/.local/share/opencode/storage"),
         str(tmp_path / "home/.local/share/opencode/log"),
+        # #73: the pinned opencode keeps sessions in SQLite; Copilot CLI under
+        # session-state; tjor's own launch record ends the recorded conversation.
+        str(tmp_path / "home/.local/share/opencode/opencode.db"),
+        str(tmp_path / "home/.local/share/opencode/opencode.db-wal"),
+        str(tmp_path / "home/.local/share/opencode/opencode.db-shm"),
+        str(tmp_path / "home/.copilot/session-state"),
+        str(tmp_path / "conversation.json"),
     ]
+    # Claude Code's transcripts share home/.claude/projects with its per-project
+    # memory: deliberately NOT in the tier (stated residual).
+    assert not any("claude/projects" in p for p in ts.TIERS["sessions"])
 
 
 def test_all_tier_is_the_directory_itself(tmp_path):
@@ -413,3 +424,141 @@ def test_lock_try_bad_descriptor(tmp_path):
 def test_lock_try_missing_path_is_usage_or_error():
     r = _run("lock-try", "999")
     assert r.returncode == 2
+
+
+# ---- the launch record (#73) ---------------------------------------------------
+
+def test_conversation_round_trip(tmp_path):
+    assert ts.read_conversation(str(tmp_path)) is None                        # absent: no conversation
+    rec = ts.write_conversation(str(tmp_path), harness="claude", task="a", now=1730000000)
+    assert rec == {"schema": 1, "harness": "claude", "task": "a", "started": 1730000000}
+    assert ts.read_conversation(str(tmp_path)) == ("claude", "a", 1730000000)
+    assert oct(os.stat(tmp_path / "conversation.json").st_mode & 0o777) == "0o644"
+    ts.write_conversation(str(tmp_path), harness="opencode", task="-x", now=5)   # replaced; a label-only id is fine
+    assert ts.read_conversation(str(tmp_path)) == ("opencode", "-x", 5)
+    assert [p.name for p in tmp_path.iterdir()] == ["conversation.json"]       # no temp file left
+
+
+def test_conversation_write_flushes_the_file_then_the_directory(tmp_path, monkeypatch):
+    # The durability steps, in order: the file's bytes before the rename, the
+    # directory after it. Dropping either call turns this red.
+    events = []
+    monkeypatch.setattr(ts, "_flush", lambda fd: events.append(("file", os.fstat(fd).st_size > 0)))
+    monkeypatch.setattr(ts, "_flush_dir", lambda path: events.append(("dir", path, (tmp_path / "conversation.json").exists())))
+    ts.write_conversation(str(tmp_path), harness="claude", task="a", now=1)
+    assert events == [("file", True), ("dir", str(tmp_path), True)]
+
+
+def test_flush_prefers_full_fsync_and_falls_back(tmp_path, monkeypatch):
+    fd = os.open(tmp_path / "f", os.O_RDWR | os.O_CREAT)
+    try:
+        calls = []
+        monkeypatch.setattr(ts.os, "fsync", lambda d: calls.append(("fsync", d)))
+        monkeypatch.setattr(ts.fcntl, "F_FULLFSYNC", 51, raising=False)
+        monkeypatch.setattr(ts.fcntl, "fcntl", lambda d, op: calls.append(("full", d, op)))
+        ts._flush(fd)
+        assert calls == [("full", fd, 51)]                                   # the platform offers it: used, fsync not needed
+        calls.clear()
+        def refuse(d, op):
+            raise OSError(errno.ENOTSUP, "not supported here")
+        monkeypatch.setattr(ts.fcntl, "fcntl", refuse)
+        ts._flush(fd)
+        assert calls == [("fsync", fd)]                                      # the filesystem refuses it: fsync
+        calls.clear()
+        monkeypatch.delattr(ts.fcntl, "F_FULLFSYNC")
+        ts._flush(fd)
+        assert calls == [("fsync", fd)]                                      # Linux: fsync alone
+    finally:
+        os.close(fd)
+
+
+@pytest.mark.parametrize("code", sorted(ts.DIR_FSYNC_UNSUPPORTED))
+def test_flush_dir_tolerates_a_filesystem_without_directory_fsync(tmp_path, monkeypatch, code):
+    closed = []
+    real_close = os.close
+    monkeypatch.setattr(ts.os, "close", lambda d: (closed.append(d), real_close(d)))
+    def unsupported(d):
+        raise OSError(code, "no directory fsync here")
+    monkeypatch.setattr(ts, "_flush", unsupported)
+    ts._flush_dir(str(tmp_path))                                               # not an error of the write
+    assert len(closed) == 1                                                     # and the descriptor is closed
+
+
+def test_flush_dir_propagates_io_errors_and_closes_anyway(tmp_path, monkeypatch):
+    assert errno.EIO not in ts.DIR_FSYNC_UNSUPPORTED and errno.ENOSYS in ts.DIR_FSYNC_UNSUPPORTED
+    closed = []
+    real_close = os.close
+    monkeypatch.setattr(ts.os, "close", lambda d: (closed.append(d), real_close(d)))
+    def broken(d):
+        raise OSError(errno.EIO, "disk")
+    monkeypatch.setattr(ts, "_flush", broken)
+    with pytest.raises(OSError, match="disk"):
+        ts._flush_dir(str(tmp_path))
+    assert len(closed) == 1                                                     # closed on the error path too
+    ts._flush_dir(str(tmp_path / "gone"))                                      # a directory that cannot be opened: left alone
+    assert len(closed) == 1
+
+
+def test_conversation_write_refuses_bad_values(tmp_path):
+    with pytest.raises(ts.StateError, match="not a harness"):
+        ts.write_conversation(str(tmp_path), harness="foo", task="a")
+    with pytest.raises(ts.StateError, match="not a task id"):
+        ts.write_conversation(str(tmp_path), harness="claude", task="a b")
+
+
+@pytest.mark.parametrize("make,needle", [
+    (lambda p: p.symlink_to("/etc/hostname"), "symbolic link"),
+    (lambda p: p.symlink_to(p.parent / "nowhere"), "symbolic link"),             # dangling
+    (lambda p: os.mkfifo(p), "not a regular file"),
+    (lambda p: p.mkdir(), "not a regular file"),
+    (lambda p: p.write_bytes(b"x" * 4097), "more than the 4096"),
+    (lambda p: p.write_text("{not json"), "not valid JSON"),
+    (lambda p: p.write_text('["a"]'), "not in the launcher's format"),
+    (lambda p: p.write_text('{"schema": 1, "harness": "claude", "task": "a"}'), "not in the launcher's format"),
+    (lambda p: p.write_text('{"schema": 1, "harness": "claude", "task": "a", "started": 1, "x": 2}'), "launcher's format"),
+    (lambda p: p.write_text('{"schema": 2, "harness": "claude", "task": "a", "started": 1}'), "launcher's format"),
+    (lambda p: p.write_text('{"schema": 1, "harness": "vim", "task": "a", "started": 1}'), "launcher's format"),
+    (lambda p: p.write_text('{"schema": 1, "harness": "claude", "task": "a b", "started": 1}'), "launcher's format"),
+    (lambda p: p.write_text('{"schema": 1, "harness": "claude", "task": "a", "started": true}'), "launcher's format"),
+    (lambda p: p.write_text('{"schema": 1, "harness": "claude", "task": "a", "started": -1}'), "launcher's format"),
+    (lambda p: p.write_text('{"schema": true, "harness": "claude", "task": "a", "started": 1}'), "launcher's format"),
+    (lambda p: p.write_text('{"schema": 1.0, "harness": "claude", "task": "a", "started": 1}'), "launcher's format"),
+    (lambda p: p.write_text('{"schema": 1, "harness": "claude", "task": "a", "started": 4102444801}'), "launcher's format"),
+])
+def test_conversation_read_refuses_everything_but_the_record(tmp_path, make, needle):
+    make(tmp_path / "conversation.json")
+    with pytest.raises(ts.StateError) as exc:
+        ts.read_conversation(str(tmp_path))
+    assert needle in str(exc.value)
+
+
+def test_conversation_deep_nesting_is_a_refusal_whatever_the_parser_does(tmp_path):
+    # 4000 bytes of nesting: a RecursionError (older Pythons) or a parsed list
+    # (newer ones) — either way not the record, never a crash.
+    (tmp_path / "conversation.json").write_text("[" * 2000 + "]" * 2000)
+    with pytest.raises(ts.StateError):
+        ts.read_conversation(str(tmp_path))
+
+
+def test_conversation_cli(tmp_path):
+    r = _run("conversation-read", str(tmp_path))
+    assert r.returncode == 0 and r.stdout == ""                                 # absent: nothing, exit 0
+    r = _run("conversation-write", str(tmp_path), "--harness=opencode", "--task=-x")
+    assert r.returncode == 0
+    r = _run("conversation-read", str(tmp_path))
+    harness, task, started = r.stdout.rstrip("\n").split(ts.US)
+    assert (harness, task) == ("opencode", "-x") and started.isdigit()
+    (tmp_path / "conversation.json").write_text("{broken")
+    r = _run("conversation-read", str(tmp_path))
+    assert r.returncode == 2 and r.stdout == "" and "not valid JSON" in r.stderr
+    r = _run("conversation-write", str(tmp_path), "--harness=opencode")
+    assert r.returncode == 2
+    r = _run("conversation-write", str(tmp_path), "--harness", "vim", "--task", "a")
+    assert r.returncode == 2 and "not a harness" in r.stderr                    # the same class as a bad read
+    r = _run("conversation-write", str(tmp_path / "missing"), "--harness=opencode", "--task=a")
+    assert r.returncode == 2 and "missing" in r.stderr                          # an OSError from the write is exit 2 too, never 1
+
+
+def test_reset_sessions_dry_run_lists_the_record(tmp_path):
+    r = _run("tier", "sessions", str(tmp_path))
+    assert str(tmp_path / "conversation.json") in r.stdout.splitlines()

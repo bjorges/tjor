@@ -170,6 +170,46 @@ create = true                            # create the directory below the root w
 # short name IS the id (so `tjor down --session <id>` addresses it); one id
 # is one session for every harness unless --session names one.
 session_per_task = false
+# Task-aware launch (#73, spec: harness-launch). `prompt` is the first message
+# of a FRESH conversation started with --task, rendered by literal
+# substitution of exactly two placeholders — {task} (the id) and {task_dir}
+# (the notes directory, which needs notes_dir) — with {{ and }} standing for
+# literal braces; any other brace refuses the launch. Delivered in the one
+# form each harness reads as data (opencode --prompt=<text>, Claude Code
+# -- <text>, Copilot CLI --interactive=<text>), only when tjor owns the
+# command line (an explicit command after `tjor run` replaces everything).
+# A one-word prompt (no whitespace) is REFUSED: Claude Code reads a bare
+# positional that names one of its subcommands as that subcommand, so
+# `prompt = "{task}"` with the id `mcp` would open `claude mcp`. The prompt
+# is in the container's command line (docker inspect, the in-cage process
+# list); the launch line shows only its length. Empty = no prompt.
+prompt = ""                              # e.g. "Task {task}. Notes: {task_dir}."
+# resume = "auto" adds the harness's --continue, and sends no prompt, when
+# tjor's own launch record (conversation.json at the session's state root,
+# which no container mounts) says tjor already started a conversation for
+# this harness and task in this session; "never" (the default) always starts
+# fresh. `tjor run --no-resume` forces a fresh conversation once; `tjor reset
+# sessions` forgets the record. The harness's own store is never inspected:
+# the record says tjor started a conversation, not that the harness still
+# holds one.
+resume = "never"                         # "never" | "auto"
+
+# Harness command line (#73, spec: harness-launch): extra arguments tjor
+# passes to the harness, one argv element per entry, before anything tjor
+# adds (the --continue flag, the task prompt), never through a shell and
+# never interpreted — an entry that selects a conversation (--continue,
+# --resume, --session-id), supplies a prompt or names a subcommand changes
+# what the harness does without tjor noticing, and a flag that relaxes the
+# harness's own permissions is your choice. Entries must be non-empty
+# strings without NUL or newline, at most 65536 bytes, and never "--". THESE
+# TABLES ARE USER-CONFIG ONLY (ADR 0014): a repository's .tjor/config.toml
+# cannot set them, trusted or not.
+[harness.opencode]
+args = []                                # e.g. ["--agent", "bob"]
+[harness.claude]
+args = []                                # e.g. ["--model", "opus"]
+[harness.copilot]
+args = []
 
 # Agent profiles (#29): named host directories of harness DEFINITIONS
 # (agents/commands/skills) you can opt a session into with `tjor run --profile

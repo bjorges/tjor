@@ -1,0 +1,40 @@
+# Proposal
+
+## Why
+
+The harness command line is built in one of two ways today: `tjor run` starts the bare harness (`opencode`, `claude`, `copilot`), or an explicit command on the command line replaces it entirely (#73). Launcher scripts that want a task-aware start (a first message naming the task and its notes directory, or continuing yesterday's conversation on relaunch) have to hand-build that command, splicing a prompt into a shell string and guessing when to pass the harness's continue flag. That splicing is fragile, differs per harness (opencode `--prompt`, Claude Code a positional argument, Copilot CLI `--interactive`), and sits outside tjor's own knowledge of the session: which harness, whether tjor started a conversation there before, what `--task` resolved. With #69 merged (`[task]`, `TJOR_TASK_ID`, `TJOR_TASK_DIR`, ADR 0013 all on `main`), `--task <id>` has a directory and a session of its own; the launch should be able to use them.
+
+## What Changes
+
+- **tjor owns the harness command line when configuration asks it to.** A per-harness `args` list (`[harness.opencode] args = ["--agent", "bob"]`, likewise `claude` and `copilot`) from the **user configuration only** is passed to the harness verbatim, one argv element per entry, placed before anything tjor adds, never through a shell and never interpreted. The `[harness]` table is dropped from a trusted repository config with a warning naming the file and the table, and an unapproved file is ignored whole, as today (ADR 0014, this change): approval reviews content, not consequence, and a repository that could set harness flags could steer the agent the way the user-only prompt rule exists to prevent. An explicit command on the command line, with or without `--`, keeps today's meaning exactly: it replaces everything and nothing is added.
+- **A task prompt.** `[task] prompt` is a template with exactly two placeholders, `{task}` and `{task_dir}` (both validated by #69), and `{{`/`}}` for literal braces; any other brace refuses. It is rendered by literal substitution, bounded, and delivered in the one form per harness that reads it as data: opencode `--prompt=<text>`, Claude Code `-- <text>` (so a variadic option in `args` cannot swallow it and a leading dash is not an option), Copilot CLI `--interactive=<text>`. A one-word prompt is refused: Claude Code reads a bare positional that names one of its subcommands as that subcommand, `--` or not (verified). The prompt is sent only with `--task`, only on a fresh conversation, only when tjor owns the command.
+- **Resume from tjor's own record, not the harness's store.** `[task] resume = "never"` (default) or `"auto"`. tjor keeps a small launch record (`conversation.json`: harness, task, time) at the state directory's root, which no container mounts, written after the agent container exists. With `auto`, a record naming this harness and task adds the harness's `--continue` and sends no prompt; anything else is a fresh conversation. `tjor run --no-resume` forces a fresh one. The record is read without following links, as a regular file of bounded size and exact shape; anything else refuses, and only an absent path means "no conversation". A launch that relies on the record refuses when any intended writable root (the workspace, a `--dir`, or the notes directory before it is created; `--unsafe-dir` lets each cover tjor's roots) is or contains the state directory, judged by filesystem identity where paths exist and without creating anything, so the record is never agent-writable. The harness's conversation store is never inspected: its format is the harness's, it is agent-writable, and "a file exists" is not "a conversation can be continued".
+- **The sessions tier is completed.** `tjor reset sessions` deletes the record together with opencode's database files (`opencode.db`, `-wal`, `-shm`; the pinned opencode stores sessions in SQLite, not under `storage/`) and Copilot CLI's `session-state`. Claude Code's transcripts stay: their directory also holds its per-project memory, and that residual is stated.
+- **Refusals create nothing.** The whole command, prompt and resume decision included, is built after the explicit extra-dir and notes sensitive-path gates and before the notes directory is created, the profile is staged, the first write, the credential mint and the sidecars, so a refusal by any rule here creates no notes directory, state-directory content, credential or container; the session root and the lock, which every launch sets up first, are all that remains.
+- **`--harness` accepts exactly three names**; anything else refuses before anything exists (today an unknown name silently became opencode).
+- **The launcher says what it built**: the command on one line with the prompt shown by its byte length, and whether the conversation is fresh or continued. That line reports tjor's decision; `args` are the operator's and may change the harness's mode (`--resume`, a subcommand name, a cluster, an abbreviation) without tjor noticing, and the prompt is visible in the container's command line (`docker inspect`). Both are stated limits.
+- **Flag drift is caught at the pin**: the agent image build checks each pinned CLI's `--help` still lists the flags tjor relies on.
+- `[harness]` and `[task]` are security tables: an unknown key under them refuses the launch.
+
+## Deferred, and why
+
+- **`profile.toml` (per-profile harness arguments).** The first draft let a selected profile directory carry `[harness.<name>] args` in a `profile.toml`. Review found it extra scope: a new host-side control file and parser in a purely structural profile model, a file an agent could rewrite when the profile directory sits inside a writable mount, and replace-not-merge semantics that would wipe user-level flags. The issue's wrappers are per harness, which `[harness.<name>] args` in the user config serves directly. A per-profile variant (for example `[harness.<name>.profile.<profile>] args` in the user config, keyed by `--profile` name, no new file) can follow if needed.
+
+## Capabilities
+
+### New Capabilities
+- `harness-launch`: how tjor builds the harness command line when it owns it: the harness name, verbatim user-configured arguments, the task prompt and its delivery, resume from the launch record, ordering, the launch line, the stated limits.
+
+### Modified Capabilities
+- `task-notes`: the "unchanged without configuration" rule now covers every `[task]` key (`notes_dir`, `create`, `session_per_task`, `prompt`, `resume`).
+- `session-lifecycle`: the sessions tier names each harness's conversation store and the launch record; Claude Code's transcripts are a stated exception.
+- `repo-config-trust`: the user-only rule names `[harness]` beside `[task]` (trusted file: table dropped with a warning; unapproved file: ignored whole as today; a typo under a nested `[harness.<name>]` aborts).
+
+## Impact
+
+- `config/tjor.toml` (`[harness.*] args`, `[task] prompt`, `[task] resume`), `python/tjor_cfg.py` (`harness` user-only and security table), `docs/decisions/0014-repo-config-never-shapes-the-harness-launch.md`.
+- `python/tjor_launch.py` (new: argument validation, prompt rendering), `python/tjor_state.py` (launch record read/write, sessions tier), `bin/tjor` (`cmd_run`: harness name, `--no-resume`, command build before the first write, launch line; `run_agent`: record write after the container exists; usage).
+- `images/agent/Dockerfile` (`--help` flag check per pinned CLI).
+- Tests: `python/tests/test_launch.py` (new), `test_state.py`, `test_config_ergonomics.py`, `tests/integration/harness_launch_test.sh` (new, docker-free, in the boundary matrix and both CI unit jobs), one live section in `tests/integration/lifecycle_test.sh`.
+- `README.md`, `CHANGELOG.md`, one new slide in "Operate & prove" plus re-pinned `task-notes`, `session-lifecycle` and `repo-config-trust` (ADR 0014 added) slides.
+- Compatibility: with `[harness]` and `[task]` at their defaults every launch is unchanged, and an explicit command is unchanged whatever is configured. `--harness` with an unknown value, which never worked, now refuses with a message.

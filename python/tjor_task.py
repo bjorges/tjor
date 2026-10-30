@@ -12,7 +12,14 @@ checked is what is used:
                                       missing component with mkdirat unless
                                       --no-create; print the directory's identity
   contains A B                        exit 0 when A is B or an ancestor of B by
-                                      (st_dev, st_ino), 1 when not, 2 on error
+                                      (st_dev, st_ino), 3 when not, 2 on error
+                                      (never 1, Python's own exit for a crash
+                                      before or outside _main, so a fault can
+                                      never read as "no"). A and B are the
+                                      launcher's physical, absolute paths: a
+                                      link anywhere on either chain, or a `.`
+                                      or `..` component, is an error, never
+                                      followed or collapsed
   probe-create DIR / probe-remove DIR NAME
                                       an empty, unpredictable probe file for the
                                       VM-share correspondence check
@@ -38,6 +45,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import tjor_paths  # noqa: E402
 import tjor_safeprint  # noqa: E402
 import tjor_secrets  # noqa: E402
 
@@ -46,6 +54,7 @@ import tjor_secrets  # noqa: E402
 # (it is the session's short name as-is, no truncation).
 TASK_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 PLACEHOLDER = "{task}"
+NOT_CONTAINED = 3   # `contains`: a distinct, non-default exit code for "no"; 1 (Python's own) is never "no"
 PROBE_PREFIX = ".tjor-share-probe-"
 PROBE_NAME = re.compile(r"\.tjor-share-probe-[0-9a-f]{16}")
 
@@ -216,29 +225,49 @@ def _open_child(fd: int, name: str, here: str) -> int | None:
 
 # --------------------------------------------------------------- contains
 
+def _plain_path(path: str, what: str) -> None:
+    """The launcher passes physical, absolute paths (`pwd -P`, the resolved
+    notes prefix); a `.` or `..` component is refused rather than collapsed
+    (shared rule: tjor_paths)."""
+    tjor_paths.plain_path(path, what, TaskError)
+
+
+def _lstat_real_dir(path: str, what: str) -> os.stat_result:
+    """lstat a path that must exist and be a real directory: a link is an
+    error, never followed (the launcher's paths are physical; a link here
+    means something was swapped since), as is anything else (tjor_paths)."""
+    st = tjor_paths.lstat_dir(path, what, TaskError)
+    if st is None:
+        raise TaskError(f"cannot read {what} {_safe(path)}: no such directory")
+    return st
+
+
+def _chain_keys(path: str, what: str) -> list[tuple[int, int]]:
+    """The identities of `path` and every directory above it, leaf first,
+    each lstat'ed and required to be a real directory."""
+    keys: list[tuple[int, int]] = []
+    cur = os.path.abspath(path)
+    while True:
+        st = _lstat_real_dir(cur, what)
+        keys.append((st.st_dev, st.st_ino))
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return keys
+        cur = parent
+
+
 def contains(ancestor: str, path: str) -> bool:
     """True when `ancestor` is `path` or one of its ancestors, judged by
     (st_dev, st_ino) along the parent chain, never by the path string (a
     case-folding or normalising filesystem makes two spellings one directory).
-    Raises TaskError when the identity of any step cannot be read."""
+    Both chains are walked without following a link: a link anywhere, a `.`
+    or `..` component, or a step whose identity cannot be read raises
+    TaskError, so the caller refuses rather than reads "no"."""
     check_capabilities()
-    try:
-        a = os.stat(ancestor)
-    except OSError as exc:
-        raise TaskError(f"cannot read {_safe(ancestor)}: {exc.strerror}") from exc
-    key = (a.st_dev, a.st_ino)
-    cur = os.path.abspath(path)
-    while True:
-        try:
-            s = os.stat(cur)
-        except OSError as exc:
-            raise TaskError(f"cannot read {_safe(cur)}: {exc.strerror}") from exc
-        if (s.st_dev, s.st_ino) == key:
-            return True
-        parent = os.path.dirname(cur)
-        if parent == cur:
-            return False
-        cur = parent
+    _plain_path(ancestor, "the ancestor")
+    _plain_path(path, "the path")
+    key = _chain_keys(ancestor, "a directory on the ancestor's chain")[0]
+    return key in _chain_keys(path, "a directory on the path's chain")
 
 
 # ------------------------------------------------------------------ probe
@@ -427,7 +456,7 @@ def _main(argv: list[str]) -> int:
             dev, ino = create(args.prefix, args.relative.split("/"), not args.no_create)
             print(f"{dev}:{ino}")
         elif args.cmd == "contains":
-            return 0 if contains(args.ancestor, args.path) else 1
+            return 0 if contains(args.ancestor, args.path) else NOT_CONTAINED
         elif args.cmd == "probe-create":
             print(probe_create(args.directory))
         elif args.cmd == "probe-remove":
@@ -441,6 +470,9 @@ def _main(argv: list[str]) -> int:
         return 0
     except TaskError as exc:
         print(f"tjor_task: {exc}", file=sys.stderr)
+        return 2 if args.cmd == "contains" else 1
+    except Exception as exc:  # noqa: BLE001 — fail closed: an unexpected fault is a refusal, never an answer
+        print(f"tjor_task: internal error, refusing ({type(exc).__name__}: {exc})", file=sys.stderr)
         return 2 if args.cmd == "contains" else 1
 
 

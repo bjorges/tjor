@@ -151,6 +151,25 @@ RUN set -eu; \
         npm install -g "@github/copilot@${COPILOT_VERSION}" ;; \
     esac
 
+# Flag drift is caught at the pin (#73, spec: harness-launch): the launcher
+# delivers the task prompt and the resume flag through exactly these flags
+# (opencode --prompt=<text>, Claude Code the [prompt] positional after `--`,
+# Copilot CLI --interactive=<text>; --continue on all three). A version bump
+# that renames one fails HERE, naming the harness and the flag, not at an
+# operator's launch. The flag names are matched as whole tokens in the CLI's
+# own --help (so `--prompt` does not pass on `--prompt-file`); a crash of the
+# CLI under the build (QEMU on the arm64 job) is reported with its exit status
+# and output, never read as "no such flag". A name check, not a behaviour
+# check: that the attached forms parse as assumed is a stated residual.
+RUN set -eu; \
+    chk() { cli="$1"; shift; rc=0; out="$("$cli" --help 2>&1)" || rc=$?; \
+        if [ "$rc" -ne 0 ]; then echo "tjor image: $cli --help exited $rc (the flag check needs its help text; first lines follow)" >&2; printf '%s\n' "$out" | head -n 8 >&2; exit 1; fi; \
+        for f in "$@"; do printf '%s\n' "$out" | grep -qE -- "$f" \
+            || { echo "tjor image: $cli --help no longer lists a flag matching '$f' — the launcher relies on it (#73, harness-launch)" >&2; exit 1; }; done; }; \
+    case ",${HARNESS}," in *,opencode,*) chk opencode '(^|[[:space:],])--prompt([[:space:]=]|$)' '(^|[[:space:],])--continue([[:space:]=]|$)' ;; esac; \
+    case ",${HARNESS}," in *,claude,*)   chk claude '\[prompt\]' '(^|[[:space:],])--continue([[:space:]=]|$)' ;; esac; \
+    case ",${HARNESS}," in *,copilot,*)  chk copilot '(^|[[:space:],])--interactive([[:space:]=]|$)' '(^|[[:space:],])--continue([[:space:]=]|$)' ;; esac
+
 # Match the host user's uid so bind-mounted session state stays writable.
 # Fixed default uid — the image is uid-AGNOSTIC (so one published image works
 # for any host user). The entrypoint aligns the agent user to the host uid at

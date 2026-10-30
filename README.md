@@ -113,13 +113,18 @@ rule for extra writable roots applies to it unchanged (sensitive paths, the
 VM-share check, writability nesting, the self-mount guard, git trust as a
 tree, dotenv and git-metadata masks, the git-check baseline) — and names it
 `TJOR_TASK_DIR` inside the cage (no `x-agent-*` header is derived from it).
+That path is the directory's physical spelling, the resolved notes root plus
+what lies below it, even when the template spells the root through a link:
+the checks, the mount and the cage see one spelling.
 The workspace is still the repository you launched from, so its trusted
 `.tjor/` files and the harness's instruction discovery are unaffected. The
 notes **root** (everything before `{task}`) must exist; tjor never creates
 it, only what lies below, one real directory at a time, never through a
 link. The template is checked component by component, so no `..` or empty
 component can steer it. A launch is **refused, with no override, when the
-workspace is the notes root or contains it**: that is the "launched from
+workspace is the notes root or contains it** (judged by filesystem identity
+along both physical paths, never through a link: a link or a `..` on either
+chain refuses too): that is the "launched from
 inside the notes repo" mistake this exists to prevent (the whole notes
 repository, every other task's files, would be mounted writable and git-
 trusted); launch from the code repository and let `--task` bring the notes.
@@ -158,6 +163,84 @@ it can see (the window every mount has); and a probe file
 (`.tjor-share-probe-*`) can remain if tjor is killed during the share check.
 Without a `[task]` table nothing changes: `--task` keeps its old grammar and
 stays a label.
+**Task-aware launch** (#73): tjor can own the harness command line. Without
+a command after `tjor run …`, it builds one from your **user** config; an
+explicit command, after `--` or as the first non-option word, is passed
+exactly as given and nothing is added:
+
+```toml
+[harness.opencode]
+args = ["--agent", "bob"]              # likewise [harness.claude], [harness.copilot]
+[task]
+prompt = "Task {task}. Notes: {task_dir}."   # first message of a fresh conversation
+resume = "auto"                         # "never" (default) | "auto"
+```
+
+`args` are passed verbatim, one argv element per entry, before anything tjor
+adds, never through a shell and never interpreted (non-empty strings without
+NUL or newline, at most 64 KiB, never `--`). `prompt` is a template with
+exactly two placeholders, `{task}` and `{task_dir}` (the notes directory;
+needs `notes_dir`), and `{{`/`}}` for literal braces; any other brace refuses
+the launch. It is sent only with `--task`, only when a fresh conversation
+starts, in the one form each harness reads as data: opencode
+`--prompt=<text>`, Claude Code `-- <text>` (so a variadic option such as
+`--add-dir` in `args` cannot swallow it), Copilot CLI `--interactive=<text>`.
+**A one-word prompt is refused**: Claude Code reads a bare positional that
+names one of its subcommands as that subcommand (`claude -- mcp` opens `mcp`,
+`--` notwithstanding), so `prompt = "{task}"` with the id `mcp` would do
+that, and so would `"{task}\n"` (the rule is judged with surrounding
+whitespace removed); the rule is the same for every harness, so write a
+sentence. With
+`resume = "auto"`, tjor adds the harness's `--continue` and sends no prompt
+when **its own launch record** (`conversation.json` at the session's state
+root, written once the agent container exists) says tjor already started a
+conversation for this harness and task in this session; anything else is a
+fresh conversation, and `tjor run --no-resume` forces one. The harness's
+conversation store is never inspected. The record lives where no container
+mounts, and a launch that relies on it is refused when a writable root (the
+workspace or a `--dir` under `--unsafe-dir`, or the notes directory) would
+cover the state directory; the record is read without following links, as a
+regular file of bounded size, and anything else refuses rather than reading
+as "no conversation". Where the notes directory does not exist yet, that
+coverage is judged by name, conservatively: a last component that differs
+from the session id only in case or Unicode composition is refused on every
+filesystem, a case-sensitive one included, because nothing exists yet to
+compare identities (use a notes template that does not spell the session
+root). Like every mount, the check judges a path the container engine
+resolves again when it mounts it, so a component swapped in between by a
+writer outside tjor's lock is outside what the launcher can see. The whole
+command is built before the notes directory
+is created, before the first write into the state directory, before any
+credential is minted and before any sidecar exists, so a refusal by any of
+these rules creates nothing. The launch line prints the command with the
+prompt shown by its length, and says whether the conversation is fresh or
+continued. `tjor reset sessions` forgets the record together with opencode's
+SQLite session database and Copilot CLI's `session-state`. `--harness`
+accepts exactly `opencode`, `claude` and `copilot`. **The `[harness]` table
+is user-config only** (ADR 0014), like `[task]`: a trusted repository config
+carrying it is ignored with a warning, an unapproved one is ignored whole,
+and a misspelled key under either aborts the launch. Stated plainly: `args`
+are passed uninspected, so a flag that relaxes the harness's own permissions
+is your choice, and an entry that selects a conversation (`--continue`,
+`--resume`, `--session-id`), supplies a prompt or names a subcommand changes
+what the harness does without tjor noticing (short clusters and parser
+abbreviations included), so `resume = "never"` and `--no-resume` suppress
+only what tjor adds; the prompt is visible in the container's command line
+(`docker inspect`, the process list inside the cage), which the launch
+line's redaction does not change; the record says tjor started a
+conversation, not that the harness still holds one, so after a crash before
+the first message, a store cleared by hand, or a crash between container
+creation and the record write, the harness may report nothing to continue
+and `--no-resume` or `tjor reset sessions` is the remedy, and an explicit
+command or a conversation switched inside the harness leaves the record
+stale; the launch line reports tjor's decision, not verified harness
+behaviour; without `session_per_task` one session home serves every task,
+so only the most recent conversation can be continued; and `tjor reset
+sessions` leaves Claude Code's transcripts on disk, because their directory
+(`~/.claude/projects`) also holds its per-project memory. The three
+harnesses' flags were verified against the pinned versions, and the agent
+image build fails when a pinned CLI's `--help` no longer lists them; that is
+a check on the flag names, not on the attached forms behaving as assumed.
 **Sensitive host paths are refused** — as the primary workspace and as
 `--dir`/`--dir-ro` alike: `/` and system directories, your home directory and
 anything above it, credential directories (`~/.ssh`, `~/.config`, `~/.aws`,
