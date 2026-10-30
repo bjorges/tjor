@@ -2,86 +2,87 @@
 
 ## Context
 
-See proposal.md for the motivation. What shapes the approach:
+See proposal.md for the motivation. What shapes the approach (observed in the code unless marked):
 
-- Every writable extra root already passes one pipeline in `cmd_run`: physical-path resolution, `gate_sensitive_path --dir`, dedupe against the workspace, the worktree common-dir rule, the mixed-writability refusal, the self-mount guard; later `run_agent` verifies the bind source (VM share), mounts it at its host path, registers git trust as a tree, runs mask discovery and the git-check baseline over it, and hands it to the kernel sandbox allowlist. A root appended to `TJOR_EXTRA_DIRS` after the `--dir` loop gets all of that for free (observed: `bin/tjor` `cmd_run`, `run_agent`).
-- `resolve_session` derives the session id as `<repo>-<hash8>[-<short>]` and canonicalises a user-supplied `--session` value against qualified-looking ids; the short-name grammar is `[A-Za-z0-9._-]{1,32}`; the task id grammar is `[A-Za-z0-9._-]{1,64}` and the id is a label only (observed).
-- `workspace_toplevel` is the one guarded resolver (nearest-repository cross-check, #76); `TJOR_LAUNCH_DIR` becomes the harness cwd through compose `working_dir` (observed).
-- `tjor_cfg.check` warns on keys absent from `config/tjor.toml`, so new keys need defaults there (observed).
-- The secret-shape detector (`tjor_secrets.kinds_present`) and the terminal-escape sanitizer exist and are the ones to reuse (observed).
-- Identity headers are a fixed table in `tjor_identity.py`; unknown `x-agent-*` headers are stripped toward every host (observed).
+- Every writable extra root passes one pipeline in `cmd_run`: physical-path resolution, `gate_sensitive_path --dir`, dedupe against the workspace, the worktree common-dir rule, the mixed-writability refusal, the self-mount guard; `run_agent` then verifies the bind source, mounts it at its host path, registers git trust as a tree, runs mask discovery and the git-check baseline over it, and hands it to the kernel sandbox allowlist. A root appended to `TJOR_EXTRA_DIRS` after the `--dir` loop gets all of that.
+- `resolve_session` is called by the launch AND by `down`, `status`, `denials`, `reset`, `prune` and `git-check`, under a no-side-effects contract (#68); every lifecycle caller passes the harness `opencode` literally. The session root is read once, before `TJOR_REPO_ROOT` is exported, precisely so a trusted repository config cannot answer differently (`session_root_init`).
+- `tjor_cfg.effective()` layers defaults, user config and a trusted repository config; `check()` warns on unknown keys except under `SECURITY_TABLES`, where it aborts.
+- `verify_bind_source` returns early on an empty directory (nothing to compare).
+- The session id is `<repo>-<hash8>[-<short>]`; `TJOR_PROJECT = tjor-<id>` becomes the Compose project name. The short-name grammar allows dots; Compose project names do not (review): a pre-existing edge for `--session a.b`, not widened here because task ids are dot-free.
+- `GIT_CEILING_DIRECTORIES` stops discovery only above the listed directory, not at it (review, verified by the reviewers).
+- Identity headers are a fixed table in `tjor_identity.py` (`x-agent-task-id` already carries the id); unknown `x-agent-*` headers are stripped toward every host.
 
 ## Goals / Non-Goals
 
 **Goals:**
-- One opt-in configuration turns `--task <id>` into a mounted, writable notes directory with per-task session identity, without widening what the cage can reach beyond that one directory.
-- Every path-safety rule the launcher already has applies to the notes directory by construction, not by a second copy.
+- One opt-in setting, in the user's own config, turns `--task <id>` into a mounted, writable notes directory with a per-task session, without widening what the cage can reach beyond that one directory.
+- Every path-safety rule the launcher already has applies to the notes directory by construction; the checks this change adds are inode-based and descriptor-relative, not string-based.
 - The notes repository above the directory can never become the workspace by accident.
 
-**Non-Goals:**
-- Anything the harness does with the directory (a prompt that points at it, resume behaviour): #73.
-- Sharing or syncing notes between hosts, or per-task secrets.
-- A task directory for lifecycle commands' own output; `TJOR_TASK_DIR` is for the agent.
+**Non-Goals (deferred, with the review's reasons):**
+- `--workspace <dir>`: changing directory before argument parsing re-bases every relative `--dir`, `--dir-ro` and `--profile-dir`, and the lifecycle commands would need the flag too. The operator's `cd` does the same today.
+- `--notes-workspace`: a second workspace mode touching config provenance, the harness cwd, git environment, session identity and lifecycle lookup; `GIT_CEILING_DIRECTORIES` set to the directory itself does not stop discovery, and a worktree common dir could still be mounted from above. The notes mount stands on its own; a repo-less task launches without `--task`, exactly as today.
+- `--task <id>` on the lifecycle commands: they do not know the harness, and with the short name equal to the id, `--session <id>` is the same keystrokes without guessing.
+- Anything the harness does with the directory (#73); sharing notes between hosts; per-task secrets.
 
 ## Decisions
 
-### D1. Resolution, creation and the scan live in one Python helper
+### D1. Resolution, creation, identity checks and the scan live in one Python helper
 
-`python/tjor_task.py` with three subcommands the launcher calls: `resolve --template T --task ID [--create]` (prints the directory's physical path, or a reason on stderr and exit 1), `short-name BASE ID` (prints the composite short name), `scan DIR` (prints one line per credential-shaped finding, exit 0 always). Rationale: the component-wise walk (`lstat` per level, `mkdir` without `-p`, the prefix containment check on physical paths) and the bounded scan are easier to get right and to unit-test in Python than in bash, and the launcher already shells out to helpers this way (`tjor_state.py`, `tjor_policy_edit.py`). Alternative considered: pure bash in `cmd_run`; rejected because `pwd -P` plus `readlink` per component is the kind of code that is wrong in one edge case for a year.
+`python/tjor_task.py`, called by the launcher: `resolve --template T --task ID` (no side effect: validates the template and the id, prints the directory's intended path, the physical prefix and the relative part below it, exit 1 with a reason otherwise); `create --prefix P --relative R` (the descriptor-relative walk of D4); `contains A B` (inode ancestry of D5); `scan DIR` (D9). Unit-tested in `python/tests/test_task.py`. Rationale: `openat`-style traversal, `fstat`-based identity and a bounded scan belong in Python with tests, and the launcher already shells out to helpers this way. Alternative: bash; rejected for exactly the edge cases the review listed.
 
 ### D2. The template and its fixed prefix
 
-`task.notes_dir` must be absolute after expanding a leading `~` and must hold `{task}` exactly once (no other brace). The fixed prefix is the path up to, not including, the first component that holds `{task}`. The prefix must exist and be a directory; tjor never creates it (creating the operator's notes root silently is how a typo becomes a new tree). Below the prefix, every existing component must be a real directory (`lstat`, not a symlink); with `create = true` a missing component is made with `mkdir` (mode from the umask) and re-checked; with `create = false` a missing one refuses. After the walk, the directory's physical path must equal `<physical prefix>/<relative part>`; anything else is the symlink-escape refusal. Rationale: comparing physical paths after a per-component symlink check closes both the "link inside the prefix pointing out" and the "prefix itself is a link" cases, and the per-component check gives a precise error (which link, where it points). Alternative: `realpath` containment only; rejected because a link *inside* the prefix that points to another directory *inside* the prefix would pass while the operator's layout says otherwise, and because the error could not name the link.
+`task.notes_dir` must be absolute after expanding a leading `~` and hold `{task}` exactly once (no other brace). The fixed prefix is the path up to, not including, the first component holding `{task}`; it must already exist as a real directory and tjor never creates it. Rationale: creating the operator's notes root silently is how a typo becomes a new tree.
 
-### D3. The task id grammar tightens only when it resolves to a path
+### D3. The task id becomes a plain lower-case name when it is a path
 
-With `notes_dir` configured, the id must match `^[A-Za-z0-9_-][A-Za-z0-9._-]{0,63}$` (no leading dot, which covers `.`, `..` and hidden names). Without it, today's grammar stays. Rationale: the acceptance criterion "behaviour with no `[task]` config is unchanged" is literal, and an id is only dangerous once it becomes a path component. Alternative: tighten unconditionally; cleaner, rejected for the compatibility promise. The proposal states the one visible change for configured setups.
+With `notes_dir` configured the id must match `^[a-z0-9][a-z0-9_-]{0,31}$`. No dot: `.`, `..` and hidden names are impossible, and the derived session name never contains one (Compose project names reject dots). No upper case: one spelling per directory whether the filesystem folds case or not; the id is also lower-case on the wire and in labels as today. At most 32 characters: the id is the session's short name as-is, so there is no truncation and no two ids map to one name (review item 4). Without `notes_dir` the old grammar stays (the compatibility promise is literal). Alternative: keep the old grammar and lower-case for the session only; rejected because `A` and `a` would be two directories and one session.
 
-### D4. The notes directory is an extra writable root, appended last
+### D4. Creation is launch-only, after the gate and the lock, and descriptor-relative
 
-In `cmd_run`, after the `--dir` loop and before the read-only loop, the resolved directory is appended to `TJOR_EXTRA_DIRS` with the same dedupe (equal to the workspace: skip, it is the workspace already; equal to a `--dir`: skip) and `gate_sensitive_path --dir`. The read-only loop's conflict check then refuses the same path given as `--dir-ro`. Everything downstream is untouched. `TJOR_TASK_DIR` is exported either way (the directory is mounted at its host path whichever list it came through). Rationale: zero new mount code; every guard the spec enumerates for extra dirs is inherited by construction and the task list can say so instead of re-testing each. Alternative: a dedicated mount with its own checks; rejected (three copies of the sensitive gate were just collapsed into one in v0.19.0).
+`resolve_session` only resolves (D1 `resolve`) and exports `TJOR_TASK_DIR`; it creates nothing, so lifecycle commands keep their no-side-effects contract. In `cmd_run`, after `gate_sensitive_path --dir` has accepted the intended path and `session_lock_acquire` holds the lock, `create` walks from the prefix: open the prefix (`O_DIRECTORY`), then for each relative component `openat(parent_fd, name, O_DIRECTORY|O_NOFOLLOW)`; on `ENOENT` and `create = true`, `mkdirat(parent_fd, name)` then open the same way; `ELOOP`/`ENOTDIR` refuse naming the component; `fstat` of the final descriptor gives its identity. The final directory's identity, not its path string, is what later checks use. Residual, stated in the README: the engine receives the bind source as a path, so a component swapped between the walk and the container start is outside what the launcher can see (the same window every mount has today). Alternative: `lstat`/`mkdir`/`realpath` by path; rejected as raceable by a swapped component (review item 9).
 
-### D5. The notes-root refusal has no override
+### D5. The notes-root refusal is by filesystem identity and has no override
 
-Refused when `TJOR_WORKSPACE == prefix` or `prefix == ${TJOR_WORKSPACE}/*` (component boundaries, physical paths), after workspace resolution and before any state is written. `--unsafe-dir` does not cover it: that flag means "mount this sensitive path anyway", while this refusal means "you are about to mount every task", and the remedy is a flag that does the right thing (`--workspace`, `--notes-workspace`), not a flag that does the wrong thing loudly. Alternative: warn and continue; rejected, the exposure is the whole point of the issue.
+`contains WORKSPACE PREFIX` walks the prefix's parent chain by `(st_dev, st_ino)` and reports whether any ancestor (or the prefix itself) is the workspace; a match refuses the launch naming both paths. `--unsafe-dir` does not cover it: that flag means "mount this sensitive path anyway", this refusal means "you are about to mount every task", and the remedy is to launch from the code repository. Alternative: string comparison of physical paths; rejected because macOS folds case and normalises Unicode in path names, so two spellings of one directory compare unequal and the refusal fails open (review item 8).
 
-### D6. `--workspace <dir>` is "launch as if from there"
+### D6. The mount is covered-aware and the share check uses the root when the directory is empty
 
-`cmd_run` resolves `<dir>` to a physical directory (must exist), `cd`s into it before `resolve_session`, and sets `TJOR_LAUNCH_DIR` to it. Nothing else changes: the nearest-repository cross-check, the sensitive gate, path fidelity and the metadata record all see a launch from that directory. Rationale: one semantics to explain and test; the flag exists so a launcher script in a task directory can target the code repository without a `cd`. Alternative: a separate resolution path taking a repository root; rejected, it would be a second resolver next to the one #76 just unified.
+In `cmd_run`, after the `--dir` loop: if `contains` says the workspace or a `--dir` root is the directory or an ancestor of it, the directory is already mounted writable and is not appended (one mount, one scan, one grant); otherwise it is appended to `TJOR_EXTRA_DIRS` with `gate_sensitive_path --dir`. A directory under a read-only root is refused by the existing writable-under-read-only rule. In `run_agent`, when the notes directory is empty, `verify_bind_source` runs on the notes root instead, which holds at least the directory; an unshared path is refused naming the root (review item 5). Alternative: a probe file written into the notes directory; rejected (writing into the operator's directory to test it).
 
-### D7. `--notes-workspace` sets the workspace directly
+### D7. `[task]` is user-config only and a security table
 
-With the flag, `resolve_session` takes the resolved notes directory as the workspace without calling `workspace_toplevel`: the directory is not a repository root in the common case (it sits inside the notes repository) and discovery would climb exactly where we refuse to go. `GIT_CEILING_DIRECTORIES` is exported as the directory itself for the rest of the launch so any git call the launcher makes in it stops there; inside the cage the notes repository is not mounted, so discovery stops at the mount boundary on its own. The session id derives from the directory's path like any workspace; `TJOR_TASK_DIR` equals the workspace. The sensitive gate and the scan run on it. Requires `--task` and `notes_dir`; mutually exclusive with `--workspace`. Rationale: the issue's repo-less case with the smallest mechanism. Alternative: keep repo-less tasks host-side (not ship the flag); recorded as an open decision for the review, the code is a dozen lines either way.
+`tjor_cfg.effective()` drops the `task` table from the repository layer before merging and `check()` warns, naming the file, when a trusted repository config carries one; `task` joins `SECURITY_TABLES`, so an unknown key under it aborts. Rationale: no configuration key creates a writable host mount today, and a repository must not be able to choose one even after approval (review item 2); a feature that is silently off because of a typo is the failure class `SECURITY_TABLES` exists for. The repo-config-trust spec and its slide state this.
 
-### D8. One session per task is a derived short name, not a parsed one
+### D8. One session per task is the task id itself
 
-With `session_per_task = true` and `--task <id>`: `short = lower("<name-or-harness>.<id>")`; if `len > 32`, `short = short[:23] + "." + sha256(short)[:8]` (32 characters, deterministic, the suffix keeps distinct long ids distinct). `resolve_session` applies it after the `--session` canonicalisation block and sets `sid = "<base>-<short>"` directly: the composite never enters the qualified-looking-id disambiguation (a composite such as `opencode.a-12345678` would match that pattern and be looked up as a foreign id). The launch prints `tjor: session <short> for task <id>`; `tjor ls` shows it like any short name. Rationale: the issue's design, and the only way to make "same task twice" meet the existing running-session guard without new state. The derived name also feeds `down/status/denials/reset --task <id>` (same derivation in `resolve_session`, which every lifecycle command already calls) so the operator need not remember it. `--task` with `--session` on a lifecycle command is a usage error (two answers to one question). Alternative: require an explicit `--session` per task; rejected, it is what the issue calls out as the friction.
+With `session_per_task = true` and `--task <id>`: `resolve_session` sets the short name to the id after the `--session` canonicalisation block (never through it: `a-12345678` would otherwise be looked up as a foreign qualified id) and derives `sid = <base>-<id>`. `--session` with `--task` is a usage error. The launch prints the id as the session name. Every lifecycle command then addresses it as `--session <id>` from the workspace, and `tjor ls` shows the `tjor.task` label. Rationale: injective by construction, no harness prefix to guess, no truncation (review items 1 and 4). Alternative: `<session>.<id>` composites; rejected as not injective and as costing the lifecycle commands a harness they do not know.
 
-### D9. `tjor attach --task <id>` filters on the label
+### D9. The scan is bounded, link-free and honest about partial results
 
-`cmd_attach` gains `--task <id>`: the candidate rows (which already carry the `tjor.task` label) are filtered on it instead of on the session id; the rest (single match, picker, none) is unchanged. No workspace qualification is needed, the label is global, so the flag works from anywhere.
+`scan DIR`: walk at most 8 levels and 5000 entries, skip `.git`, never follow links, open candidates with `O_NOFOLLOW|O_NONBLOCK` and keep only `S_ISREG` descriptors (a FIFO is skipped, not read); name a file whose basename, split on `.`, `_` and `-`, has a segment in {`token`, `tokens`, `credential`, `credentials`, `secret`, `secrets`, `password`, `netrc`, `npmrc`, `kubeconfig`}, ends in `.pem`, `.key`, `.p12` or `.pfx`, or starts with `id_` (so `tokenizer.md` is not a match); read regular files up to 256 KiB each and 16 MiB in total through `tjor_secrets.kinds_present`. The launcher prints a loud warning listing at most 10 findings (sanitised) and a count; when a bound was reached or a file could not be opened the warning says the scan was partial. It runs on the launch path after the gates and before the agent, within the bounds above. Alternative: refuse; rejected (the operator's own directory). Alternative: scan off the launch path; rejected for now, the bound keeps the cost small and the warning is most useful before the agent starts.
 
-### D10. The scan is bounded and advisory
+### D10. `tjor attach --task <id>` filters on the label
 
-`scan DIR`: walk at most 8 levels and 5000 entries, skip `.git` and symlinks, name a file when its basename (lower-cased) contains `token`, ends in `.pem` or `.key`, or starts with `id_`; read regular files up to 256 KiB each and 16 MiB in total through `tjor_secrets.kinds_present` and name a file per kind found. The launcher prints a loud warning listing at most 10 findings (sanitised) and a count. Rationale: the issue asks for a warning, the detector exists, and a bound keeps a large notes tree from stalling a launch. Alternative: refuse; rejected (the operator's own directory; a false positive would block work).
+`cmd_attach` gains argument parsing (`--task <id>`, else the positional session as today); the candidate rows, which carry the `tjor.task` label, are filtered on it instead of on the session id; single match, picker and none are unchanged. The label is global, so the same id in two repositories offers the picker.
 
 ### D11. The default configuration keeps the feature off
 
-`config/tjor.toml` gains `[task]` with `notes_dir = ""`, `create = true`, `session_per_task = false`, commented. Empty `notes_dir` means every new behaviour is skipped, which is how the "unchanged without configuration" scenarios are met and tested.
+`config/tjor.toml` gains `[task]` with `notes_dir = ""`, `create = true`, `session_per_task = false`, commented. Empty `notes_dir` skips every new behaviour, which is how the "unchanged without configuration" scenarios are met.
 
 ### D12. Proof
 
-A docker-free launcher test (`tests/integration/task_notes_test.sh`, modelled on `workspace_gate_test.sh`: source `bin/tjor`, a docker shim that fails loudly, a throwaway layout under `~/.tjor/tmp`) drives `cmd_run` to the point before docker and asserts the mount list, the refusals, the names and the unchanged path; it registers in the boundary matrix as the launcher-side `task-notes` suite. `python/tests/test_task.py` covers the resolver (template validation, prefix, per-component creation, every refusal, the symlink cases), the short-name derivation (cases from the spec, the 32-character boundary, determinism) and the scan (names, content, bounds, a symlink skipped). One live case in `multirepo_test.sh` shows the directory writable at its host path inside the cage with `TJOR_TASK_DIR` set and the session id carrying the task.
+- `python/tests/test_task.py`: template validation; the grammar; `create` (per-component creation, a link at a component, a file at a component, prefix never created, `create = false`); `contains` (ancestor, self, sibling, a differently-spelled path to the same directory where the filesystem folds case, detected at test time); the scan (names, content, bounds reported, a FIFO and a link skipped).
+- `python/tests/test_cfg_and_corefile.py`: the repository layer's `[task]` is dropped with a warning; an unknown key under `[task]` in the user config aborts.
+- `tests/integration/task_notes_test.sh` (docker-free, modelled on `workspace_gate_test.sh`): the mount list, the covered case, the refusals (notes root as workspace, bad ids, bad template, sensitive template with nothing created, link below the prefix), `--session` with `--task`, lifecycle resolution creating nothing, the warning, and the unchanged path without `[task]`; registered in the boundary matrix as the launcher-side `task-notes` suite.
+- Live: one case in `multirepo_test.sh` (mounted writable at its host path, `TJOR_TASK_DIR` set, the repository still the workspace, the session named by the task id) and one in `lifecycle_test.sh` (two task sessions up at once, `down --session a` leaves `b` running, Compose project names distinct).
 
 ## Risks / Trade-offs
 
-- [The notes directory is writable and git-trusted as a tree, like any `--dir`] → stated in the README; the operator chose a per-task directory, not the notes root, and the root is refused as a workspace.
-- [A notes directory inside the workspace repository] → allowed (same writability class, no new exposure); the dedupe skips it when it equals the workspace.
-- [The composite short name collides with a hand-picked `--session` name such as `opencode.a`] → same session, by construction; documented as the naming scheme.
-- [A long task id's truncated name hides the id] → `tjor ls` keeps showing the `tjor.task` label; `attach --task` and the lifecycle `--task` resolve it without the name.
-- [`--notes-workspace` makes a directory with no repository the workspace] → identical to today's non-repository launch (warned), with git discovery stopped at the directory.
+- [The directory is writable and git-trusted as a tree, like any `--dir`; nested repositories, links and secrets written there reach the host notes repository] → stated as residuals in the README; the operator chose a per-task directory, not the notes root.
+- [Every session launched with the same task id shares the directory] → stated; it is the feature.
+- [The bind source is a path for the engine] → stated; the launcher's checks are by descriptor and identity, the window after them is the same every mount has.
+- [`[a-z0-9][a-z0-9_-]{0,31}` refuses ids an operator already uses as labels, such as `JIRA-123`] → only once `notes_dir` is configured, with a message naming the grammar; the label-only grammar is unchanged.
 - [The scan has false positives] → advisory only; findings are named so the operator can judge.
-
-## Open Questions
-
-- Whether `--notes-workspace` ships now or stays out until a user asks (D7 keeps it small; the issue itself lists this as open). The specs include it; striking it removes one requirement, one flag and one test group without touching the rest.
+- [A notes directory inside the workspace repository] → covered, not mounted twice; nothing new is exposed.
