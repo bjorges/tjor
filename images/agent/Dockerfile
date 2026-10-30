@@ -151,6 +151,20 @@ RUN set -eu; \
         npm install -g "@github/copilot@${COPILOT_VERSION}" ;; \
     esac
 
+# Flag drift is caught at the pin (#73, spec: harness-launch): the launcher
+# delivers the task prompt and the resume flag through exactly these flags
+# (opencode --prompt=<text>, Claude Code the [prompt] positional after `--`,
+# Copilot CLI --interactive=<text>; --continue on all three). A version bump
+# that renames one fails HERE, naming the harness and the flag, not at an
+# operator's launch. Literal matching (grep -F) on the CLI's own --help.
+RUN set -eu; \
+    chk() { cli="$1"; shift; out="$("$cli" --help 2>&1 || true)"; \
+        for f in "$@"; do printf '%s\n' "$out" | grep -qF -- "$f" \
+            || { echo "tjor image: $cli --help no longer lists '$f' — the launcher relies on it (#73, harness-launch)" >&2; exit 1; }; done; }; \
+    case ",${HARNESS}," in *,opencode,*) chk opencode '--prompt' '--continue' ;; esac; \
+    case ",${HARNESS}," in *,claude,*)   chk claude '[prompt]' '--continue' ;; esac; \
+    case ",${HARNESS}," in *,copilot,*)  chk copilot '--interactive' '--continue' ;; esac
+
 # Match the host user's uid so bind-mounted session state stays writable.
 # Fixed default uid — the image is uid-AGNOSTIC (so one published image works
 # for any host user). The entrypoint aligns the agent user to the host uid at

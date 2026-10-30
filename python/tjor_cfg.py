@@ -48,15 +48,21 @@ EXTRA_KNOWN = frozenset({
 # believes a stricter setting is applied when it is not — in unattended/CI use
 # nobody reads the warning, so it aborts the launch instead. A misspelled
 # TABLE name still only warns: it cannot claim to configure these tables.
-SECURITY_TABLES = frozenset({"landlock", "broker", "task"})
+SECURITY_TABLES = frozenset({"landlock", "broker", "task", "harness"})
 
-# Tables a REPOSITORY config can never set, trusted or not (ADR 0013): a value
-# there names a host path to mount writable into the cage, and a repository
-# must not get to choose one even after `tjor trust` approved the file. They
-# come from the defaults and the user config (the layer the operator's own
-# environment selects) alone; a repo layer carrying one is warned about,
-# naming the file, and the table is dropped before the merge.
-USER_ONLY_TABLES = frozenset({"task"})
+# Tables a REPOSITORY config can never set, trusted or not: `[task]` names a
+# host path to mount writable into the cage (ADR 0013) and `[harness]` shapes
+# the harness's own command line (ADR 0014); a repository must not get to
+# choose either even after `tjor trust` approved the file. They come from the
+# defaults and the user config (the layer the operator's own environment
+# selects) alone; a TRUSTED repo layer carrying one is warned about, naming
+# the file and the table, and the table is dropped before the merge (an
+# unapproved file is ignored whole, as every unapproved file is).
+USER_ONLY_TABLES = frozenset({"task", "harness"})
+USER_ONLY_WHY = {
+    "task": "it names host paths to mount; ADR 0013",
+    "harness": "it shapes the harness command line; ADR 0014",
+}
 
 
 def validate_layer(layer: dict, shape: dict, path: str = "") -> list[str]:
@@ -154,7 +160,7 @@ def _drop_user_only(layer: dict, path) -> dict:
         del out[table]
         print(
             f"tjor_cfg: WARNING: table [{table}] in repo config ({path}) is user-config only "
-            "(it names host paths to mount; ADR 0013) — ignored",
+            f"({USER_ONLY_WHY[table]}) — ignored",
             file=sys.stderr,
         )
     return out

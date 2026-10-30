@@ -32,6 +32,9 @@ import time
 
 SCHEMA = 1
 META_NAME = "meta.json"
+CONVERSATION_NAME = "conversation.json"   # the launch record (#73, spec: harness-launch)
+CONVERSATION_MAX = 4096                   # bytes; the record is three short fields
+CONVERSATION_HARNESSES = ("opencode", "claude", "copilot")
 LOCKS_DIR = ".locks"   # the launcher's per-session locks live beside the state dirs
 US = "\x1f"
 UNKNOWN = "-"
@@ -43,8 +46,15 @@ TIERS: dict[str, tuple[str, ...]] = {
     "cache": ("home/.cache",),
     "sessions": (
         "home/.local/state",
-        "home/.local/share/opencode/storage",
+        "home/.local/share/opencode/storage",       # pre-SQLite opencode homes
         "home/.local/share/opencode/log",
+        "home/.local/share/opencode/opencode.db",   # opencode >= 1.x keeps sessions in SQLite (#73)
+        "home/.local/share/opencode/opencode.db-wal",
+        "home/.local/share/opencode/opencode.db-shm",
+        "home/.copilot/session-state",              # Copilot CLI session store
+        "conversation.json",                        # tjor's own launch record: reset forgets the conversation
+        # NOT here: home/.claude/projects — Claude Code's transcripts share that
+        # directory with its per-project memory (stated residual, README).
     ),
     "creds": (
         "broker",                                  # broker config + resolved secret (proxy side)
@@ -189,6 +199,78 @@ def write_meta(state_dir: str, *, session: str, workspace: str, harness: str,
     return meta
 
 
+_TASK_ID = re.compile(r"[A-Za-z0-9._-]{1,64}")
+
+
+def read_conversation(state_dir: str) -> tuple[str, str, int] | None:
+    """The launch record, or None when ABSENT. Anything else that is not the
+    launcher's exact record — a symbolic link (dangling or not), a FIFO, a
+    directory, an oversize file, invalid JSON, a wrong shape — is a StateError:
+    the launcher refuses the launch rather than reading it as "no
+    conversation" (spec: harness-launch, "The record is read as a bounded
+    regular file"). Never follows a link."""
+    path = os.path.join(state_dir, CONVERSATION_NAME)
+    try:
+        st = os.lstat(path)
+    except FileNotFoundError:
+        return None
+    except OSError as e:
+        raise StateError(f"cannot read the launch record {path}: {e.strerror}")
+    if stat.S_ISLNK(st.st_mode):
+        raise StateError(f"the launch record {path} is a symbolic link; it is never followed")
+    if not stat.S_ISREG(st.st_mode):
+        raise StateError(f"the launch record {path} is not a regular file")
+    if st.st_size > CONVERSATION_MAX:
+        raise StateError(f"the launch record {path} is {st.st_size} bytes, more than the {CONVERSATION_MAX} the record can be")
+    try:
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+    except OSError as e:
+        raise StateError(f"cannot open the launch record {path}: {e.strerror}")
+    try:
+        with os.fdopen(fd, "rb") as f:
+            data = f.read(CONVERSATION_MAX + 1)
+    except OSError as e:
+        raise StateError(f"cannot read the launch record {path}: {e.strerror}")
+    if len(data) > CONVERSATION_MAX:
+        raise StateError(f"the launch record {path} grew past {CONVERSATION_MAX} bytes while being read")
+    try:
+        rec = json.loads(data.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError) as e:
+        raise StateError(f"the launch record {path} is not valid JSON: {e}")
+    if (not isinstance(rec, dict) or set(rec) != {"schema", "harness", "task", "started"}
+            or rec["schema"] != SCHEMA
+            or rec["harness"] not in CONVERSATION_HARNESSES
+            or not isinstance(rec["task"], str) or not _TASK_ID.fullmatch(rec["task"])
+            or not isinstance(rec["started"], int) or isinstance(rec["started"], bool) or rec["started"] < 0):
+        raise StateError(f"the launch record {path} is not in the launcher's format (expected schema, harness, task, started)")
+    return rec["harness"], rec["task"], rec["started"]
+
+
+def write_conversation(state_dir: str, *, harness: str, task: str, now: int | None = None) -> dict:
+    """Write the launch record atomically (mkstemp inside state_dir, then
+    os.replace), replacing whatever was there. Called by the launcher once the
+    agent container exists, under the session lock."""
+    if harness not in CONVERSATION_HARNESSES:
+        raise StateError(f"not a harness: {harness!r}")
+    if not _TASK_ID.fullmatch(task or ""):
+        raise StateError(f"not a task id: {task!r}")
+    rec = {"schema": SCHEMA, "harness": harness, "task": task, "started": int(time.time()) if now is None else now}
+    fd, tmp = tempfile.mkstemp(prefix=".conversation.", suffix=".tmp", dir=state_dir)
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            json.dump(rec, f, sort_keys=True)
+            f.write("\n")
+        os.chmod(tmp, 0o644)
+        os.replace(tmp, os.path.join(state_dir, CONVERSATION_NAME))
+    except BaseException:
+        try:
+            os.unlink(tmp)
+        except OSError:
+            pass
+        raise
+    return rec
+
+
 def last_activity(path: str) -> int | None:
     """Newest lstat mtime over path and everything below it, never following
     symlinks. None when any directory or entry could not be read."""
@@ -258,11 +340,15 @@ def format_record(rec: dict) -> str:
 
 
 def _opt(argv: list[str], flag: str) -> str:
-    if flag in argv:
-        i = argv.index(flag)
-        if i + 1 >= len(argv):
-            raise StateError(f"{flag} needs a value")
-        return argv[i + 1]
+    """`--flag VALUE` or the attached `--flag=VALUE` (so a dash-leading value
+    such as a label-only task id `-x` is a value)."""
+    for i, arg in enumerate(argv):
+        if arg == flag:
+            if i + 1 >= len(argv):
+                raise StateError(f"{flag} needs a value")
+            return argv[i + 1]
+        if arg.startswith(flag + "="):
+            return arg[len(flag) + 1:]
     return ""
 
 
@@ -270,7 +356,8 @@ USAGE = ("usage: tjor_state.py tier {cache|sessions|creds|all} STATE_DIR"
          " | duration TEXT"
          " | meta-write STATE_DIR --session ID --workspace PATH --harness NAME"
          " [--profile-name NAME | --profile-dir PATH] [--task ID]"
-         " | inventory ROOT | activity STATE_DIR | lock-try FD PATH")
+         " | inventory ROOT | activity STATE_DIR | lock-try FD PATH"
+         " | conversation-read STATE_DIR | conversation-write STATE_DIR --harness=NAME --task=ID")
 
 
 def main(argv: list[str]) -> int:
@@ -313,6 +400,24 @@ def main(argv: list[str]) -> int:
             return 0
         if cmd == "lock-try" and len(argv) == 4 and argv[2].isdigit():
             return lock_try(int(argv[2]), argv[3])
+        if cmd == "conversation-read" and len(argv) == 3:
+            # Exit 2 on a record that cannot be read: the launcher refuses.
+            # Absence prints nothing and exits 0 — the only "no conversation".
+            try:
+                rec = read_conversation(argv[2])
+            except StateError as e:
+                print(f"tjor_state: {e}", file=sys.stderr)
+                return 2
+            if rec is not None:
+                print(US.join((rec[0], rec[1], str(rec[2]))))
+            return 0
+        if cmd == "conversation-write" and len(argv) >= 3:
+            harness, task = _opt(argv, "--harness"), _opt(argv, "--task")
+            if not (harness and task):
+                print(USAGE, file=sys.stderr)
+                return 2
+            write_conversation(argv[2], harness=harness, task=task)
+            return 0
     except (OSError, StateError) as e:
         print(f"tjor_state: {e}", file=sys.stderr)
         return 1

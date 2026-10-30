@@ -1703,7 +1703,7 @@ task_notes_probe() { # $1 = dir
 }
 
 cmd_run() {
-    local harness="opencode" task="" name="" detach="" unsafe_dir="" allow_self_mount="" allow_worktree_mount="" profile="" profile_dir=""
+    local harness="opencode" task="" name="" detach="" unsafe_dir="" allow_self_mount="" allow_worktree_mount="" profile="" profile_dir="" no_resume=""
     local -a extra_dirs=() extra_dirs_ro=()
     while [[ $# -gt 0 ]]; do
         case "$1" in
@@ -1717,11 +1717,19 @@ cmd_run() {
             --allow-worktree-mount) allow_worktree_mount=1; shift ;;
             --profile) profile="$2"; shift 2 ;;
             --profile-dir) profile_dir="$2"; shift 2 ;;
+            --no-resume) no_resume=1; shift ;;
             --detach|-d) detach=1; shift ;;
             --) shift; break ;;
             *) break ;;
         esac
     done
+    # The harness is one of three (#73, spec: harness-launch): an unknown name
+    # used to fall through to opencode's command line while the image build
+    # failed on the name — refuse it here, before anything exists.
+    case "${harness}" in
+        opencode|claude|copilot) ;;
+        *) die "--harness must be one of opencode, claude or copilot (got $(safeprint "${harness}"))" ;;
+    esac
     # --unsafe-dir is the ONE override for every sensitive-path gate (#64):
     # resolve_session reads it for the primary workspace (and the entrypoint
     # for its system-directory re-check), the loops below for the extras.
@@ -1777,6 +1785,17 @@ cmd_run() {
         gate_sensitive_path "${abs}" --dir-ro
         TJOR_EXTRA_DIRS_RO+=("${abs}")
     done
+    # The harness command line (#73, spec: harness-launch), built HERE: after
+    # the explicit extra-dir and notes sensitive-path gates and before the
+    # notes directory is created, the profile is staged, the first write, the
+    # mint and the sidecars — so a refusal by any of its rules (a bad args
+    # entry, a bad prompt template, an invalid task.resume, an unreadable
+    # launch record, a writable root over the state directory) creates
+    # nothing. The builder reads config and the record (under the lock taken
+    # above), never writes. An explicit command on the command line — after
+    # `--` or as the first non-option word, exactly as before — replaces
+    # everything and skips the builder.
+    agent_cmd_select "${harness}" "${no_resume}" "$@"
     # Task notes (#69), steps 2-5, under the session lock: create or validate
     # the directory (descriptor-relative, never through a link); judge, by
     # filesystem identity, whether a writable root already covers it (then it
@@ -1879,11 +1898,134 @@ cmd_run() {
         || die "could not record session metadata in ${TJOR_SESSION_DIR}"
     ensure_topology
     echo "tjor: session ${TJOR_SESSION} — workspace ${TJOR_WORKSPACE}" >&2
-    local -a agent_cmd=()
-    if [[ $# -gt 0 ]]; then agent_cmd=("$@")
-    else case "${harness}" in claude) agent_cmd=(claude) ;; copilot) agent_cmd=(copilot) ;; *) agent_cmd=(opencode) ;; esac; fi
-    run_agent "${detach}" "${agent_cmd[@]}"
+    # The launch line (#73): the command as built, the prompt by its length
+    # only (it is in the container's command line all the same — docker
+    # inspect shows it; this line is for the terminal and the logs), and
+    # tjor's decision about the conversation — tjor's, not verified harness
+    # behaviour.
+    echo "tjor: harness command: ${AGENT_CMD_SHOW}" >&2
+    echo "tjor: conversation: ${AGENT_CMD_NOTE}" >&2
+    run_agent "${detach}" "${AGENT_CMD[@]}"
 }
+
+# ------------------------------------------------ harness command line (#73)
+# Spec: harness-launch. Fills AGENT_CMD (the argv the container runs),
+# AGENT_CMD_SHOW (the launch line, prompt redacted to its length),
+# AGENT_CMD_NOTE (fresh/continued) and AGENT_CMD_RECORD (whether run_agent
+# writes the launch record once the container exists). Reads
+# TJOR_TASK_ID/TJOR_TASK_DIR (resolve_session), TJOR_WORKSPACE,
+# TJOR_EXTRA_DIRS, TJOR_LOCK_ROOT, TJOR_SESSION, TJOR_SESSION_DIR (cmd_run).
+# Every refusal here is a `die` BEFORE anything was created.
+agent_cmd_select() { # $1 = harness, $2 = "1" when --no-resume was given, $3... = an explicit command (optional)
+    local harness="$1" no_resume="$2"; shift 2
+    AGENT_CMD=(); AGENT_CMD_SHOW=""; AGENT_CMD_NOTE=""; AGENT_CMD_RECORD=""; AGENT_CMD_HARNESS="${harness}"
+    if [[ $# -gt 0 ]]; then
+        AGENT_CMD=("$@"); AGENT_CMD_SHOW="$(safeprint "$*")"
+        AGENT_CMD_NOTE="explicit command, as given (nothing added; the launch record is neither read nor written)"
+    else
+        build_agent_cmd "${harness}" "${no_resume}"
+    fi
+}
+build_agent_cmd() { # $1 = harness, $2 = "1" when --no-resume was given
+    local harness="$1" no_resume="${2:-}"
+    local prompt_tpl resume_mode
+    # The config reader prints the value plus ONE newline and a command
+    # substitution would strip every trailing newline — the template's own
+    # trailing newlines are part of the prompt, so keep them: a sentinel
+    # keeps the output intact, then exactly the printer's newline goes.
+    prompt_tpl="$(cfg task.prompt --default '' && printf x)" || die "cannot read task.prompt"
+    prompt_tpl="${prompt_tpl%x}"; prompt_tpl="${prompt_tpl%$'\n'}"
+    resume_mode="$(cfg task.resume --default never)"
+    case "${resume_mode}" in
+        never|auto) ;;
+        *) die "task.resume must be \"never\" or \"auto\" (got $(safeprint "${resume_mode}"))" ;;
+    esac
+    # The prompt and the record exist only with --task, and only when the
+    # operator configured them; without that, every launch is as before.
+    local want_prompt="" want_record="" decision="fresh"
+    if [[ -n "${TJOR_TASK_ID:-}" ]]; then
+        [[ -n "${prompt_tpl}" ]] && want_prompt=1
+        [[ -n "${prompt_tpl}" || "${resume_mode}" == "auto" ]] && want_record=1
+    fi
+    local rec="" rec_harness="" rec_task="" rec_started=""
+    if [[ -n "${want_record}" ]]; then
+        # The record must never be agent-writable: a writable root that IS or
+        # CONTAINS the state directory (the workspace, a --dir, or the notes
+        # directory before it is created — only --unsafe-dir lets any of them
+        # cover tjor's roots) refuses the launch. Worktree common dirs are not
+        # judged here: worktree_common_dirs refuses one over a tjor root through
+        # a sensitive-path check that has no override. Judged by filesystem
+        # identity where the paths exist and the one missing component by
+        # string (the state directory usually does not exist yet); the helper
+        # creates nothing, and an error is a refusal, never "not covered".
+        local w_root rc
+        for w_root in "${TJOR_WORKSPACE}" "${TJOR_EXTRA_DIRS[@]:-}" "${TJOR_TASK_DIR:-}"; do
+            [[ -n "${w_root}" ]] || continue
+            rc=0
+            python3 "${TJOR_ROOT}/python/tjor_launch.py" covers --root="${w_root}" --state-root="${TJOR_LOCK_ROOT}" --session="${TJOR_SESSION}" || rc=$?
+            case "${rc}" in
+                0) die "refusing to launch: the writable root ${w_root} would cover the session's state directory ${TJOR_LOCK_ROOT}/${TJOR_SESSION}, so the agent could rewrite the launch record (conversation.json) that decides the task prompt and resume — mount it read-only (--dir-ro) or drop the --unsafe-dir coverage, or launch with [task] prompt/resume unset or with an explicit command" ;;
+                1) ;;
+                *) die "cannot establish whether ${w_root} covers the session's state directory (see above) — refusing rather than guessing" ;;
+            esac
+        done
+        # Read under the lock; absence is the only "no conversation".
+        rec="$(python3 "${TJOR_ROOT}/python/tjor_state.py" conversation-read "${TJOR_SESSION_DIR}")" \
+            || die "the launch record ${TJOR_SESSION_DIR}/conversation.json cannot be read (see above) — it decides the task prompt and resume, so the launch is refused; remove or repair it, or forget it with: tjor reset sessions --session ${TJOR_SESSION}"
+        if [[ -n "${rec}" ]]; then IFS=$'\x1f' read -r rec_harness rec_task rec_started <<<"${rec}"; fi
+        if [[ "${resume_mode}" == "auto" && -z "${no_resume}" && -n "${rec}" \
+              && "${rec_harness}" == "${harness}" && "${rec_task}" == "${TJOR_TASK_ID}" ]]; then
+            decision="continue"
+        fi
+    fi
+    # The operator's own arguments: user config only (ADR 0014), validated by
+    # the helper (non-empty, newline- and NUL-free, bounded, never `--`), one
+    # per line because they are newline-free, read through a command
+    # substitution so the helper's exit status is checked BEFORE the array
+    # exists. Not interpreted beyond the exact same-launch collision rule.
+    local -a adding=() hargs=()
+    [[ "${decision}" == "continue" ]] && adding+=(--adding=continue)
+    [[ "${decision}" == "fresh" && -n "${want_prompt}" ]] && adding+=(--adding=prompt)
+    local args_json out
+    args_json="$(cfg "harness.${harness}.args" --default '[]')"
+    out="$(printf '%s' "${args_json}" | python3 "${TJOR_ROOT}/python/tjor_launch.py" args --harness="${harness}" ${adding[@]+"${adding[@]}"})" \
+        || die "harness.${harness}.args is invalid (see above)"
+    if [[ -n "${out}" ]]; then mapfile -t hargs <<<"${out}"; fi
+    AGENT_CMD=("${harness}" ${hargs[@]+"${hargs[@]}"})
+    local shown="${harness}" a
+    for a in ${hargs[@]+"${hargs[@]}"}; do shown+=" $(safeprint "${a}")"; done
+    if [[ "${decision}" == "continue" ]]; then
+        AGENT_CMD+=(--continue); shown+=" --continue"
+        local when; when="$(python3 -c 'import sys,time; print(time.strftime("%Y-%m-%d %H:%M", time.localtime(int(sys.argv[1]))))' "${rec_started}")"
+        AGENT_CMD_NOTE="continuing the conversation recorded ${when} for task ${rec_task} (tjor's decision; what --continue finds is the harness's)"
+    elif [[ -n "${want_prompt}" ]]; then
+        # Rendered by the helper (two placeholders, brace escapes, bounds, the
+        # one-word rule); captured with a sentinel so trailing newlines and the
+        # helper's exit status both survive. Delivered in the one form each
+        # harness reads as data; the attached forms keep a dash-leading value a
+        # value, and `--` keeps a variadic option in args from swallowing
+        # Claude Code's positional.
+        local -a tdir=()
+        [[ -n "${TJOR_TASK_DIR:-}" ]] && tdir=(--task-dir="${TJOR_TASK_DIR}")
+        local prompt bytes
+        prompt="$(python3 "${TJOR_ROOT}/python/tjor_launch.py" render --template="${prompt_tpl}" --task="${TJOR_TASK_ID}" ${tdir[@]+"${tdir[@]}"} && printf x)" \
+            || die "task.prompt cannot be rendered (see above)"
+        prompt="${prompt%x}"
+        bytes="$(printf %s "${prompt}" | wc -c | tr -d ' ')"
+        case "${harness}" in
+            opencode) AGENT_CMD+=("--prompt=${prompt}");      shown+=" --prompt=<prompt: ${bytes} bytes>" ;;
+            claude)   AGENT_CMD+=(-- "${prompt}");             shown+=" -- <prompt: ${bytes} bytes>" ;;
+            copilot)  AGENT_CMD+=("--interactive=${prompt}"); shown+=" --interactive=<prompt: ${bytes} bytes>" ;;
+        esac
+        AGENT_CMD_NOTE="fresh, prompt sent (${bytes} bytes)"
+    else
+        AGENT_CMD_NOTE="fresh, no prompt"
+    fi
+    AGENT_CMD_SHOW="${shown}"
+    AGENT_CMD_RECORD="${want_record}"
+}
+# The built command, NUL-separated (the docker-free test's seam).
+agent_cmd_print() { printf '%s\0' "${AGENT_CMD[@]}"; }
 
 # Skip-if-covered for every launch-time mask (one helper, four users): a path
 # already masked, or one below a masked directory — structurally empty in-cage
@@ -2220,6 +2362,15 @@ for p in json.load(sys.stdin):
     if ((${#ttyforce[@]})) && [[ "$(docker inspect -f '{{.Config.Tty}}' "${ctr}" 2>/dev/null)" != "true" ]]; then
         docker rm -f "${ctr}" >/dev/null 2>&1 || true
         die "agent container was created without the requested PTY — interactive harnesses cannot work; aborting (compose ignored the TTY force flag?)"
+    fi
+    # The launch record (#73): written once the agent container exists and
+    # before the lock is released, only on a managed launch whose [task]
+    # prompt or resume is configured. It says tjor started a conversation for
+    # this harness and task — not that the harness holds one.
+    if [[ -n "${AGENT_CMD_RECORD:-}" ]]; then
+        python3 "${TJOR_ROOT}/python/tjor_state.py" conversation-write "${TJOR_SESSION_DIR}" \
+            --harness="${AGENT_CMD_HARNESS}" --task="${TJOR_TASK_ID}" \
+            || loud "the launch record ${TJOR_SESSION_DIR}/conversation.json could not be written — the next launch of this task starts a fresh conversation"
     fi
     # The agent container exists: it, not the lock, now refuses prune (#68).
     session_lock_release
@@ -3329,8 +3480,8 @@ tjor — run AI coding agents inside a portable, fail-closed container cage
 
 usage: tjor <command> [args]
 
-  run [--harness opencode|claude|copilot] [--task <id>] [--session <name>] [--dir <path>]... [--dir-ro <path>]... [--unsafe-dir] [--allow-self-mount] [--allow-worktree-mount] [--profile <name>|--profile-dir <path>] [--detach] [cmd...]
-                                                     launch a caged session (--task: a label, and with [task] configured a per-task notes directory mounted writable and a per-task session; --dir: mount another repo at its host path; --dir-ro: same but READ-ONLY, container-wide — sensitive paths refused as the workspace or as --dir/--dir-ro unless --unsafe-dir; the running tjor tree is refused as a writable mount unless --allow-self-mount; --profile/--profile-dir: overlay host-defined agents/commands, credential-safe; --detach: start without attaching)
+  run [--harness opencode|claude|copilot] [--task <id>] [--session <name>] [--dir <path>]... [--dir-ro <path>]... [--unsafe-dir] [--allow-self-mount] [--allow-worktree-mount] [--profile <name>|--profile-dir <path>] [--no-resume] [--detach] [cmd...]
+                                                     launch a caged session (--task: a label, and with [task] configured a per-task notes directory mounted writable, a per-task session, a task prompt and resume; --dir: mount another repo at its host path; --dir-ro: same but READ-ONLY, container-wide — sensitive paths refused as the workspace or as --dir/--dir-ro unless --unsafe-dir; the running tjor tree is refused as a writable mount unless --allow-self-mount; --profile/--profile-dir: overlay host-defined agents/commands, credential-safe; --no-resume: start a fresh conversation even when [task] resume = "auto" would continue; --detach: start without attaching; cmd: an explicit harness command line, passed as given — nothing is added; without it tjor builds the command from [harness.<name>] args and [task] prompt/resume)
   ls [--state]                                       list all sessions (and re-verify their boundaries); --state: every state directory under the session root — containers, last activity, workspace, credentials present
   attach [session | --task <id>]                     reattach to a running agent's terminal (short name or full id; --task: the agent carrying that task label)
   gc [--age <hours>] [--dry-run]                     reap idle session containers/networks/volumes
