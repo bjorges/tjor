@@ -53,7 +53,7 @@ cleanup() {
     docker ps -aq --filter "label=tjor.workspace=${REPO}" | xargs -r docker rm -f >/dev/null 2>&1
     docker ps -aq --filter "label=tjor.session=${FAKE_SID}" | xargs -r docker rm -f >/dev/null 2>&1
     local sid
-    for sid in "${SID_A:-}" "${SID_B:-}" "${SID_C:-}"; do
+    for sid in "${SID_A:-}" "${SID_B:-}" "${SID_C:-}" "${SID_TA:-}" "${SID_TB:-}" "${SID_TO:-}"; do
         [[ -n "${sid}" ]] || continue
         docker compose -p "tjor-${sid}" down --volumes --remove-orphans >/dev/null 2>&1 \
             || docker-compose -p "tjor-${sid}" down --volumes --remove-orphans >/dev/null 2>&1
@@ -431,6 +431,42 @@ check "prune --older-than 30d removes the legacy dir and leaves the running sess
 check "gc --dry-run is unchanged by prune: it still names only containers and networks, never state" bash -c \
     "'${T}' gc --age 0 --dry-run > '${SCRATCH}/gc2.out' 2>&1; ! grep -qi 'state dir\\b.*remov\\|prune' '${SCRATCH}/gc2.out'"
 
+# ---- 8. task notes (#69): one session per task, two tasks side by side -------
+# A second user config carrying [task] session_per_task (no notes_dir: nothing
+# is mounted; this section is about naming and Compose isolation). The
+# sections above use --task LIFE-1, which the per-task grammar would refuse,
+# so the table lives in its own file and applies to this section only.
+TASK_CONFIG_DIR="${HOME}/.tjor/tmp/lifecycle-task-config"; mkdir -p "${TASK_CONFIG_DIR}"
+printf '[session]\nroot = "%s"\n[task]\nsession_per_task = true\n' "${SROOT}" > "${TASK_CONFIG_DIR}/config.toml"
+SID_TA="${BASE_SID}-ta"; SID_TB="${BASE_SID}-tb"; SID_TO="${BASE_SID}-other"
+( cd "${REPO}" && TJOR_USER_CONFIG="${TASK_CONFIG_DIR}/config.toml" "${T}" run --detach --task ta sleep 600 >/dev/null 2>&1 )
+CTR_TA="$(wait_for_agent "${SID_TA}")" || { echo "FATAL: task session ta never started"; exit 1; }
+( cd "${REPO}" && TJOR_USER_CONFIG="${TASK_CONFIG_DIR}/config.toml" "${T}" run --detach --task tb sleep 600 >/dev/null 2>&1 )
+CTR_TB="$(wait_for_agent "${SID_TB}")" || { echo "FATAL: task session tb never started"; exit 1; }
+check "task notes: two task sessions are two sessions, named by their ids" test "${CTR_TA}" != "${CTR_TB}"
+check "task notes: the task label carries the id" bash -c \
+    "docker inspect -f '{{index .Config.Labels \"tjor.task\"}}' '${CTR_TA}' | grep -qx ta"
+check "task notes: distinct Compose projects (internal networks) per task" \
+    docker network inspect "tjor-${SID_TA}_internal" "tjor-${SID_TB}_internal"
+check "task notes: the same task id while it runs meets the running-session guard and names --session" bash -c \
+    "cd '${REPO}' && ! TJOR_USER_CONFIG='${TASK_CONFIG_DIR}/config.toml' '${T}' run --detach --task tb sleep 60 > '${SCRATCH}/tb-again.out' 2>&1 && grep -q 'already running' '${SCRATCH}/tb-again.out' && grep -q -- '--session' '${SCRATCH}/tb-again.out'"
+( cd "${REPO}" && TJOR_USER_CONFIG="${TASK_CONFIG_DIR}/config.toml" "${T}" run --detach --session other --task tb sleep 600 >/dev/null 2>&1 )
+CTR_TO="$(wait_for_agent "${SID_TO}")" || { echo "FATAL: session other for task tb never started"; exit 1; }
+check "task notes: --session <name> --task <id> runs beside the per-task session" test "${CTR_TO}" != "${CTR_TB}"
+check "task notes: the explicitly named session carries the same task label" bash -c \
+    "docker inspect -f '{{index .Config.Labels \"tjor.task\"}}' '${CTR_TO}' | grep -qx tb"
+check "task notes: attach --task offers the picker when two agents carry the id (declined: nothing selected)" bash -c \
+    "cd '${REPO}' && ! TJOR_ATTACH_DRY=1 '${T}' attach --task tb </dev/null > '${SCRATCH}/attach-tb.out' 2>&1; grep -Eq 'several running agents|nothing selected|invalid selection' '${SCRATCH}/attach-tb.out'"
+check "task notes: attach --task resolves a single agent by its label" bash -c \
+    "cd '${REPO}' && TJOR_ATTACH_DRY=1 '${T}' attach --task ta 2>/dev/null | grep -q '^${SID_TA} '"
+( cd "${REPO}" && TJOR_USER_CONFIG="${TASK_CONFIG_DIR}/config.toml" "${T}" down --session ta >/dev/null 2>&1 )
+check "task notes: down --session <id> tears down that task's session" bash -c \
+    "! docker ps -q --filter 'label=tjor.session=${SID_TA}' | grep -q ."
+check "task notes: the other task's session is untouched" bash -c \
+    "docker ps -q --filter 'label=tjor.session=${SID_TB}' --filter status=running | grep -q ."
+check "task notes: its network is untouched too" docker network inspect "tjor-${SID_TB}_internal"
+( cd "${REPO}" && "${T}" down --session tb >/dev/null 2>&1; "${T}" down --session other >/dev/null 2>&1 )
+rm -rf "${TASK_CONFIG_DIR}"
 
 echo
 echo "lifecycle: ${PASS} passed, ${FAIL} failed"

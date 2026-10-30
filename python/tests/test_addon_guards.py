@@ -68,6 +68,15 @@ class TestIdentityAtTheAddon:
         lines = [l for l in capsys.readouterr().err.splitlines() if "stripped forged" in l]
         assert len(lines) == 22  # first 20 + #100 + #200, not 200
 
+    def test_forged_task_dir_header_is_unknown_and_stripped(self):
+        # task-notes (#69): there is no x-agent-task-dir; one on the wire is a
+        # forgery like any unknown identity header, toward every host.
+        addon = self.make()
+        for host in ("inject.test", "other.test"):
+            final, stripped = addon.identity_outcome({"x-agent-task-dir": "/Users/alice/scratch/tasks/a"}, host)
+            assert "x-agent-task-dir" not in final
+            assert stripped == {"x-agent-task-dir": "/Users/alice/scratch/tasks/a"}
+
     def test_inject_only_on_configured_host(self):
         addon = self.make()
         final, _ = addon.identity_outcome({}, "inject.test")

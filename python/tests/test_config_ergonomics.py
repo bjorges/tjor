@@ -60,6 +60,34 @@ class TestRepoConfigLayer:
         assert tjor_cfg.get(cfg, "proxy.port") == 7777
         assert tjor_cfg.get(cfg, "versions.opencode")           # defaults still present
 
+    def test_trusted_repo_config_cannot_set_the_task_table(self, tmp_path, monkeypatch, capsys):
+        # ADR 0013 / repo-config-trust: [task] names host paths to mount, so a
+        # repo layer carrying it is dropped — trusted or not — with a warning
+        # naming the file; the user layer still applies.
+        repo = self.setup_repo(tmp_path, monkeypatch)
+        (repo / ".tjor" / "config.toml").write_text(
+            '[proxy]\nport = 7777\n[task]\nnotes_dir = "~/Documents/{task}"\nsession_per_task = true\n')
+        tjor_trust.approve(repo / ".tjor" / "config.toml")
+        user = tmp_path / "user.toml"
+        user.write_text('[task]\nnotes_dir = "~/scratch/tasks/{task}"\n')
+        monkeypatch.setenv("TJOR_USER_CONFIG", str(user))
+        cfg = tjor_cfg.effective()
+        assert tjor_cfg.get(cfg, "proxy.port") == 7777                        # the rest of the repo layer applies
+        assert tjor_cfg.get(cfg, "task.notes_dir") == "~/scratch/tasks/{task}"  # the user's value, not the repo's
+        assert tjor_cfg.get(cfg, "task.session_per_task") is False
+        err = capsys.readouterr().err
+        assert "[task]" in err and "user-config only" in err and str(repo / ".tjor" / "config.toml") in err
+        # check() reports the same, and does not count the dropped table as unknown
+        assert tjor_cfg.check() == 0
+        assert "user-config only" in capsys.readouterr().err
+
+    def test_untrusted_repo_task_table_ignored_as_before(self, tmp_path, monkeypatch, capsys):
+        repo = self.setup_repo(tmp_path, monkeypatch)
+        (repo / ".tjor" / "config.toml").write_text('[task]\nnotes_dir = "~/x/{task}"\n')
+        cfg = tjor_cfg.effective()
+        assert tjor_cfg.get(cfg, "task.notes_dir") == ""
+        assert "NOT trusted" in capsys.readouterr().err
+
     def teardown_method(self):
         importlib.reload(tjor_cfg)
 

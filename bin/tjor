@@ -1271,6 +1271,19 @@ resolve_session() { # $1 = harness, $2 = task id (optional), $3 = session name (
                 if [[ "${4:-}" == "launch" ]]; then
                     die "--session ${name} is the fully-qualified id of another workspace's session — launch from that workspace, or pick a short name for a new session here"
                 fi
+                # Ambiguity (task-notes, #69): this workspace may ALSO have a
+                # session under that short name (a per-task session named by
+                # its id, and a foreign session whose full id equals it created
+                # later). Picking either would act on the wrong one; refuse,
+                # naming both full ids, which resolve unambiguously.
+                local local_exists=""
+                [[ -d "${root}/${base}-${name}" ]] && local_exists=1
+                if [[ -z "${local_exists}" ]]; then
+                    ctrs="$(docker ps -aq --filter "label=tjor.session=${base}-${name}" 2>/dev/null)" \
+                        || die "--session ${name} matches another workspace's session id, but Docker is unreachable so tjor cannot tell whether this workspace's session ${base}-${name} exists too — start docker/colima and retry"
+                    [[ -n "${ctrs}" ]] && local_exists=1
+                fi
+                [[ -z "${local_exists}" ]] || die "--session ${name} is ambiguous: it is the fully-qualified id of another workspace's session AND this workspace has a session ${base}-${name} — name the one you mean by its fully-qualified id (--session ${name} is taken verbatim only when no local session shares the name)"
                 echo "tjor: --session ${name} matches an existing session's fully-qualified id — using it verbatim (workspace-independent)" >&2
                 sid="${name}"
             else
@@ -1285,6 +1298,68 @@ resolve_session() { # $1 = harness, $2 = task id (optional), $3 = session name (
             sid="${base}-${short}"
         fi
     fi
+    # Task notes (#69, spec: task-notes). The [task] table is user-config
+    # only (tjor_cfg drops it from the repo layer, ADR 0013). With a notes
+    # directory or per-task sessions configured, the task id names a
+    # directory and a session, so it must be a plain lower-case name; with
+    # neither, --task stays the label it was. Resolution here has NO side
+    # effect (lifecycle commands pass no task; the launch creates the
+    # directory later, in cmd_run, after the gate and under the lock).
+    local task_id="${2:-}" notes_tpl per_task
+    notes_tpl="$(cfg task.notes_dir --default '')"
+    per_task="$(cfg task.session_per_task --default false)"
+    TJOR_TASK_DIR=""; TJOR_TASK_PREFIX=""; TJOR_TASK_REL=""
+    if [[ -n "${task_id}" ]]; then
+        if [[ -n "${notes_tpl}" || "${per_task}" == "true" ]]; then
+            [[ "${task_id}" =~ ^[a-z0-9][a-z0-9_-]{0,31}$ ]] \
+                || die "--task $(safeprint "${task_id}") must match [a-z0-9][a-z0-9_-]{0,31} once it names a notes directory or a session: lower-case, no dot, at most 32 characters"
+        else
+            [[ "${task_id}" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || die "--task must match [A-Za-z0-9._-]{1,64}"
+        fi
+        if [[ -n "${notes_tpl}" ]]; then
+            local resolved notes_path notes_prefix notes_rel rc=0
+            resolved="$(python3 "${TJOR_ROOT}/python/tjor_task.py" resolve --template "${notes_tpl}" --task "${task_id}")" \
+                || die "task notes: cannot resolve the notes directory for task ${task_id} (task.notes_dir = $(safeprint "${notes_tpl}"))"
+            { read -r notes_path; read -r notes_prefix; read -r notes_rel; } <<<"${resolved}"
+            # The notes repository never becomes the workspace: refused when
+            # the workspace IS the notes root or contains it, by filesystem
+            # identity (a case-folding or normalising filesystem makes two
+            # spellings one directory), with no override — the remedy is to
+            # launch from the code repository. An error is a refusal too.
+            python3 "${TJOR_ROOT}/python/tjor_task.py" contains "${ws}" "${notes_prefix}" || rc=$?
+            case "${rc}" in
+                0) die "refusing to launch: the workspace ${ws} is the notes root ${notes_prefix} or contains it — every task's notes would be mounted writable; launch from the code repository and let --task ${task_id} mount ${notes_path} beside it" ;;
+                1) ;;
+                *) die "task notes: cannot establish whether the workspace ${ws} contains the notes root ${notes_prefix}" ;;
+            esac
+            TJOR_TASK_DIR="${notes_path}"; TJOR_TASK_PREFIX="${notes_prefix}"; TJOR_TASK_REL="${notes_rel}"
+        fi
+        if [[ "${per_task}" == "true" && -z "${3:-}" ]]; then
+            # One session per task: the short name IS the id, set here and
+            # never re-parsed as a --session value. Refuse what the lifecycle
+            # resolver would read as something else, so `--session <id>`
+            # round-trips: the base id itself or a value prefixed by it, and
+            # a qualified-looking id (the resolver's own pattern) that names
+            # an existing session — the resolver's own lookup; an unreachable
+            # engine refuses rather than guesses.
+            if [[ "${task_id}" == "${base}" || "${task_id}" == "${base}-"* ]]; then
+                die "--task ${task_id} cannot name this session: it reads as this workspace's qualified session id, so 'tjor down --session ${task_id}' could not address it — pick another id, or name the session with --session"
+            fi
+            if [[ "${task_id}" =~ ^[a-z0-9._-]+-[0-9a-f]{8}(-[a-z0-9._-]{1,32})?$ ]]; then
+                local taken="" ctrs
+                [[ -d "${root}/${task_id}" ]] && taken=1
+                if [[ -z "${taken}" ]]; then
+                    ctrs="$(docker ps -aq --filter "label=tjor.session=${task_id}" 2>/dev/null)" \
+                        || die "--task ${task_id} looks like a fully-qualified session id and Docker is unreachable, so tjor cannot tell whether such a session exists — start docker/colima and retry"
+                    [[ -n "${ctrs}" ]] && taken=1
+                fi
+                [[ -z "${taken}" ]] || die "--task ${task_id} is the fully-qualified id of an existing session, so 'tjor down --session ${task_id}' would be ambiguous — pick another id, or name the session with --session"
+            fi
+            sid="${base}-${task_id}"
+            [[ "${4:-}" == "launch" ]] && echo "tjor: session ${task_id} for task ${task_id} (address it with --session ${task_id})" >&2
+        fi
+    fi
+    export TJOR_TASK_DIR TJOR_TASK_PREFIX TJOR_TASK_REL
     TJOR_LAUNCHED_AT="$(date +%s)"
     export TJOR_LAUNCHED_AT
 
@@ -1302,12 +1377,7 @@ resolve_session() { # $1 = harness, $2 = task id (optional), $3 = session name (
         [[ -n "${gitdir}" && -n "${commondir}" && "${gitdir}" != "${commondir}" ]] && TJOR_WORKTREE="${ws}"
     fi
     export TJOR_WORKTREE
-    if [[ -n "${2:-}" ]]; then
-        [[ "$2" =~ ^[A-Za-z0-9._-]{1,64}$ ]] || die "--task must match [A-Za-z0-9._-]{1,64}"
-        export TJOR_TASK_ID="$2"
-    else
-        export TJOR_TASK_ID=""
-    fi
+    export TJOR_TASK_ID="${task_id}"   # validated above (grammar per the [task] configuration)
     export TJOR_PARENT_SESSION="${TJOR_PARENT_SESSION:-}"
     TJOR_INJECT_HOSTS="$(cfg identity.inject_hosts --default '[]' \
         | python3 -c 'import json,sys; print(",".join(json.load(sys.stdin)))')"
@@ -1556,6 +1626,82 @@ worktree_common_dirs() { # reads/extends TJOR_WORKSPACE, TJOR_EXTRA_DIRS, TJOR_E
     return 0
 }
 
+# ------------------------------------------------------ task notes (#69)
+# Reads/extends TJOR_TASK_DIR, TJOR_TASK_PREFIX, TJOR_TASK_REL (resolve_session),
+# TJOR_WORKSPACE, TJOR_EXTRA_DIRS, TJOR_EXTRA_DIRS_RO (cmd_run).
+task_notes_prepare() {
+    [[ -n "${TJOR_TASK_DIR:-}" ]] || return 0
+    local -a nocreate=()
+    [[ "$(cfg task.create --default true)" == "true" ]] || nocreate=(--no-create)
+    python3 "${TJOR_ROOT}/python/tjor_task.py" create --prefix "${TJOR_TASK_PREFIX}" \
+        --relative "${TJOR_TASK_REL}" ${nocreate[@]+"${nocreate[@]}"} >/dev/null \
+        || die "task notes: refusing to launch (see above)"
+    local covered="" rc w_root seen
+    for w_root in "${TJOR_WORKSPACE}" "${TJOR_EXTRA_DIRS[@]:-}"; do
+        [[ -n "${w_root}" ]] || continue
+        rc=0
+        python3 "${TJOR_ROOT}/python/tjor_task.py" contains "${w_root}" "${TJOR_TASK_DIR}" || rc=$?
+        case "${rc}" in
+            0) covered="${w_root}"; break ;;
+            1) ;;
+            *) die "task notes: cannot establish whether ${w_root} covers ${TJOR_TASK_DIR}" ;;
+        esac
+    done
+    for seen in "${TJOR_EXTRA_DIRS_RO[@]:-}"; do
+        [[ -n "${seen}" && "${seen}" == "${TJOR_TASK_DIR}" ]] \
+            && die "conflicting mounts: the task notes directory ${TJOR_TASK_DIR} is also given via --dir-ro — task notes are always writable"
+    done
+    if [[ -n "${covered}" ]]; then
+        echo "tjor: task notes ${TJOR_TASK_DIR} lie under the writable root ${covered} (mounted with it)" >&2
+    else
+        TJOR_EXTRA_DIRS+=("${TJOR_TASK_DIR}")
+        echo "tjor: task notes ${TJOR_TASK_DIR} (writable, at its host path)" >&2
+    fi
+    task_notes_scan "${TJOR_TASK_DIR}"
+}
+
+# Advisory, bounded, link-free: names up to ten credential-shaped files and
+# says when the scan was partial. Never refuses (the operator's own directory).
+task_notes_scan() { # $1 = dir
+    local out n_find n_part
+    out="$(python3 "${TJOR_ROOT}/python/tjor_task.py" scan "$1" 2>&1)" \
+        || { warn "task notes: the credential scan of $1 failed: $(safeprint "${out}")"; return 0; }
+    [[ -n "${out}" ]] || return 0
+    n_find="$(grep -c -v $'^partial\t' <<<"${out}" || true)"
+    n_part="$(grep -c $'^partial\t' <<<"${out}" || true)"
+    if (( n_find > 0 )); then
+        loud "task notes: ${n_find} credential-shaped file(s) in $1 — the agent can read and send them:"
+        grep -v $'^partial\t' <<<"${out}" | head -n 10 | while IFS=$'\t' read -r p r; do echo "tjor:   ${p}: ${r}" >&2; done
+        (( n_find > 10 )) && echo "tjor:   … and $((n_find - 10)) more" >&2
+    fi
+    if (( n_part > 0 )); then
+        warn "task notes: the credential scan of $1 was PARTIAL (what it did not see may hold a secret):"
+        grep $'^partial\t' <<<"${out}" | cut -f2- | while read -r r; do echo "tjor:   ${r}" >&2; done
+    fi
+    return 0
+}
+
+# VM-share correspondence check for the notes directory (run_agent, after the
+# proxy image exists): a fresh directory is empty, so the content comparison
+# verify_bind_source makes proves nothing, and a parent-level check would pass
+# a stale VM-side directory of the same name. So: a probe file with an
+# unpredictable name, created in the directory itself, which a throwaway
+# container with ONLY that directory bound read-only, no network and no
+# environment must see. The probe is removed whatever happens (a subshell
+# EXIT trap); a copy can remain only if tjor is killed between the two steps
+# (name pattern .tjor-share-probe-*, harmless).
+task_notes_probe() { # $1 = dir
+    local dir="$1" probe seen=""
+    probe="$(python3 "${TJOR_ROOT}/python/tjor_task.py" probe-create "${dir}")" \
+        || die "task notes: cannot verify that ${dir} is shared with the container runtime (see above)"
+    if ( trap 'python3 "${TJOR_ROOT}/python/tjor_task.py" probe-remove "${dir}" "${probe}" >/dev/null 2>&1' EXIT
+         docker run --rm --network none --entrypoint /bin/sh \
+             --mount "type=bind,src=${dir},dst=/check,readonly" "${TJOR_PROXY_IMAGE}" \
+             -c 'test -e "/check/$1"' sh "${probe}" >/dev/null 2>&1 ); then seen=1; fi
+    [[ -n "${seen}" ]] || die "task notes: ${dir} is not shared with the Docker VM — a container bound to it does not see a file just written there. Move it under \$HOME or add it to the VM's shared paths (colima/Docker Desktop file sharing)."
+    echo "tjor: task notes ${dir} verified shared with the container runtime" >&2
+}
+
 cmd_run() {
     local harness="opencode" task="" name="" detach="" unsafe_dir="" allow_self_mount="" allow_worktree_mount="" profile="" profile_dir=""
     local -a extra_dirs=() extra_dirs_ro=()
@@ -1607,6 +1753,10 @@ cmd_run() {
         gate_sensitive_path "${abs}" --dir
         TJOR_EXTRA_DIRS+=("${abs}")
     done
+    # Task notes (#69), step 1: the intended directory passes the --dir gate
+    # BEFORE anything is created — a template under ~/.ssh is refused with
+    # nothing to show for it.
+    [[ -z "${TJOR_TASK_DIR:-}" ]] || gate_sensitive_path "${TJOR_TASK_DIR}" --dir
     # Read-only extras (--dir-ro, #44): same resolution and refusal rules as
     # --dir — the sensitive-path gate applies unchanged, because read-only
     # access still exposes content for exfiltration. A path given BOTH ways
@@ -1627,6 +1777,14 @@ cmd_run() {
         gate_sensitive_path "${abs}" --dir-ro
         TJOR_EXTRA_DIRS_RO+=("${abs}")
     done
+    # Task notes (#69), steps 2-5, under the session lock: create or validate
+    # the directory (descriptor-relative, never through a link); judge, by
+    # filesystem identity, whether a writable root already covers it (then it
+    # is mounted with that root, once — but still created, validated and
+    # scanned); append it to the writable extras when uncovered, so every
+    # rule below and in run_agent applies to it; scan it for credential-shaped
+    # files (advisory). An identity error is a refusal, never "not covered".
+    task_notes_prepare
     # Worktree common dirs (#79): after the gates (every root above is an
     # approved path), before the overlap and self-mount rules (the extra
     # roots are judged like any other — a worktree of the tjor checkout
@@ -1864,6 +2022,8 @@ run_agent() { # $1 = detach flag, $2.. = command
         safe+=("${dir}")
         echo "tjor: + repo mount ${dir}" >&2
     done
+    # Task notes (#69): the probe-file share check, covered or not.
+    [[ -z "${TJOR_TASK_DIR:-}" ]] || task_notes_probe "${TJOR_TASK_DIR}"
     # Read-only extras (#44): the container-level :ro IS the enforcement —
     # it binds the whole container (docker exec included) on every runtime;
     # the kernel tier merely AGREES (--allow-read, entrypoint step 6). Still
@@ -2363,8 +2523,18 @@ cmd_ls_state() {
 }
 
 cmd_attach() {
-    local want="${1:-}" chosen ctr qualified=""
+    local want="" want_task="" chosen ctr qualified="" usage
+    usage="usage: tjor attach [session]  |  tjor attach --task <id>"
     local -a rows=()
+    while [[ $# -gt 0 ]]; do
+        case "$1" in
+            --task)   [[ -n "${2:-}" ]] || die "${usage} (--task needs a value)"; want_task="$2"; shift 2 ;;
+            --task=*) want_task="${1#--task=}"; [[ -n "${want_task}" ]] || die "${usage} (--task needs a value)"; shift ;;
+            -*)       die "${usage} (unknown option $1)" ;;
+            *)        [[ -z "${want}" ]] || die "${usage} (one session)"; want="$1"; shift ;;
+        esac
+    done
+    [[ -z "${want}" || -z "${want_task}" ]] || die "${usage} (a session or a task, not both)"
     # Short names welcome (#52): a positional session argument matches either
     # the full session id (workspace-independent, as before) or the short name
     # qualified against the CURRENT workspace — so the name a user launched
@@ -2379,10 +2549,13 @@ cmd_attach() {
     fi
     # Field-separate on US (\x1f), not '|' — a workspace path can contain a
     # literal pipe (consistent with ls/gc).
+    # --task <id> (#69) selects on the tjor.task label, a global one: the same
+    # id running in two repositories offers the picker like any several.
     mapfile -t rows < <(docker ps --filter label=tjor.role=agent --filter status=running \
         --format $'{{.ID}}\x1f{{.Label "tjor.session"}}\x1f{{.Label "tjor.workspace"}}\x1f{{.Label "tjor.task"}}' \
-        | { if [[ -n "${want}" ]]; then awk -F$'\x1f' -v s="${want}" -v q="${qualified}" '$2 == s || $2 == q'; else cat; fi; })
-    ((${#rows[@]} > 0)) || die "no running agent${want:+ for session ${want}} — see: tjor ls"
+        | { if [[ -n "${want_task}" ]]; then awk -F$'\x1f' -v t="${want_task}" '$4 == t';
+            elif [[ -n "${want}" ]]; then awk -F$'\x1f' -v s="${want}" -v q="${qualified}" '$2 == s || $2 == q'; else cat; fi; })
+    ((${#rows[@]} > 0)) || die "no running agent${want:+ for session ${want}}${want_task:+ for task ${want_task}} — see: tjor ls"
     if ((${#rows[@]} == 1)); then
         chosen="${rows[0]}"
     elif command -v fzf >/dev/null 2>&1; then
@@ -3157,9 +3330,9 @@ tjor — run AI coding agents inside a portable, fail-closed container cage
 usage: tjor <command> [args]
 
   run [--harness opencode|claude|copilot] [--task <id>] [--session <name>] [--dir <path>]... [--dir-ro <path>]... [--unsafe-dir] [--allow-self-mount] [--allow-worktree-mount] [--profile <name>|--profile-dir <path>] [--detach] [cmd...]
-                                                     launch a caged session (--dir: mount another repo at its host path; --dir-ro: same but READ-ONLY, container-wide — sensitive paths refused as the workspace or as --dir/--dir-ro unless --unsafe-dir; the running tjor tree is refused as a writable mount unless --allow-self-mount; --profile/--profile-dir: overlay host-defined agents/commands, credential-safe; --detach: start without attaching)
+                                                     launch a caged session (--task: a label, and with [task] configured a per-task notes directory mounted writable and a per-task session; --dir: mount another repo at its host path; --dir-ro: same but READ-ONLY, container-wide — sensitive paths refused as the workspace or as --dir/--dir-ro unless --unsafe-dir; the running tjor tree is refused as a writable mount unless --allow-self-mount; --profile/--profile-dir: overlay host-defined agents/commands, credential-safe; --detach: start without attaching)
   ls [--state]                                       list all sessions (and re-verify their boundaries); --state: every state directory under the session root — containers, last activity, workspace, credentials present
-  attach [session]                                   reattach to a running agent's terminal (short name or full id)
+  attach [session | --task <id>]                     reattach to a running agent's terminal (short name or full id; --task: the agent carrying that task label)
   gc [--age <hours>] [--dry-run]                     reap idle session containers/networks/volumes
   reset {cache|sessions|creds|all} [--session <name|id>] [--dry-run]
                                                      tiered wipe of this repo's session state

@@ -177,6 +177,10 @@ services:
       TJOR_REPO: ${TJOR_REPO:-}
       TJOR_WORKTREE: ${TJOR_WORKTREE:-}
       TJOR_PARENT_SESSION: ${TJOR_PARENT_SESSION:-}
+      # Task notes (#69): the per-task notes directory, mounted at this same
+      # path (an extra writable root). Cage-only: no x-agent-* header is
+      # derived from it, and it is not a label.
+      TJOR_TASK_DIR: ${TJOR_TASK_DIR:-}
       # Broker (D2): tells the entrypoint to wire a PLACEHOLDER git credential
       # so git attempts auth; the proxy overwrites it with the real token.
       # The real credential is never passed to the agent.

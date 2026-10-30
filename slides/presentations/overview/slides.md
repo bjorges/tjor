@@ -83,6 +83,7 @@ groups:
       - Inside the container is still a lot
       - Git metadata that runs on your host
       - Mounting the wrong directory
+      - A task's notes live in another repo
       - The launcher's own tree
   - title: Trust
     items:
@@ -394,7 +395,7 @@ specs: [git-tamper-detection@0151ca0e]
 ---
 layout: problem
 title: Mounting the wrong directory
-specs: [session-launch@6f360a5f]
+specs: [session-launch@45d44f04]
 ---
 
 ::problem::
@@ -408,6 +409,30 @@ specs: [session-launch@6f360a5f]
 - The resolved workspace must be the **nearest repository above the launch directory**, cross-checked against git's answer.
 - Mount roots of **different writability never nest**; writable mounts are git-trusted as trees, read-only ones exact-path.
 - A worktree's common git directory is mounted only with `--allow-worktree-mount` or an explicit `--dir`, validated by git's native layout, never by a plaintext pointer.
+
+---
+layout: problem
+title: A task's notes live in another repo
+specs: [task-notes@7af5f547]
+adrs: ['0013']
+---
+
+::problem::
+
+- Task notes and hand-offs live in a per-task directory inside one big notes repository. Launching from it makes git climb to that repository's root: every task's files mounted, writable, and the code repository no longer the workspace.
+- `--dir` every time is friction, and two tasks in one repository still share one session.
+
+::solution::
+
+- **`[task] notes_dir = "~/scratch/tasks/{task}"`** in the user config: `--task <id>` mounts that directory writable at its host path, **through the same path as a `--dir`**, so every rule for extra writable roots applies unchanged; `TJOR_TASK_DIR` names it in the cage.
+- The notes **root** must exist and is never created; below it, one real directory at a time, never through a link, the template checked component by component.
+- **Refused, no override: a workspace that is the notes root or contains it** (by filesystem identity, not strings). The table is **user-config only**: a repository cannot name a host path to mount (ADR 0013).
+- Task ids become plain lower-case names; with `session_per_task` the session's short name **is** the id (`tjor down --session <id>`, `tjor attach --task <id>`), and ids the resolver would misread are refused.
+- A bounded, link-free scan names credential-shaped files; a probe file an isolated throwaway container must see proves the directory is really shared.
+
+<Plainly>
+<p>The directory is writable and git-trusted like any <code>--dir</code>; every session with the same task id shares it; what the agent writes there reaches the host notes repository, nested repos, links and secrets included. The bind source is a path for the engine, so a swap after the checks is outside what the launcher sees. The scan is advisory.</p>
+</Plainly>
 
 ---
 layout: problem
@@ -437,7 +462,8 @@ What travels with the code, what you bring from home, and what you did not build
 ---
 layout: problem
 title: Config that travels with the repo
-specs: [repo-config-trust@c5f17655]
+specs: [repo-config-trust@4ee51365]
+adrs: ['0013']
 ---
 
 ::problem::
@@ -455,6 +481,7 @@ $ tjor trust --show  # review only
 
 - A repo config is honored **only after you approve its exact content**. Any later edit makes it untrusted again until re-approved.
 - An unapproved config is ignored with a loud warning naming the file and the fix; the session falls back to your user and default config.
+- **Approval never extends to a host mount**: the `[task]` table (a notes directory tjor mounts writable) is user-config only, ignored in a repo config even when trusted (ADR 0013); a typo under it aborts the launch.
 
 ---
 layout: problem
@@ -508,7 +535,7 @@ Launches that behave the same every time, sessions as first-class objects, ident
 ---
 layout: problem
 title: A launch that behaves the same every time
-specs: [session-launch@6f360a5f]
+specs: [session-launch@45d44f04]
 ---
 
 ::problem::
@@ -519,7 +546,7 @@ specs: [session-launch@6f360a5f]
 
 ::solution::
 
-- **One config merge path** for every entry point: packaged default → user → trusted repo config.
+- **One config merge path** for every entry point: packaged default → user → trusted repo config, minus the user-only tables.
 - **Host preflight** with clear errors before anything starts (`tjor doctor`); `--dir` and `--dir-ro` roots are each verified before mounting.
 - **Tiered guarantees degrade loudly**: a boundary that cannot be established exits 90; an absent add-on is announced and exits 0.
 - A **per-session state root** holds everything durable; the launcher derives the identity set for cage and proxy; containers carry **discovery labels**; sessions start detached, PTY allocated at creation.
@@ -531,7 +558,7 @@ specs: [session-launch@6f360a5f]
 ---
 layout: problem
 title: Which session did what
-specs: [session-identity@ddbbcf56]
+specs: [session-identity@c542faab]
 adrs: ['0004']
 ---
 
@@ -543,14 +570,14 @@ adrs: ['0004']
 
 ::solution::
 
-- Every session carries a **frozen identity**: `TJOR_SESSION_ID`, task id, harness, repo, worktree, parent session, as environment inside the cage.
+- Every session carries a **frozen identity**: `TJOR_SESSION_ID`, task id, harness, repo, worktree, parent session, as environment inside the cage. A task's notes directory (`TJOR_TASK_DIR`) is cage-only: no header is derived from it.
 - On the wire, the vendor-neutral `x-agent-*` schema. The proxy **strips forged or unknown identity headers toward every host**, so one session structurally cannot impersonate another.
 - The real set is **injected only toward hosts you list** in `identity.inject_hosts`; paths are trimmed to their basename; identity handling fails closed.
 
 ---
 layout: problem
 title: Sessions you can find, reattach, and clean up
-specs: [session-lifecycle@36198502, session-launch@6f360a5f]
+specs: [session-lifecycle@98b50b8f, session-launch@45d44f04]
 adrs: ['0006']
 ---
 
@@ -569,7 +596,7 @@ $ tjor gc --dry-run           # reap what tjor labelled, never state
 $ tjor prune --older-than 30d --dry-run   # delete state, explicitly
 ```
 
-- Containers are **detached and persistent** (`tjor attach` reconnects); a stopped session relaunches without loss.
+- Containers are **detached and persistent** (`tjor attach`, by session or `--task <id>`, reconnects); a stopped session relaunches without loss. With per-task sessions the short name **is** the task id, and a reference that could mean two sessions is refused, naming both.
 - **State persists until you prune it**: one selector, dry-runnable, refused for a session with a container, an unreviewed git-check or a launch in progress.
 - `tjor ls` re-verifies each internal-only network and flags a tampered one **DEGRADED**.
 

@@ -18,8 +18,12 @@ When `task.notes_dir` is configured, a launch with `--task <id>` SHALL resolve t
 - **THEN** the launch is refused with the same error the equivalent `--dir` would produce
 
 #### Scenario: Already covered by a writable root
-- **WHEN** the resolved notes directory lies under the workspace or under a `--dir` root
+- **WHEN** the resolved notes directory lies under a `--dir` root
 - **THEN** it is still created or validated and scanned, it is not mounted a second time, and `TJOR_TASK_DIR` names it
+
+#### Scenario: A notes root inside the workspace is the notes-repository case
+- **WHEN** the template's root lies under the workspace (`~/proj/notes/{task}` launched from `~/proj`)
+- **THEN** the launch is refused by the notes-root rule, because the workspace contains the notes root
 
 #### Scenario: Coverage that cannot be established
 - **WHEN** the identity walk that decides coverage or the notes-root refusal fails (a component vanished, a permission error)

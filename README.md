@@ -96,6 +96,68 @@ directory under it — what a worktree of that repository already implies —
 and two sessions that share one main repository (one from the main
 checkout, one from a worktree) coordinate only through git's own index and
 ref locks, as any two git worktrees do.
+**Task notes** (#69): `--task <id>` is a label (`TJOR_TASK_ID`, the
+`tjor.task` container label, part of the identity set). With a `[task]`
+table in your **user** config it is also a directory and a session:
+
+```toml
+[task]
+notes_dir = "~/scratch/tasks/{task}"   # the per-task notes directory
+create = true                          # created below the root when missing
+session_per_task = true                # the session's short name is the id
+```
+
+`tjor run --task a` then mounts `~/scratch/tasks/a` **writable, at its host
+path**, beside the workspace — through the same path as a `--dir`, so every
+rule for extra writable roots applies to it unchanged (sensitive paths, the
+VM-share check, writability nesting, the self-mount guard, git trust as a
+tree, dotenv and git-metadata masks, the git-check baseline) — and names it
+`TJOR_TASK_DIR` inside the cage (no `x-agent-*` header is derived from it).
+The workspace is still the repository you launched from, so its trusted
+`.tjor/` files and the harness's instruction discovery are unaffected. The
+notes **root** (everything before `{task}`) must exist; tjor never creates
+it, only what lies below, one real directory at a time, never through a
+link. The template is checked component by component, so no `..` or empty
+component can steer it. A launch is **refused, with no override, when the
+workspace is the notes root or contains it**: that is the "launched from
+inside the notes repo" mistake this exists to prevent (the whole notes
+repository, every other task's files, would be mounted writable and git-
+trusted); launch from the code repository and let `--task` bring the notes.
+Once a notes directory or per-task sessions are configured, a task id must
+be a plain lower-case name, `[a-z0-9][a-z0-9_-]{0,31}`: no dot (so no `.`,
+`..` or hidden name, and no dot in a Compose project name), no upper case
+(one spelling per directory on every filesystem), at most 32 characters (it
+is the session's short name as-is). With `session_per_task`, a launch
+without `--session` names the session by the id, so `tjor down --session
+<id>`, `status`, `denials` and `reset` address it with what you typed, and
+`tjor attach --task <id>` picks the running agent carrying that label; an
+explicit `--session <name>` names the session as always and `--task` stays
+the label and the directory, which is how two harnesses work one task at
+once. An id the lifecycle resolver would read as another session (equal to
+or prefixed by the workspace's base id, or an existing session's full id) is
+refused at launch, and a collision that appears later is refused as
+ambiguous rather than resolved. **The `[task]` table is user-config only**:
+a repository's `.tjor/config.toml` cannot set it, trusted or not (ADR 0013),
+and a misspelled key under it aborts the launch like one under `[landlock]`.
+Before the agent starts, the directory is scanned (bounded, never through a
+link) for credential-shaped names (`token`, `credentials`, `*.pem`, `*.key`,
+`id_*`, `.netrc`, `kubeconfig`, …) and for the secret shapes the egress
+tripwire knows; findings are named in a loud warning, and a partial scan
+says so. Advisory only: it is your directory. The share check is a probe
+file: an empty, unpredictably named file written into the directory, which
+a throwaway container (the proxy image, a plain shell, no network, the
+directory bound read-only and nothing else) must see; the probe is removed
+afterwards. Stated plainly: the directory is writable and git-trusted as a
+tree like any `--dir`; every session launched with the same task id shares
+it, and one id is one session for every harness unless `--session` names
+one; what the agent writes there reaches the host, nested repositories,
+links and committed secrets included, and a host-side notes repository may
+then pick them up; the bind source is handed to the container engine as a
+path, so a component swapped after the launcher's checks is outside what
+it can see (the window every mount has); and a probe file
+(`.tjor-share-probe-*`) can remain if tjor is killed during the share check.
+Without a `[task]` table nothing changes: `--task` keeps its old grammar and
+stays a label.
 **Sensitive host paths are refused** — as the primary workspace and as
 `--dir`/`--dir-ro` alike: `/` and system directories, your home directory and
 anything above it, credential directories (`~/.ssh`, `~/.config`, `~/.aws`,
