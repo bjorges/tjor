@@ -4,7 +4,7 @@
      Regenerate: python3 python/gen_boundary_matrix.py
      Drift-checked by tests/doc_consistency.sh (`--check`). -->
 
-Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount` and `gitcheck` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (284 checks total; 115 adversarial guarantees below, the rest functional/config checks the suites also run).
+Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount`, `gitcheck` and `task-notes` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (391 checks total; 176 adversarial guarantees below, the rest functional/config checks the suites also run).
 
 ## cage-network
 
@@ -104,6 +104,8 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 
 | Guarantee | Probe | Suite |
 |---|---|---|
+| --task <base id> is refused (it reads as the default session) | `task notes: --task <base id> is refused (it reads as the default session)` | task-notes |
+| --task <base id>-x is refused (it reads as a qualified id) | `task notes: --task <base id>-x is refused (it reads as a qualified id)` | task-notes |
 | A .git pointer git cannot resolve refuses the launch instead of failing in-cage | `worktree: a pointer git cannot resolve is refused, naming the pointer` | worktree |
 | A .git pointer whose target does not link back to the root is refused, never mounted | `worktree: a planted pointer without a back-link is refused` | worktree |
 | A common directory the operator did not name is never mounted without explicit approval | `worktree: without --allow-worktree-mount an unlisted common dir refuses the launch, naming the path and the remedies` | worktree |
@@ -114,6 +116,10 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | A hostile dir name is escape-sanitized in launch output | `hostile parent dir name announced escape-sanitized` | landlock |
 | A hostile dotenv filename is escape-sanitized in launch output | `hostile dotenv filename is announced escape-sanitized` | landlock |
 | A linked worktree's common git directory is resolved through git's own linkage | `worktree: a linked worktree resolves to its main repository's common dir` | worktree |
+| A plain id never consults docker | `task notes: a plain id never consults docker` | task-notes |
+| A qualified-looking id naming a labelled container is refused | `task notes: a qualified-looking id naming a labelled container is refused` | task-notes |
+| A qualified-looking id naming an existing session's state dir is refused | `task notes: a qualified-looking id naming an existing session's state dir is refused` | task-notes |
+| A qualified-looking id with Docker unreachable is refused, not guessed | `task notes: a qualified-looking id with Docker unreachable is refused, not guessed` | task-notes |
 | A refused extra dir leaves no minted credential behind | `extra-dir gate: a refused --dir minted no credential material` | workspace-gate |
 | A refused launch leaves no session state directory behind | `workspace gate: no state dir created after a refusal` | workspace-gate |
 | A sensitive common git directory is refused with no override | `worktree: a sensitive common dir is refused` | worktree |
@@ -121,16 +127,86 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | A workspace reached by git climbing to a sensitive toplevel is refused | `workspace gate: non-repo subdir of a home-rooted repo refused` | workspace-gate |
 | An in-cage commit from a worktree workspace succeeds | `worktree: git commit works in-cage from a worktree workspace` | landlock |
 | Git works inside a worktree workspace whose main repository lies outside it | `worktree: git status works in-cage from a worktree workspace` | landlock |
+| No docker call for the plain id | `task notes: no docker call for the plain id` | task-notes |
 | No raw terminal-escape byte on a dir-mask line | `no raw ESC byte on any dir-mask line` | landlock |
 | No raw terminal-escape byte on a dotenv-mask line | `no raw ESC byte on any dotenv-mask line` | landlock |
 | Sensitive host path refused as the primary workspace | `workspace gate: home-rooted dotfiles repo refused from the home dir` | workspace-gate |
+| Session_per_task alone applies the grammar and derives the name, mounts nothing | `task notes: session_per_task alone applies the grammar and derives the name, mounts nothing` | task-notes |
 | The common directory is mounted alongside the worktree with its writability and announced | `worktree: the workspace's common dir is appended writable and announced` | worktree |
+| The round-trip refusal names tjor down --session | `task notes: the round-trip refusal names tjor down --session` | task-notes |
 | The session state root is refused as a read-only extra mount | `extra-dir gate: session root refused via --dir-ro` | workspace-gate |
 | The session state root is refused as a writable extra mount | `extra-dir gate: session root refused via --dir` | workspace-gate |
 | The session state root is refused as the workspace | `workspace gate: session root refused as the workspace` | workspace-gate |
 | The tjor install root is refused as a mount | `install root refused via --dir` | self-mount |
 | tjor init stops on a core.worktree redirect | `core.worktree: tjor init stops on the redirect (exit status propagates through the subshell)` | workspace-gate |
 | tjor policy stops on a core.worktree redirect instead of falling through | `core.worktree: tjor policy (policy_file) stops on the redirect instead of using the user policy` | workspace-gate |
+
+## task-notes
+
+| Guarantee | Probe | Suite |
+|---|---|---|
+| '..' as a task id is refused | `task notes: '..' as a task id is refused` | task-notes |
+| A 33-character id is refused | `task notes: a 33-character id is refused` | task-notes |
+| A FIFO does not block the scan | `task notes: a FIFO does not block the scan` | task-notes |
+| A directory covered by a --dir root is mounted with it, not again | `task notes: a directory covered by a --dir root is mounted with it, not again` | task-notes |
+| A dot-leading id is refused | `task notes: a dot-leading id is refused` | task-notes |
+| A dotted id is refused | `task notes: a dotted id is refused` | task-notes |
+| A malformed template leaves no directory | `task notes: a malformed template leaves no directory` | task-notes |
+| A notes root inside the workspace is the notes-root refusal (the code repo would be the notes repo) | `task notes: a notes root inside the workspace is the notes-root refusal (the code repo would be the notes repo)` | task-notes |
+| A relative template is refused | `task notes: a relative template is refused` | task-notes |
+| A sensitive template is refused by the --dir gate before anything is created | `task notes: a sensitive template is refused by the --dir gate before anything is created` | task-notes |
+| A symbolic link at the task directory is refused | `task notes: a symbolic link at the task directory is refused` | task-notes |
+| A template whose root does not exist is refused | `task notes: a template whose root does not exist is refused` | task-notes |
+| A template with a dot-dot component is refused | `task notes: a template with a dot-dot component is refused` | task-notes |
+| A template with a trailing separator is refused | `task notes: a template with a trailing separator is refused` | task-notes |
+| A template with the placeholder twice is refused | `task notes: a template with the placeholder twice is refused` | task-notes |
+| A template without the placeholder is refused | `task notes: a template without the placeholder is refused` | task-notes |
+| An equal --dir is not appended twice | `task notes: an equal --dir is not appended twice` | task-notes |
+| An upper-case id is refused once it names a directory | `task notes: an upper-case id is refused once it names a directory` | task-notes |
+| Another spelling of the notes repository (a link) is refused by identity | `task notes: another spelling of the notes repository (a link) is refused by identity` | task-notes |
+| Both components are real directories | `task notes: both components are real directories` | task-notes |
+| Launching from inside the notes repository is refused | `task notes: launching from inside the notes repository is refused` | task-notes |
+| Launching from the notes repository root is refused | `task notes: launching from the notes repository root is refused` | task-notes |
+| Lifecycle resolution creates nothing | `task notes: lifecycle resolution creates nothing` | task-notes |
+| No directory after a lifecycle resolution | `task notes: no directory after a lifecycle resolution` | task-notes |
+| No directory was created by any refusal | `task notes: no directory was created by any refusal` | task-notes |
+| No state dir after the notes-root refusals | `task notes: no state dir after the notes-root refusals` | task-notes |
+| No state dir is created by resolution | `task notes: no state dir is created by resolution` | task-notes |
+| Nothing was created through the link | `task notes: nothing was created through the link` | task-notes |
+| Prepare creates the directory and appends it to the writable extras once | `task notes: prepare creates the directory and appends it to the writable extras once` | task-notes |
+| Refusals never reached docker | `task notes: refusals never reached docker` | task-notes |
+| Resolution created no directory | `task notes: resolution created no directory` | task-notes |
+| That refusal never asked docker (the state dir decided) | `task notes: that refusal never asked docker (the state dir decided)` | task-notes |
+| The conflict names --dir-ro | `task notes: the conflict names --dir-ro` | task-notes |
+| The create=false refusal names task.create | `task notes: the create=false refusal names task.create` | task-notes |
+| The created directory is real | `task notes: the created directory is real` | task-notes |
+| The directory is created component by component below the root | `task notes: the directory is created component by component below the root` | task-notes |
+| The gate refusal created nothing | `task notes: the gate refusal created nothing` | task-notes |
+| The gate refusal left no session state dir | `task notes: the gate refusal left no session state dir` | task-notes |
+| The link refusal names it | `task notes: the link refusal names it` | task-notes |
+| The probe binds nothing else | `task notes: the probe binds nothing else` | task-notes |
+| The probe binds the notes directory read-only | `task notes: the probe binds the notes directory read-only` | task-notes |
+| The probe container has no network | `task notes: the probe container has no network` | task-notes |
+| The probe file is removed after a pass | `task notes: the probe file is removed after a pass` | task-notes |
+| The probe file is removed after a refusal | `task notes: the probe file is removed after a refusal` | task-notes |
+| The probe name is a trailing argument, never inside the shell string | `task notes: the probe name is a trailing argument, never inside the shell string` | task-notes |
+| The probe passes no environment and no socket | `task notes: the probe passes no environment and no socket` | task-notes |
+| The root is never created by tjor | `task notes: the root is never created by tjor` | task-notes |
+| The same path via --dir-ro is a writability conflict | `task notes: the same path via --dir-ro is a writability conflict` | task-notes |
+
+## session-lifecycle
+
+| Guarantee | Probe | Suite |
+|---|---|---|
+| A collision that appears later is refused as ambiguous | `task notes: a collision that appears later is refused as ambiguous` | task-notes |
+| The ambiguity refusal names this workspace's full id | `task notes: the ambiguity refusal names this workspace's full id` | task-notes |
+
+## repo-config-trust
+
+| Guarantee | Probe | Suite |
+|---|---|---|
+| A TRUSTED repo config cannot move the notes directory | `task notes: a TRUSTED repo config cannot move the notes directory` | task-notes |
+| The repo config's [task] table is reported as ignored | `task notes: the repo config's [task] table is reported as ignored` | task-notes |
 
 ## launcher-integrity
 

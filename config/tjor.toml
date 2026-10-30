@@ -150,6 +150,27 @@ extra_zones = []
 [session]
 root = "~/.tjor/sessions"
 
+# Task notes (#69): give `--task <id>` a per-task notes DIRECTORY, mounted
+# writable beside the workspace at its host path, through the same path as a
+# `--dir` (every rule for extra writable roots applies: sensitive paths,
+# VM share, writability nesting, self-mount, git trust as a tree, mask
+# discovery, git-check baseline). `{task}` is the id, inside one component
+# of an absolute template whose root (everything before `{task}`) must exist
+# — tjor never creates the root, only what lies below it. With a notes
+# directory or per-task sessions configured, a task id must be lower-case,
+# dot-free and at most 32 characters (it names a directory and a session).
+# A launch is refused when the workspace IS the notes root or contains it:
+# that is the "launched from inside the notes repo" mistake this exists to
+# prevent. THIS TABLE IS USER-CONFIG ONLY: a repository's .tjor/config.toml
+# cannot set it, trusted or not (ADR 0013). Empty = off.
+[task]
+notes_dir = ""                           # e.g. "~/scratch/tasks/{task}"
+create = true                            # create the directory below the root when missing
+# One session per task: with --task <id> and no --session, the session's
+# short name IS the id (so `tjor down --session <id>` addresses it); one id
+# is one session for every harness unless --session names one.
+session_per_task = false
+
 # Agent profiles (#29): named host directories of harness DEFINITIONS
 # (agents/commands/skills) you can opt a session into with `tjor run --profile
 # <name>` (or ad-hoc with `--profile-dir <path>`). Only definition subdirs are

@@ -40,6 +40,9 @@ cleanup() {
     ( cd "${A}" 2>/dev/null && "${T}" down >/dev/null 2>&1 )
     docker ps -aq --filter "label=tjor.session=${SID}" | xargs -r docker rm -f >/dev/null 2>&1
     docker network rm "tjor-${SID}_internal" >/dev/null 2>&1
+    docker ps -aq --filter "label=tjor.session=${SID}-t1" | xargs -r docker rm -f >/dev/null 2>&1
+    docker network rm "tjor-${SID}-t1_internal" >/dev/null 2>&1
+    rm -rf "${HOME}/.tjor/tmp/mr-notes" "${HOME}/.tjor/tmp/mr-task-config" "${HOME}/.tjor/sessions/${SID}-t1"
     rm -rf "${A}" "${B}" "${B}-other" "${C}" "${P}" "${HOME}/.tjor/tmp/mr-star" \
         "${HOME}/.tjor/tmp/mr-alias" "${HOME}/.tjor/tmp/mr-real" \
         "${HOME}/.tjor/sessions/${SID}" "${HOME}/.tjor/sessions/${SID}-other" \
@@ -299,5 +302,39 @@ ep90 "relative approved root"                    $'repos/p\n'                   
 ep90 "ro root not among the approved roots"      $'/repos/p\n'                  $'/repos/q\n'
 
 echo
+echo "== task notes (#69): a per-task notes directory beside the workspace"
+# A [task] table in ITS OWN config directory (the directory of TJOR_USER_CONFIG
+# is sensitive, so the notes root must not sit under it); the notes root is a
+# sibling under ~/.tjor/tmp, which the Docker VM shares.
+TCFG="${HOME}/.tjor/tmp/mr-task-config"; NOTES_ROOT="${HOME}/.tjor/tmp/mr-notes"
+mkdir -p "${TCFG}" "${NOTES_ROOT}"
+printf '[task]\nnotes_dir = "%s/{task}"\ncreate = true\nsession_per_task = true\n' "${NOTES_ROOT}" > "${TCFG}/config.toml"
+SID_T="${SID}-t1"
+( cd "${A}" && TJOR_USER_CONFIG="${TCFG}/config.toml" "${T}" run --detach --task t1 sleep 300 > "${RUNOUT}.t1" 2>&1 )
+CTR_T=""
+for _ in $(seq 1 180); do
+    CTR_T="$(docker ps -q --filter "label=tjor.role=agent" --filter "label=tjor.session=${SID_T}" --filter status=running | head -1)"
+    [[ -n "${CTR_T}" ]] && break
+    sleep 1
+done
+if [[ -n "${CTR_T}" ]]; then
+    ok "task notes: the per-task session is named by the task id and started"
+    check "task notes: the directory was created below the notes root" test -d "${NOTES_ROOT}/t1"
+    check "task notes: the launch verified the share with a probe" grep -q "verified shared with the container runtime" "${RUNOUT}.t1"
+    check "task notes: no probe file remains" bash -c "! ls -A '${NOTES_ROOT}/t1' | grep -q '^.tjor-share-probe-'"
+    check "task notes: mounted writable at its host path" bash -c "docker exec '${CTR_T}' sh -c 'echo w > \"${NOTES_ROOT}/t1/written-in-cage\"'"
+    check "task notes: the write landed on the host" test -f "${NOTES_ROOT}/t1/written-in-cage"
+    check "task notes: TJOR_TASK_DIR names the directory inside the cage" bash -c "docker exec '${CTR_T}' printenv TJOR_TASK_DIR | grep -qx '${NOTES_ROOT}/t1'"
+    check "task notes: the workspace label is still the repository" bash -c "docker inspect -f '{{index .Config.Labels \"tjor.workspace\"}}' '${CTR_T}' | grep -qx '${A}'"
+    check "task notes: the harness working directory is the repository, not the notes tree" bash -c "docker inspect -f '{{.Config.WorkingDir}}' '${CTR_T}' | grep -qx '${A}'"
+    check "task notes: the task label carries the id" bash -c "docker inspect -f '{{index .Config.Labels \"tjor.task\"}}' '${CTR_T}' | grep -qx t1"
+    check "task notes: git trust covers the notes directory as a writable root" bash -c "docker exec '${CTR_T}' git config --system --get-all safe.directory | grep -qxF -- '${NOTES_ROOT}/t1'"
+    ( cd "${A}" && TJOR_USER_CONFIG="${TCFG}/config.toml" "${T}" down --session t1 >/dev/null 2>&1 )
+    check "task notes: down --session <id> tears down the per-task session" bash -c "! docker ps -q --filter 'label=tjor.session=${SID_T}' | grep -q ."
+    check "task notes: the primary session is untouched by the per-task teardown" bash -c "docker ps -q --filter 'label=tjor.session=${SID}' --filter status=running | grep -q ."
+else
+    bad "task notes: the per-task session never started ($(tail -5 "${RUNOUT}.t1" | tr '\n' ' '))"
+fi
+
 echo "multirepo: ${PASS} passed, ${FAIL} failed"
 exit "$((FAIL > 0 ? 1 : 0))"

@@ -41,6 +41,8 @@ jobs:
         run: bash tests/integration/conformance_runtime_test.sh
       - name: workspace sensitive-path gate (no docker) (#64)
         run: bash tests/integration/workspace_gate_test.sh
+      - name: task notes directory, naming and probe contract (no docker) (#69)
+        run: bash tests/integration/task_notes_test.sh
       - name: launcher self-mount guard + self-install (no docker) (#67)
         run: bash tests/integration/self_mount_test.sh
       - name: git tamper detection baseline/check/marker (no docker) (#72)
@@ -83,6 +85,8 @@ jobs:
         run: bash tests/integration/gateway_test.sh
       - name: session state inventory, prune and lock (mock docker) (#68)
         run: bash tests/integration/state_test.sh
+      - name: task notes directory, naming and probe contract (no docker) (#69)
+        run: bash tests/integration/task_notes_test.sh
 
   agent-image:
     name: agent image (${{ matrix.harness }})

@@ -1,6 +1,9 @@
 """Tests for the single config merge path and the Corefile generator."""
 
+import io
 import sys
+
+import pytest
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -115,6 +118,32 @@ class TestConfigMerge:
         with pytest.raises(SystemExit) as exc:
             tjor_cfg.check()
         assert "broker.suorce" in str(exc.value)
+
+    def test_check_aborts_on_unknown_task_key(self, tmp_path, monkeypatch):
+        # [task] is a security table (#69): a typo would silently switch the
+        # notes directory off, so it aborts like [landlock]/[broker]; a
+        # misspelled TABLE name only warns, as for every table.
+        user = tmp_path / "config.toml"
+        user.write_text('[task]\nnote_dir = "~/x/{task}"\n')
+        monkeypatch.setenv("TJOR_USER_CONFIG", str(user))
+        monkeypatch.delenv("TJOR_REPO_ROOT", raising=False)
+        with pytest.raises(tjor_cfg.ConfigError, match="task.note_dir"):
+            tjor_cfg.check()
+        user.write_text('[tasks]\nnotes_dir = "~/x/{task}"\n')
+        assert tjor_cfg.check(stream=io.StringIO()) == 1
+
+    def test_task_defaults_and_user_override(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("TJOR_USER_CONFIG", "/nonexistent/config.toml")
+        monkeypatch.delenv("TJOR_REPO_ROOT", raising=False)
+        cfg = tjor_cfg.effective()
+        assert tjor_cfg.get(cfg, "task.notes_dir") == "" and tjor_cfg.get(cfg, "task.create") is True
+        assert tjor_cfg.get(cfg, "task.session_per_task") is False
+        user = tmp_path / "config.toml"
+        user.write_text('[task]\nnotes_dir = "~/scratch/tasks/{task}"\ncreate = false\nsession_per_task = true\n')
+        monkeypatch.setenv("TJOR_USER_CONFIG", str(user))
+        assert tjor_cfg.check(stream=io.StringIO()) == 0
+        cfg = tjor_cfg.effective()
+        assert tjor_cfg.get(cfg, "task.create") is False and tjor_cfg.get(cfg, "task.session_per_task") is True
 
     def test_check_valid_security_table_keys_do_not_abort(self, tmp_path, monkeypatch):
         user = tmp_path / "config.toml"

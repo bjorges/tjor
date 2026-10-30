@@ -6,6 +6,26 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 ## [Unreleased]
 
 ### Added
+- **Task notes** (#69). A `[task]` table in the user config (`notes_dir =
+  "~/scratch/tasks/{task}"`, `create`, `session_per_task`) makes `--task <id>`
+  resolve a per-task notes directory and mount it writable at its host path
+  through the same path as a `--dir`, so every rule for extra writable roots
+  applies to it unchanged; `TJOR_TASK_DIR` names it inside the cage, with no
+  identity header derived from it. The notes root must exist and is never
+  created; what lies below is created one real directory at a time, never
+  through a link, with the template checked component by component. A launch
+  is refused, with no override, when the workspace is the notes root or
+  contains it (judged by filesystem identity, not path strings). With
+  `session_per_task`, the session's short name is the task id, so `tjor down
+  --session <id>` addresses it; `tjor attach --task <id>` picks the running
+  agent by its label; ids the lifecycle resolver would misread are refused at
+  launch, and a collision that appears later is refused as ambiguous. The
+  directory is scanned, bounded and link-free, for credential-shaped files
+  (advisory, partial scans say so) and share-checked with a probe file an
+  isolated throwaway container must see. The `[task]` table is user-config
+  only (ADR 0013) and a security table (a misspelled key aborts). README
+  "Task notes"; a `task-notes` capability spec and slide; a docker-free
+  launcher test (boundary matrix: the `task-notes` suite) and live cases.
 - **Method gate in the egress policy** (#66). `[[methods.restrict]]` makes a
   host read-only (`host`, `allow = [<METHOD>, …]`) and `[[methods.except]]`
   admits a method on exactly one path (`host`, `path`, `methods`), matched
@@ -114,6 +134,12 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
   gains a live section that interleaves a real launch with a prune.
 
 ### Changed
+- `--task <id>`: once a notes directory or per-task sessions are configured
+  (`[task]`), the id must match `[a-z0-9][a-z0-9_-]{0,31}` (lower-case,
+  dot-free, at most 32 characters); without a `[task]` table the old grammar
+  and label-only behaviour are unchanged. Lifecycle commands refuse a
+  `--session` value that is both another workspace's full session id and this
+  workspace's short name, naming both ids, instead of picking one.
 - The gateway's policy augmentation parses the base policy with the one
   policy parser first and re-emits every section from it, `methods` rules
   included, adding a `POST` exception for the gateway's `POST` inference

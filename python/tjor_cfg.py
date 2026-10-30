@@ -48,7 +48,15 @@ EXTRA_KNOWN = frozenset({
 # believes a stricter setting is applied when it is not — in unattended/CI use
 # nobody reads the warning, so it aborts the launch instead. A misspelled
 # TABLE name still only warns: it cannot claim to configure these tables.
-SECURITY_TABLES = frozenset({"landlock", "broker"})
+SECURITY_TABLES = frozenset({"landlock", "broker", "task"})
+
+# Tables a REPOSITORY config can never set, trusted or not (ADR 0013): a value
+# there names a host path to mount writable into the cage, and a repository
+# must not get to choose one even after `tjor trust` approved the file. They
+# come from the defaults and the user config (the layer the operator's own
+# environment selects) alone; a repo layer carrying one is warned about,
+# naming the file, and the table is dropped before the merge.
+USER_ONLY_TABLES = frozenset({"task"})
 
 
 def validate_layer(layer: dict, shape: dict, path: str = "") -> list[str]:
@@ -129,7 +137,7 @@ def effective() -> dict:
         import tjor_trust
 
         if tjor_trust.is_trusted(repo):
-            config = deep_merge(config, _load(repo))
+            config = deep_merge(config, _drop_user_only(_load(repo), repo))
         else:
             print(
                 f"tjor_cfg: repo config {repo} present but NOT trusted — ignored "
@@ -137,6 +145,19 @@ def effective() -> dict:
                 file=sys.stderr,
             )
     return config
+
+
+def _drop_user_only(layer: dict, path) -> dict:
+    """The repo layer without its user-only tables, each one warned about once."""
+    out = dict(layer)
+    for table in sorted(USER_ONLY_TABLES & set(out)):
+        del out[table]
+        print(
+            f"tjor_cfg: WARNING: table [{table}] in repo config ({path}) is user-config only "
+            "(it names host paths to mount; ADR 0013) — ignored",
+            file=sys.stderr,
+        )
+    return out
 
 
 def check(stream=None) -> int:
@@ -166,7 +187,10 @@ def check(stream=None) -> int:
     for label, path in layers:
         if not path.is_file():
             continue
-        unknown = validate_layer(_load(path), shape)
+        layer = _load(path)
+        if label == "repo config":
+            layer = _drop_user_only(layer, path)
+        unknown = validate_layer(layer, shape)
         for key in unknown:
             if key.split(".", 1)[0] in SECURITY_TABLES:
                 fatal.append(f"'{key}' in {label} ({path})")

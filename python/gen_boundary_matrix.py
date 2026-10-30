@@ -43,6 +43,7 @@ WORKSPACE_GATE_FILE = ROOT / "tests" / "integration" / "workspace_gate_test.sh"
 SELF_MOUNT_FILE = ROOT / "tests" / "integration" / "self_mount_test.sh"
 GITCHECK_FILE = ROOT / "tests" / "integration" / "gitcheck_test.sh"
 WORKTREE_FILE = ROOT / "tests" / "integration" / "worktree_test.sh"
+TASK_NOTES_FILE = ROOT / "tests" / "integration" / "task_notes_test.sh"
 MATRIX_FILE = ROOT / "docs" / "boundary-matrix.md"
 
 CONFORMANCE = "conformance"
@@ -51,6 +52,7 @@ WORKSPACE_GATE = "workspace-gate"
 SELF_MOUNT = "self-mount"
 GITCHECK = "gitcheck"
 WORKTREE = "worktree"
+TASK_NOTES = "task-notes"
 
 # name -> (suite, capability, guarantee, boundary)
 # boundary=True  -> an adversarial cage guarantee (rendered in the matrix)
@@ -482,13 +484,228 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
     "worktree: the main repository's pre-commit hook did not fire":
         (LANDLOCK, "kernel-sandbox", "The main repository's host hook does not fire on an in-cage worktree commit", True),
     "worktree: git resolves the common dir at its host path in-cage": (LANDLOCK, "session-launch", "functional: common dir at its host path", False),
+    # --- task notes (launcher-side, #69; spec: task-notes) ---
+    'task notes: --task resolves the directory from the template, with no side effect':
+        (TASK_NOTES, 'task-notes', '--task resolves the directory from the template, with no side effect', False),
+    'task notes: resolution created no directory':
+        (TASK_NOTES, 'task-notes', 'Resolution created no directory', True),
+    'task notes: the launch names the per-task session and how to address it':
+        (TASK_NOTES, 'session-launch', 'The launch names the per-task session and how to address it', False),
+    'task notes: no state dir is created by resolution':
+        (TASK_NOTES, 'task-notes', 'No state dir is created by resolution', True),
+    'task notes: an upper-case id is refused once it names a directory':
+        (TASK_NOTES, 'task-notes', 'An upper-case id is refused once it names a directory', True),
+    'task notes: the refusal names the grammar':
+        (TASK_NOTES, 'task-notes', 'The refusal names the grammar', False),
+    'task notes: a dot-leading id is refused':
+        (TASK_NOTES, 'task-notes', 'A dot-leading id is refused', True),
+    "task notes: '..' as a task id is refused":
+        (TASK_NOTES, 'task-notes', "'..' as a task id is refused", True),
+    'task notes: a 33-character id is refused':
+        (TASK_NOTES, 'task-notes', 'A 33-character id is refused', True),
+    'task notes: a dotted id is refused':
+        (TASK_NOTES, 'task-notes', 'A dotted id is refused', True),
+    'task notes: no directory was created by any refusal':
+        (TASK_NOTES, 'task-notes', 'No directory was created by any refusal', True),
+    'task notes: refusals never reached docker':
+        (TASK_NOTES, 'task-notes', 'Refusals never reached docker', True),
+    'task notes: launching from inside the notes repository is refused':
+        (TASK_NOTES, 'task-notes', 'Launching from inside the notes repository is refused', True),
+    'task notes: the refusal names the workspace and the notes root':
+        (TASK_NOTES, 'task-notes', 'The refusal names the workspace and the notes root', False),
+    'task notes: the refusal points at launching from the code repository':
+        (TASK_NOTES, 'task-notes', 'The refusal points at launching from the code repository', False),
+    'task notes: launching from the notes repository root is refused':
+        (TASK_NOTES, 'task-notes', 'Launching from the notes repository root is refused', True),
+    'task notes: no state dir after the notes-root refusals':
+        (TASK_NOTES, 'task-notes', 'No state dir after the notes-root refusals', True),
+    'task notes: a workspace below the notes root is not an ancestor and launches':
+        (TASK_NOTES, 'task-notes', 'A workspace below the notes root is not an ancestor and launches', False),
+    'task notes: another spelling of the notes repository (a link) is refused by identity':
+        (TASK_NOTES, 'task-notes', 'Another spelling of the notes repository (a link) is refused by identity', True),
+    'task notes: --task <base id> is refused (it reads as the default session)':
+        (TASK_NOTES, 'session-launch', '--task <base id> is refused (it reads as the default session)', True),
+    'task notes: --task <base id>-x is refused (it reads as a qualified id)':
+        (TASK_NOTES, 'session-launch', '--task <base id>-x is refused (it reads as a qualified id)', True),
+    'task notes: the round-trip refusal names tjor down --session':
+        (TASK_NOTES, 'session-launch', 'The round-trip refusal names tjor down --session', True),
+    "task notes: a qualified-looking id naming an existing session's state dir is refused":
+        (TASK_NOTES, 'session-launch', "A qualified-looking id naming an existing session's state dir is refused", True),
+    'task notes: that refusal never asked docker (the state dir decided)':
+        (TASK_NOTES, 'task-notes', 'That refusal never asked docker (the state dir decided)', True),
+    'task notes: a qualified-looking id naming a labelled container is refused':
+        (TASK_NOTES, 'session-launch', 'A qualified-looking id naming a labelled container is refused', True),
+    'task notes: the container lookup went through docker ps':
+        (TASK_NOTES, 'session-launch', 'The container lookup went through docker ps', False),
+    'task notes: a qualified-looking id with Docker unreachable is refused, not guessed':
+        (TASK_NOTES, 'session-launch', 'A qualified-looking id with Docker unreachable is refused, not guessed', True),
+    'task notes: the unreachable-engine refusal says so':
+        (TASK_NOTES, 'session-launch', 'The unreachable-engine refusal says so', False),
+    'task notes: a qualified-looking id no session uses launches':
+        (TASK_NOTES, 'session-launch', 'A qualified-looking id no session uses launches', False),
+    'task notes: a plain id never consults docker':
+        (TASK_NOTES, 'session-launch', 'A plain id never consults docker', True),
+    'task notes: no docker call for the plain id':
+        (TASK_NOTES, 'session-launch', 'No docker call for the plain id', True),
+    'task notes: the lifecycle resolver reads the derived name back as the same session':
+        (TASK_NOTES, 'session-lifecycle', 'The lifecycle resolver reads the derived name back as the same session', False),
+    "task notes: the resolver's qualified-looking notice is printed for it":
+        (TASK_NOTES, 'session-launch', "The resolver's qualified-looking notice is printed for it", False),
+    'task notes: a collision that appears later is refused as ambiguous':
+        (TASK_NOTES, 'session-lifecycle', 'A collision that appears later is refused as ambiguous', True),
+    'task notes: the ambiguity refusal says so':
+        (TASK_NOTES, 'session-lifecycle', 'The ambiguity refusal says so', False),
+    "task notes: the ambiguity refusal names this workspace's full id":
+        (TASK_NOTES, 'session-lifecycle', "The ambiguity refusal names this workspace's full id", True),
+    'task notes: with only the foreign session present the full id is used verbatim':
+        (TASK_NOTES, 'session-lifecycle', 'With only the foreign session present the full id is used verbatim', False),
+    'task notes: --session names the session and --task stays the label and directory':
+        (TASK_NOTES, 'session-launch', '--session names the session and --task stays the label and directory', False),
+    'task notes: without [task] a label-only id keeps the old grammar':
+        (TASK_NOTES, 'task-notes', 'Without [task] a label-only id keeps the old grammar', False),
+    'task notes: without [task] a dot-leading label is still accepted':
+        (TASK_NOTES, 'task-notes', 'Without [task] a dot-leading label is still accepted', False),
+    'task notes: session_per_task alone applies the grammar and derives the name, mounts nothing':
+        (TASK_NOTES, 'session-launch', 'Session_per_task alone applies the grammar and derives the name, mounts nothing', True),
+    'task notes: session_per_task alone still refuses an upper-case id':
+        (TASK_NOTES, 'session-launch', 'Session_per_task alone still refuses an upper-case id', False),
+    'task notes: a TRUSTED repo config cannot move the notes directory':
+        (TASK_NOTES, 'repo-config-trust', 'A TRUSTED repo config cannot move the notes directory', True),
+    "task notes: the repo config's [task] table is reported as ignored":
+        (TASK_NOTES, 'repo-config-trust', "The repo config's [task] table is reported as ignored", True),
+    'task notes: a relative template is refused':
+        (TASK_NOTES, 'task-notes', 'A relative template is refused', True),
+    'task notes: a template without the placeholder is refused':
+        (TASK_NOTES, 'task-notes', 'A template without the placeholder is refused', True),
+    'task notes: a template with the placeholder twice is refused':
+        (TASK_NOTES, 'task-notes', 'A template with the placeholder twice is refused', True),
+    'task notes: a template with a dot-dot component is refused':
+        (TASK_NOTES, 'task-notes', 'A template with a dot-dot component is refused', True),
+    'task notes: a template with a trailing separator is refused':
+        (TASK_NOTES, 'task-notes', 'A template with a trailing separator is refused', True),
+    'task notes: a template whose root does not exist is refused':
+        (TASK_NOTES, 'task-notes', 'A template whose root does not exist is refused', True),
+    'task notes: the root is never created by tjor':
+        (TASK_NOTES, 'task-notes', 'The root is never created by tjor', True),
+    'task notes: a malformed template leaves no directory':
+        (TASK_NOTES, 'task-notes', 'A malformed template leaves no directory', True),
+    'task notes: a sensitive template is refused by the --dir gate before anything is created':
+        (TASK_NOTES, 'task-notes', 'A sensitive template is refused by the --dir gate before anything is created', True),
+    'task notes: the gate refusal names the sensitive path':
+        (TASK_NOTES, 'task-notes', 'The gate refusal names the sensitive path', False),
+    'task notes: the gate refusal created nothing':
+        (TASK_NOTES, 'task-notes', 'The gate refusal created nothing', True),
+    'task notes: the gate refusal left no session state dir':
+        (TASK_NOTES, 'task-notes', 'The gate refusal left no session state dir', True),
+    'task notes: prepare creates the directory and appends it to the writable extras once':
+        (TASK_NOTES, 'task-notes', 'Prepare creates the directory and appends it to the writable extras once', True),
+    'task notes: the created directory is real':
+        (TASK_NOTES, 'task-notes', 'The created directory is real', True),
+    'task notes: the directory is created component by component below the root':
+        (TASK_NOTES, 'task-notes', 'The directory is created component by component below the root', True),
+    'task notes: both components are real directories':
+        (TASK_NOTES, 'task-notes', 'Both components are real directories', True),
+    'task notes: an equal --dir is not appended twice':
+        (TASK_NOTES, 'task-notes', 'An equal --dir is not appended twice', True),
+    'task notes: a directory covered by a --dir root is mounted with it, not again':
+        (TASK_NOTES, 'task-notes', 'A directory covered by a --dir root is mounted with it, not again', True),
+    'task notes: the covered case says which root covers it':
+        (TASK_NOTES, 'task-notes', 'The covered case says which root covers it', False),
+    'task notes: a notes root inside the workspace is the notes-root refusal (the code repo would be the notes repo)':
+        (TASK_NOTES, 'task-notes', 'A notes root inside the workspace is the notes-root refusal (the code repo would be the notes repo)', True),
+    'task notes: that refusal names the workspace as containing the notes root':
+        (TASK_NOTES, 'task-notes', 'That refusal names the workspace as containing the notes root', False),
+    'task notes: the same path via --dir-ro is a writability conflict':
+        (TASK_NOTES, 'task-notes', 'The same path via --dir-ro is a writability conflict', True),
+    'task notes: the conflict names --dir-ro':
+        (TASK_NOTES, 'task-notes', 'The conflict names --dir-ro', True),
+    'task notes: a symbolic link at the task directory is refused':
+        (TASK_NOTES, 'task-notes', 'A symbolic link at the task directory is refused', True),
+    'task notes: the link refusal names it':
+        (TASK_NOTES, 'task-notes', 'The link refusal names it', True),
+    'task notes: nothing was created through the link':
+        (TASK_NOTES, 'task-notes', 'Nothing was created through the link', True),
+    'task notes: create = false refuses a missing directory':
+        (TASK_NOTES, 'task-notes', 'Create = false refuses a missing directory', False),
+    'task notes: the create=false refusal names task.create':
+        (TASK_NOTES, 'task-notes', 'The create=false refusal names task.create', True),
+    'task notes: create = false accepts an existing directory':
+        (TASK_NOTES, 'task-notes', 'Create = false accepts an existing directory', False),
+    'task notes: lifecycle resolution creates nothing':
+        (TASK_NOTES, 'task-notes', 'Lifecycle resolution creates nothing', True),
+    'task notes: no directory after a lifecycle resolution':
+        (TASK_NOTES, 'task-notes', 'No directory after a lifecycle resolution', True),
+    'task notes: credential-shaped files produce a loud warning and the launch continues':
+        (TASK_NOTES, 'task-notes', 'Credential-shaped files produce a loud warning and the launch continues', False),
+    'task notes: the warning counts the findings':
+        (TASK_NOTES, 'task-notes', 'The warning counts the findings', False),
+    'task notes: the warning names the key file':
+        (TASK_NOTES, 'task-notes', 'The warning names the key file', False),
+    'task notes: the warning names the file whose content looks like a token':
+        (TASK_NOTES, 'task-notes', 'The warning names the file whose content looks like a token', False),
+    'task notes: a FIFO does not block the scan':
+        (TASK_NOTES, 'task-notes', 'A FIFO does not block the scan', True),
+    'task notes: the scan says it was partial and names the FIFO':
+        (TASK_NOTES, 'task-notes', 'The scan says it was partial and names the FIFO', False),
+    'task notes: the partial notice is loud':
+        (TASK_NOTES, 'task-notes', 'The partial notice is loud', False),
+    'task notes: a probe the container does not see refuses the launch':
+        (TASK_NOTES, 'task-notes', 'A probe the container does not see refuses the launch', False),
+    'task notes: the share refusal names the directory':
+        (TASK_NOTES, 'task-notes', 'The share refusal names the directory', False),
+    'task notes: the share refusal names the remedy':
+        (TASK_NOTES, 'task-notes', 'The share refusal names the remedy', False),
+    'task notes: the probe file is removed after a refusal':
+        (TASK_NOTES, 'task-notes', 'The probe file is removed after a refusal', True),
+    'task notes: a probe the container sees passes':
+        (TASK_NOTES, 'task-notes', 'A probe the container sees passes', False),
+    'task notes: the probe file is removed after a pass':
+        (TASK_NOTES, 'task-notes', 'The probe file is removed after a pass', True),
+    'task notes: the probe container has no network':
+        (TASK_NOTES, 'task-notes', 'The probe container has no network', True),
+    'task notes: the probe container runs a plain shell entrypoint':
+        (TASK_NOTES, 'task-notes', 'The probe container runs a plain shell entrypoint', False),
+    'task notes: the probe runs on the pinned proxy image':
+        (TASK_NOTES, 'task-notes', 'The probe runs on the pinned proxy image', False),
+    'task notes: the probe binds the notes directory read-only':
+        (TASK_NOTES, 'task-notes', 'The probe binds the notes directory read-only', True),
+    'task notes: the probe binds nothing else':
+        (TASK_NOTES, 'task-notes', 'The probe binds nothing else', True),
+    'task notes: the probe passes no environment and no socket':
+        (TASK_NOTES, 'task-notes', 'The probe passes no environment and no socket', True),
+    'task notes: the probe name is a trailing argument, never inside the shell string':
+        (TASK_NOTES, 'task-notes', 'The probe name is a trailing argument, never inside the shell string', True),
+    'task notes: attach --task picks the agent carrying that task label':
+        (TASK_NOTES, 'session-lifecycle', 'Attach --task picks the agent carrying that task label', False),
+    'task notes: attach --task resolved the right container':
+        (TASK_NOTES, 'session-lifecycle', 'Attach --task resolved the right container', False),
+    'task notes: attach --task with no such agent exits non-zero':
+        (TASK_NOTES, 'session-lifecycle', 'Attach --task with no such agent exits non-zero', False),
+    'task notes: attach --task with no such agent says so':
+        (TASK_NOTES, 'session-lifecycle', 'Attach --task with no such agent says so', False),
+    'task notes: the same task id in two repositories offers the picker':
+        (TASK_NOTES, 'task-notes', 'The same task id in two repositories offers the picker', False),
+    'task notes: the picker, declined, selects nothing':
+        (TASK_NOTES, 'task-notes', 'The picker, declined, selects nothing', False),
+    'task notes: attach --task without a value is a usage error':
+        (TASK_NOTES, 'session-lifecycle', 'Attach --task without a value is a usage error', False),
+    'task notes: the usage error says the value is needed':
+        (TASK_NOTES, 'task-notes', 'The usage error says the value is needed', False),
+    'task notes: attach with a session and --task is a usage error':
+        (TASK_NOTES, 'session-lifecycle', 'Attach with a session and --task is a usage error', False),
+    'task notes: the usage error says not both':
+        (TASK_NOTES, 'task-notes', 'The usage error says not both', False),
+    'task notes: help text names the per-task notes directory':
+        (TASK_NOTES, 'task-notes', 'Help text names the per-task notes directory', False),
+    'task notes: help text names attach --task':
+        (TASK_NOTES, 'session-lifecycle', 'Help text names attach --task', False),
 }
 
 # Order capabilities are grouped in the rendered matrix.
 CAPABILITY_ORDER = [
     "cage-network", "egress-policy", "credential-broker",
-    "session-identity", "kernel-sandbox", "session-launch", "launcher-integrity",
-    "git-tamper-detection",
+    "session-identity", "kernel-sandbox", "session-launch", "task-notes", "session-lifecycle",
+    "repo-config-trust", "launcher-integrity", "git-tamper-detection",
 ]
 
 
@@ -519,7 +736,8 @@ def parsed_names() -> list[str]:
             + parse_landlock(WORKSPACE_GATE_FILE.read_text())
             + parse_landlock(SELF_MOUNT_FILE.read_text())
             + parse_landlock(GITCHECK_FILE.read_text())
-            + parse_landlock(WORKTREE_FILE.read_text()))
+            + parse_landlock(WORKTREE_FILE.read_text())
+            + parse_landlock(TASK_NOTES_FILE.read_text()))
 
 
 def cross_check(names: list[str]) -> list[str]:
@@ -548,7 +766,7 @@ def render(names: list[str]) -> str:
         f"CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "
         f"\"listed here\" means \"proven green in CI\". The `conformance` and "
         f"`landlock` suites probe the cage from inside; the `workspace-gate`, "
-        f"`self-mount` and `gitcheck` suites are launcher-side (host guarantees the cage cannot "
+        f"`self-mount`, `gitcheck` and `task-notes` suites are launcher-side (host guarantees the cage cannot "
         f"re-check: what `tjor run` refuses before any container exists). Generated from the suite "
         f"sources ({len(names)} checks total; {n_boundary} adversarial guarantees "
         f"below, the rest functional/config checks the suites also run).",

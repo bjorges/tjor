@@ -174,3 +174,17 @@ class TestBrokerHostPairs:
         assert ti.broker_covers(pairs, "gist.github.com", 443)
         assert not ti.broker_covers(pairs, "gist.github.com", 8443)
         assert not ti.broker_covers(pairs, "github.com", 443)  # apex: matcher semantics
+
+
+class TestTaskDirIsCageOnly:
+    """task-notes (#69): TJOR_TASK_DIR is environment inside the cage only —
+    no identity header is derived from it, and a forged one is unknown."""
+
+    def test_no_header_derived_from_the_notes_directory(self):
+        env = dict(ENV, TJOR_TASK_DIR="/Users/alice/scratch/tasks/a")
+        ident = ti.load_identity(env)
+        assert ident.valid
+        assert "x-agent-task-id" in ident.values and ident.values["x-agent-task-id"] == "PLT-1234"
+        assert not any("task-dir" in k for k in ident.values)
+        assert not any("/Users/alice" in v or "scratch" in v for v in ident.values.values())
+        assert "TJOR_TASK_DIR" not in ti.SCHEMA.values()
