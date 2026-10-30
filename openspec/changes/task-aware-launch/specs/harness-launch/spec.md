@@ -138,7 +138,7 @@ Delivery SHALL be: opencode `--prompt=<prompt>` as one argv element (attached fo
 
 ### Requirement: The record is read as a bounded regular file and is never agent-writable
 
-The record SHALL be read without following links: a symbolic link, a FIFO, a directory, any non-regular file, a file over 4096 bytes or one not in the launcher's exact format SHALL refuse the launch naming the file; only an absent path means "no conversation". When a writable root (the workspace or a `--dir`, which `--unsafe-dir` lets cover tjor's roots) equals or contains the state directory and the launch relies on the record, the launch SHALL be refused naming the root and the record.
+The record SHALL be read without following links: a link, a FIFO, a directory, any non-regular file, a file over 4096 bytes or one not in the launcher's exact format SHALL refuse the launch naming the file; only an absent path means "no conversation". When any intended writable root (the workspace, a `--dir`, or the notes directory before it is created) is or contains the state directory and the launch relies on the record, the launch SHALL be refused naming the root and the record.
 
 #### Scenario: A record that cannot be read
 - **WHEN** the record path is a symbolic link, a FIFO, a directory, an oversize file, or a file that is not the launcher's format
@@ -152,9 +152,21 @@ The record SHALL be read without following links: a symbolic link, a FIFO, a dir
 - **WHEN** `tjor run --unsafe-dir --task a` is launched from the home directory, or with `--dir` naming the session root, with `prompt` set or `resume = "auto"`
 - **THEN** the launch is refused naming the root and the record, because the agent could rewrite the record through that mount; a read-only root (`--dir-ro`) covering it is allowed, and so is the same launch with an explicit command or with `[task]` at its defaults
 
+#### Scenario: The notes directory over the session root
+- **WHEN** `task.notes_dir = "/safe/notes/{task}"`, the session root is `/safe/notes/a/sessions`, and `tjor run --unsafe-dir --task a` is launched from an unrelated repository with `resume = "auto"`
+- **THEN** the launch is refused before the notes directory is created or mounted, naming `/safe/notes/a` and the record: the notes directory is judged as an intended writable root, not only the roots already resolved
+
+#### Scenario: Coverage is judged without creating anything
+- **WHEN** the session has no state directory yet (a fresh launch) and the check runs
+- **THEN** it compares the writable roots with the session root and the state directory's path by filesystem identity where the paths exist and by the missing final component where they do not, creates nothing, and refuses on any error instead of reading it as "not covered"; a root that differs only in case or composition from the session root on a filesystem that treats them as one directory is caught
+
+#### Scenario: Worktree common directories
+- **WHEN** a linked worktree's common git directory would be mounted alongside the workspace
+- **THEN** it is not part of this check: such a directory is refused by a sensitive-path check that has no override when it is one of tjor's roots or contains or lies under one, and the plan relies on that check by name
+
 ### Requirement: Refusals create nothing
 
-The launcher SHALL validate the configuration and build the whole command, prompt and resume decision included, after every path gate and before the notes directory is created, the profile is staged, the first write into the state directory, any credential mint and any sidecar. A refusal by any rule here SHALL create nothing: no notes directory, no state-directory content, no credential, no container. The session root and the lock, set up by every launch before the builder, are all that remains.
+The launcher SHALL validate the configuration and build the whole command, prompt and resume decision included, after the explicit extra-dir and notes sensitive-path gates and before the notes directory is created, the profile is staged, the first write, any mint and any sidecar. A refusal by any rule here SHALL create nothing: no notes directory, no state-directory content, no credential, no container. The session root and the lock, set up by every launch first, are all that remains.
 
 #### Scenario: Malformed arguments leave nothing behind
 - **WHEN** `[harness.opencode] args` holds a newline and `tjor run --task a` is launched for a session that has no state directory and a task whose notes directory does not exist
@@ -174,7 +186,7 @@ Before starting the container the launcher SHALL print the command it built on o
 
 ### Requirement: Limits are stated
 
-The README SHALL state the limits in the scenarios below plainly, and the slide SHALL carry the first and the third.
+The README SHALL state the limits in the scenarios below plainly, and the slide SHALL carry both.
 
 #### Scenario: Limits of the owned command line
 - **WHEN** the README's harness-launch section is read
