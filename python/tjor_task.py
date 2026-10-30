@@ -15,7 +15,11 @@ checked is what is used:
                                       (st_dev, st_ino), 3 when not, 2 on error
                                       (never 1, Python's own exit for a crash
                                       before or outside _main, so a fault can
-                                      never read as "no")
+                                      never read as "no"). A and B are the
+                                      launcher's physical, absolute paths: a
+                                      link anywhere on either chain, or a `.`
+                                      or `..` component, is an error, never
+                                      followed or collapsed
   probe-create DIR / probe-remove DIR NAME
                                       an empty, unpredictable probe file for the
                                       VM-share correspondence check
@@ -220,29 +224,59 @@ def _open_child(fd: int, name: str, here: str) -> int | None:
 
 # --------------------------------------------------------------- contains
 
+def _plain_path(path: str, what: str) -> None:
+    """The launcher passes physical, absolute paths (`pwd -P`, the resolved
+    notes prefix). A `.` or `..` component is refused rather than collapsed:
+    `L/../x` with `L` a link is `x` beside `L` lexically, and the chain walk
+    would never see `L`."""
+    if not path.startswith("/"):
+        raise TaskError(f"{what} {_safe(path)} is not an absolute path")
+    for comp in path.split("/"):
+        if comp in (".", ".."):
+            raise TaskError(f"{what} {_safe(path)} holds a {comp!r} component; the launcher passes physical paths")
+
+
+def _lstat_real_dir(path: str, what: str) -> os.stat_result:
+    """lstat a path that must be a real directory: a link is an error, never
+    followed (the launcher's paths are physical; a link here means something
+    was swapped since), as is anything that is not a directory."""
+    try:
+        st = os.lstat(path)
+    except OSError as exc:
+        raise TaskError(f"cannot read {what} {_safe(path)}: {exc.strerror}") from exc
+    if stat.S_ISLNK(st.st_mode):
+        raise TaskError(f"{what} {_safe(path)} is a symbolic link; it is never followed")
+    if not stat.S_ISDIR(st.st_mode):
+        raise TaskError(f"{what} {_safe(path)} is not a directory")
+    return st
+
+
+def _chain_keys(path: str, what: str) -> list[tuple[int, int]]:
+    """The identities of `path` and every directory above it, leaf first,
+    each lstat'ed and required to be a real directory."""
+    keys: list[tuple[int, int]] = []
+    cur = os.path.abspath(path)
+    while True:
+        st = _lstat_real_dir(cur, what)
+        keys.append((st.st_dev, st.st_ino))
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return keys
+        cur = parent
+
+
 def contains(ancestor: str, path: str) -> bool:
     """True when `ancestor` is `path` or one of its ancestors, judged by
     (st_dev, st_ino) along the parent chain, never by the path string (a
     case-folding or normalising filesystem makes two spellings one directory).
-    Raises TaskError when the identity of any step cannot be read."""
+    Both chains are walked without following a link: a link anywhere, a `.`
+    or `..` component, or a step whose identity cannot be read raises
+    TaskError, so the caller refuses rather than reads "no"."""
     check_capabilities()
-    try:
-        a = os.stat(ancestor)
-    except OSError as exc:
-        raise TaskError(f"cannot read {_safe(ancestor)}: {exc.strerror}") from exc
-    key = (a.st_dev, a.st_ino)
-    cur = os.path.abspath(path)
-    while True:
-        try:
-            s = os.stat(cur)
-        except OSError as exc:
-            raise TaskError(f"cannot read {_safe(cur)}: {exc.strerror}") from exc
-        if (s.st_dev, s.st_ino) == key:
-            return True
-        parent = os.path.dirname(cur)
-        if parent == cur:
-            return False
-        cur = parent
+    _plain_path(ancestor, "the ancestor")
+    _plain_path(path, "the path")
+    key = _chain_keys(ancestor, "a directory on the ancestor's chain")[0]
+    return key in _chain_keys(path, "a directory on the path's chain")
 
 
 # ------------------------------------------------------------------ probe

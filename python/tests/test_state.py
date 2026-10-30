@@ -1,5 +1,6 @@
 """Session state helper (#68): one tier definition, atomic metadata, an
 inventory that never follows a symlink and never calls unreadable state old."""
+import errno
 import json
 import os
 import stat
@@ -436,6 +437,58 @@ def test_conversation_round_trip(tmp_path):
     ts.write_conversation(str(tmp_path), harness="opencode", task="-x", now=5)   # replaced; a label-only id is fine
     assert ts.read_conversation(str(tmp_path)) == ("opencode", "-x", 5)
     assert [p.name for p in tmp_path.iterdir()] == ["conversation.json"]       # no temp file left
+
+
+def test_conversation_write_flushes_the_file_then_the_directory(tmp_path, monkeypatch):
+    # The durability steps, in order: the file's bytes before the rename, the
+    # directory after it. Dropping either call turns this red.
+    events = []
+    monkeypatch.setattr(ts, "_flush", lambda fd: events.append(("file", os.fstat(fd).st_size > 0)))
+    monkeypatch.setattr(ts, "_flush_dir", lambda path: events.append(("dir", path, (tmp_path / "conversation.json").exists())))
+    ts.write_conversation(str(tmp_path), harness="claude", task="a", now=1)
+    assert events == [("file", True), ("dir", str(tmp_path), True)]
+
+
+def test_flush_prefers_full_fsync_and_falls_back(tmp_path, monkeypatch):
+    fd = os.open(tmp_path / "f", os.O_RDWR | os.O_CREAT)
+    try:
+        calls = []
+        monkeypatch.setattr(ts.os, "fsync", lambda d: calls.append(("fsync", d)))
+        monkeypatch.setattr(ts.fcntl, "F_FULLFSYNC", 51, raising=False)
+        monkeypatch.setattr(ts.fcntl, "fcntl", lambda d, op: calls.append(("full", d, op)))
+        ts._flush(fd)
+        assert calls == [("full", fd, 51)]                                   # the platform offers it: used, fsync not needed
+        calls.clear()
+        def refuse(d, op):
+            raise OSError(errno.ENOTSUP, "not supported here")
+        monkeypatch.setattr(ts.fcntl, "fcntl", refuse)
+        ts._flush(fd)
+        assert calls == [("fsync", fd)]                                      # the filesystem refuses it: fsync
+        calls.clear()
+        monkeypatch.delattr(ts.fcntl, "F_FULLFSYNC")
+        ts._flush(fd)
+        assert calls == [("fsync", fd)]                                      # Linux: fsync alone
+    finally:
+        os.close(fd)
+
+
+def test_flush_dir_swallows_unsupported_closes_and_propagates_io_errors(tmp_path, monkeypatch):
+    closed = []
+    real_close = os.close
+    monkeypatch.setattr(ts.os, "close", lambda d: (closed.append(d), real_close(d)))
+    def unsupported(d):
+        raise OSError(errno.EINVAL, "fsync on a directory")
+    monkeypatch.setattr(ts, "_flush", unsupported)
+    ts._flush_dir(str(tmp_path))                                               # not an error of the write
+    assert len(closed) == 1
+    def broken(d):
+        raise OSError(errno.EIO, "disk")
+    monkeypatch.setattr(ts, "_flush", broken)
+    with pytest.raises(OSError, match="disk"):
+        ts._flush_dir(str(tmp_path))
+    assert len(closed) == 2                                                     # the descriptor is closed either way
+    ts._flush_dir(str(tmp_path / "gone"))                                      # a directory that cannot be opened: left alone
+    assert len(closed) == 2
 
 
 def test_conversation_write_refuses_bad_values(tmp_path):

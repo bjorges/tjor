@@ -209,7 +209,7 @@ check "harness launch: the newlines, trailing one included, survive" cmd_is open
 # are 44 KB of UTF-8 (under the 64 KiB bound) but 132 KB of ASCII-escaped
 # JSON, over the 128 KiB Linux allows a single argument. The template reaches
 # the helper on stdin, so this renders instead of failing in execve.
-BIG="$(python3 -c 'print("é" * 22000, end="")')"
+BIG="$(PYTHONUTF8=1 python3 -c 'print("é" * 22000, end="")')"   # UTF-8 whatever the runner's locale
 write_cfg "[task]
 prompt = \"Task {task} ${BIG}\""
 check "harness launch: a prompt whose JSON form exceeds an argv element still renders" build_from opencode a ""

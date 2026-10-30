@@ -145,7 +145,9 @@ check "task notes: another spelling of the notes repository (a link) is refused 
 # refuse. A sabotaged tree answers everything for real except the one
 # `contains` call whose path SABOTAGE_ON names, where it dies.
 SABOTAGE="${WORK}/sabotage"; mkdir -p "${SABOTAGE}"
-for entry in "${ROOT}"/* "${ROOT}"/.[!.]*; do [[ -e "${entry}" && "$(basename "${entry}")" != python ]] && ln -s "${entry}" "${SABOTAGE}/"; done
+for entry in "${ROOT}"/* "${ROOT}"/.[!.]*; do
+    if [[ -e "${entry}" && "$(basename "${entry}")" != python ]]; then ln -s "${entry}" "${SABOTAGE}/"; fi
+done
 cp -R "${ROOT}/python" "${SABOTAGE}/python"
 cat > "${SABOTAGE}/python/tjor_task.py" <<PY
 import os, sys

@@ -414,7 +414,7 @@ specs: [session-launch@45d44f04]
 ---
 layout: problem
 title: A task's notes live in another repo
-specs: [task-notes@02acb3b8]
+specs: [task-notes@d767fc16]
 adrs: ['0013']
 ---
 
@@ -427,7 +427,7 @@ adrs: ['0013']
 
 - **`[task] notes_dir = "~/scratch/tasks/{task}"`** in the user config: `--task <id>` mounts that directory writable at its host path, **through the same path as a `--dir`**, so every rule for extra writable roots applies unchanged; `TJOR_TASK_DIR` names it in the cage.
 - The notes **root** must exist and is never created; below it, one real directory at a time, never through a link, the template checked component by component.
-- **Refused, no override: a workspace that is the notes root or contains it** (by filesystem identity, not strings). The table is **user-config only**: a repository cannot name a host path to mount (ADR 0013).
+- **Refused, no override: a workspace that is the notes root or contains it** (by filesystem identity along physical paths, never through a link). The table is **user-config only**: a repository cannot name a host path to mount (ADR 0013).
 - Task ids become plain lower-case names; with `session_per_task` the session's short name **is** the id (`tjor down --session <id>`, `tjor attach --task <id>`), and ids the resolver would misread are refused.
 - A bounded, link-free scan names credential-shaped files; a probe file an isolated throwaway container must see proves the directory is really shared.
 
@@ -559,7 +559,7 @@ specs: [session-launch@45d44f04]
 ---
 layout: problem
 title: A task-aware start
-specs: [harness-launch@e53ad955]
+specs: [harness-launch@3487ce8b]
 adrs: ['0014']
 ---
 
@@ -584,7 +584,7 @@ resume = "auto"
 - Built before the notes directory, the first write, the mint and the sidecars: **a refusal creates nothing**. The launch line shows the prompt by its length and tjor's decision.
 
 <Plainly>
-<p><code>args</code> are uninspected: a flag that relaxes the harness, selects a conversation or names a subcommand is yours, and <code>resume = "never"</code> only stops what tjor adds. The prompt is in the container's command line (<code>docker inspect</code>). The record says tjor started a conversation, not that the harness kept one, and it can be absent or stale after a crash between container creation and the write, an explicit command, or a conversation switched inside the harness; <code>--no-resume</code> or <code>reset sessions</code> is the remedy. Without <code>session_per_task</code> only the newest conversation can be continued.</p>
+<p><code>args</code> are uninspected: a flag that relaxes the harness, selects a conversation or names a subcommand is yours, and <code>resume = "never"</code> only stops what tjor adds. The prompt is in the container's command line (<code>docker inspect</code>). The record says tjor started a conversation, not that the harness kept one, and it can be absent or stale after a crash between container creation and the write, an explicit command, or a conversation switched inside the harness; <code>--no-resume</code> or <code>reset sessions</code> is the remedy. Without <code>session_per_task</code> only the newest conversation can be continued. The coverage check, like every mount, judges a path the engine resolves again: a swap in between is outside what the launcher sees.</p>
 </Plainly>
 
 ---

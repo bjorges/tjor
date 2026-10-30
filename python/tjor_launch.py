@@ -29,6 +29,12 @@ command line and before it writes anything.
         not exist yet is compared conservatively (case-folded, Unicode-
         normalised), so a spelling a case-insensitive or normalising
         filesystem would fold onto the state directory counts as covering.
+        P and R are the launcher's physical, absolute spellings: a `.` or
+        `..` component refuses (a lexical `..` would hide a link above it
+        from the walk), as does a link anywhere on either chain.
+
+Both stdin readers are bounded (MAX_STDIN); more is a refusal, never a
+partial read.
 
 Every option takes the attached form (`--task=-x`), so a dash-leading value
 is a value. Every refusal is one line on stderr and exit 2; an unexpected
@@ -54,6 +60,7 @@ import tjor_safeprint  # noqa: E402
 
 HARNESSES = ("opencode", "claude", "copilot")
 MAX_ELEMENT = 65536
+MAX_STDIN = 8 << 20  # far above any legal value's JSON form (a 64 KiB prompt is under 800 KiB of ASCII-escaped JSON)
 NOT_COVERED = 3     # `covers`: a distinct, non-default exit code for "no"; 1 (Python's own) is never "no"
 # The flags tjor itself adds (spec: "The prompt is delivered in a form each
 # harness reads as data"). An `args` entry equal to one of them, while tjor
@@ -207,8 +214,12 @@ def _chain_is_real(path: str, what: str) -> None:
 
 
 def _canonical_caseless(name: str) -> str:
-    """The Unicode canonical caseless form (TR 15, D145: normalise, casefold,
-    normalise again — casefolding can produce text that is not normalised)."""
+    """A compatibility caseless form (the comparison of Unicode D146,
+    computed as NFKC, casefold, NFKC): the same verdict as D146 on every
+    single code point of Unicode 15.1 (checked exhaustively), and the outer
+    normalisation matters for sequences where casefolding yields a
+    decomposed or reordered mark (`ß` + U+0301 against `sś`; `İ` + a mark
+    below against `i` + that mark + U+0307) — see the tests."""
     return unicodedata.normalize("NFKC", unicodedata.normalize("NFKC", name).casefold())
 
 
@@ -219,6 +230,18 @@ def _may_alias(a: str, b: str) -> bool:
     return _canonical_caseless(a) == _canonical_caseless(b)
 
 
+def _plain_path(path: str, what: str) -> None:
+    """The launcher passes physical, absolute paths. A `.` or `..` component
+    is refused rather than collapsed: `L/../x` with `L` a link is `x` beside
+    `L` lexically, and the walk would never see `L`."""
+    if not path.startswith("/"):
+        raise LaunchError(f"{what} {_safe(path)} is not an absolute path")
+    for comp in path.split("/"):
+        if comp in (".", ".."):
+            raise LaunchError(f"{what} {_safe(path)} holds a {comp!r} component; the launcher passes physical paths, "
+                              "and a lexical '..' could hide a link above it")
+
+
 def covers(root: str, state_root: str, session: str) -> bool:
     """Would a writable root at `root` cover the state directory
     `state_root/session`? The state root exists (the launcher created it); the
@@ -226,6 +249,8 @@ def covers(root: str, state_root: str, session: str) -> bool:
     (the notes directory before creation). Nothing is created or followed."""
     if not session or "/" in session or session in (".", ".."):
         raise LaunchError(f"session id {_safe(session)!r} is not one path component")
+    _plain_path(root, "the writable root")
+    _plain_path(state_root, "the session root")
     st_r = _lstat_dir(state_root, "the session root")
     if st_r is None:
         raise LaunchError(f"the session root {_safe(state_root)} does not exist")
@@ -274,6 +299,16 @@ def covers(root: str, state_root: str, session: str) -> bool:
 
 # ------------------------------------------------------------------- main
 
+def _read_stdin(what: str) -> str:
+    """The JSON value on stdin, bounded: over MAX_STDIN is a refusal (the
+    config reader's output is trusted, the bound is hygiene), never a
+    truncated read that would parse as something shorter."""
+    data = sys.stdin.read(MAX_STDIN + 1)
+    if len(data) > MAX_STDIN:
+        raise LaunchError(f"{what}: its JSON form on stdin exceeds {MAX_STDIN} bytes")
+    return data
+
+
 def _main(argv: list[str]) -> int:
     # The streams carry UTF-8 whatever the locale (a non-UTF-8 LC_ALL would
     # otherwise skew the byte bound and fail on a non-ASCII prompt); raw
@@ -294,14 +329,14 @@ def _main(argv: list[str]) -> int:
     try:
         if args.cmd == "args":
             try:
-                raw = json.loads(sys.stdin.read() or "null")
+                raw = json.loads(_read_stdin(f"harness.{args.harness}.args") or "null")
             except ValueError as exc:
                 raise LaunchError(f"harness.{args.harness}.args is not valid JSON from the config reader: {exc}") from exc
             for entry in validate_args(raw, args.harness, tuple(args.adding)):
                 print(entry)
         elif args.cmd == "render":
             try:
-                template = json.loads(sys.stdin.read() or "null")
+                template = json.loads(_read_stdin("task.prompt") or "null")
             except ValueError as exc:
                 raise LaunchError(f"task.prompt is not valid JSON from the config reader: {exc}") from exc
             if not isinstance(template, str):

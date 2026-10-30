@@ -87,7 +87,7 @@ Resolution SHALL have no side effect, so lifecycle commands never create anythin
 
 ### Requirement: The notes repository never becomes the workspace
 
-A launch SHALL be refused, with no override, when the resolved workspace is the notes root (the template's fixed prefix) or an ancestor of it. The comparison SHALL be by filesystem identity (device and inode along the parent chain), never by path string, so a case-insensitive or Unicode-normalising filesystem cannot make two spellings of one directory read as different. The refusal SHALL name both paths.
+A launch SHALL be refused, with no override, when the resolved workspace is the notes root (the template's fixed prefix) or an ancestor of it. The comparison SHALL be by filesystem identity (device and inode along the parent chain), never by path string, so a case-insensitive or Unicode-normalising filesystem cannot make two spellings of one directory read as different. Both paths SHALL be the launcher's physical spellings, walked without following a link: a link anywhere on either chain, or a `.` or `..` component, SHALL refuse the launch rather than be followed or collapsed. The refusal SHALL name both paths.
 
 #### Scenario: Launched from inside the notes repository
 - **WHEN** `~/scratch` is a git repository, `task.notes_dir = "~/scratch/tasks/{task}"`, and `tjor run --task a` is launched from `~/scratch/tasks/a`

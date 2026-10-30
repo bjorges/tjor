@@ -119,7 +119,9 @@ notes **root** (everything before `{task}`) must exist; tjor never creates
 it, only what lies below, one real directory at a time, never through a
 link. The template is checked component by component, so no `..` or empty
 component can steer it. A launch is **refused, with no override, when the
-workspace is the notes root or contains it**: that is the "launched from
+workspace is the notes root or contains it** (judged by filesystem identity
+along both physical paths, never through a link: a link or a `..` on either
+chain refuses too): that is the "launched from
 inside the notes repo" mistake this exists to prevent (the whole notes
 repository, every other task's files, would be mounted writable and git-
 trusted); launch from the code repository and let `--task` bring the notes.
@@ -201,7 +203,10 @@ coverage is judged by name, conservatively: a last component that differs
 from the session id only in case or Unicode composition is refused on every
 filesystem, a case-sensitive one included, because nothing exists yet to
 compare identities (use a notes template that does not spell the session
-root). The whole command is built before the notes directory
+root). Like every mount, the check judges a path the container engine
+resolves again when it mounts it, so a component swapped in between by a
+writer outside tjor's lock is outside what the launcher can see. The whole
+command is built before the notes directory
 is created, before the first write into the state directory, before any
 credential is minted and before any sidecar exists, so a refusal by any of
 these rules creates nothing. The launch line prints the command with the

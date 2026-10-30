@@ -1638,15 +1638,19 @@ task_notes_prepare() {
     python3 "${TJOR_ROOT}/python/tjor_task.py" create --prefix "${TJOR_TASK_PREFIX}" \
         --relative "${TJOR_TASK_REL}" ${nocreate[@]+"${nocreate[@]}"} >/dev/null \
         || die "task notes: refusing to launch (see above)"
-    local covered="" rc w_root seen
+    # Coverage by a writable root, by identity along the chain. Judged on the
+    # notes directory's PHYSICAL path (the resolved prefix plus the created
+    # components, what `create` just walked), never the template's spelling:
+    # the helper takes physical paths and refuses a link or a `..` anywhere.
+    local covered="" rc w_root seen notes_physical="${TJOR_TASK_PREFIX}/${TJOR_TASK_REL}"
     for w_root in "${TJOR_WORKSPACE}" "${TJOR_EXTRA_DIRS[@]:-}"; do
         [[ -n "${w_root}" ]] || continue
         rc=0
-        python3 "${TJOR_ROOT}/python/tjor_task.py" contains "${w_root}" "${TJOR_TASK_DIR}" || rc=$?
+        python3 "${TJOR_ROOT}/python/tjor_task.py" contains "${w_root}" "${notes_physical}" || rc=$?
         case "${rc}" in   # 0 covers, 3 does not, anything else is a refusal
             0) covered="${w_root}"; break ;;
             3) ;;
-            *) die "task notes: cannot establish whether ${w_root} covers ${TJOR_TASK_DIR} (see above) — refusing rather than guessing" ;;
+            *) die "task notes: cannot establish whether ${w_root} covers ${notes_physical} (see above) — refusing rather than guessing" ;;
         esac
     done
     for seen in "${TJOR_EXTRA_DIRS_RO[@]:-}"; do
@@ -2000,9 +2004,12 @@ build_agent_cmd() { # $1 = harness, $2 = "1" when --no-resume was given
     local -a adding=() hargs=()
     [[ "${decision}" == "continue" ]] && adding+=(--adding=continue)
     [[ "${decision}" == "fresh" && -n "${want_prompt}" ]] && adding+=(--adding=prompt)
+    # (printf's own stderr is dropped: a helper that refuses before draining
+    # its stdin leaves printf a broken pipe, and the helper's message is the
+    # one that matters; the pipeline's status still comes from the helper.)
     local args_json out
     args_json="$(cfg "harness.${harness}.args" --json)" || die "cannot read harness.${harness}.args"
-    out="$(printf '%s' "${args_json}" | python3 "${TJOR_ROOT}/python/tjor_launch.py" args --harness="${harness}" ${adding[@]+"${adding[@]}"})" \
+    out="$(printf '%s' "${args_json}" 2>/dev/null | python3 "${TJOR_ROOT}/python/tjor_launch.py" args --harness="${harness}" ${adding[@]+"${adding[@]}"})" \
         || die "harness.${harness}.args is invalid (see above)"
     if [[ -n "${out}" ]]; then mapfile -t hargs <<<"${out}"; fi
     AGENT_CMD=("${harness}" ${hargs[@]+"${hargs[@]}"})
@@ -2015,17 +2022,18 @@ build_agent_cmd() { # $1 = harness, $2 = "1" when --no-resume was given
     elif [[ -n "${want_prompt}" ]]; then
         # Rendered by the helper (two placeholders, brace escapes, bounds, the
         # one-word rule); the template reaches it as JSON on stdin (printf is
-        # a builtin: no argv element, so the ASCII-escaped JSON form of a
-        # legal 64 KiB prompt cannot hit Linux's 128 KiB per-argument limit
-        # and fail in execve with no message); captured with a sentinel so
-        # trailing newlines and the helper's exit status both survive.
+        # a bash builtin: no argv element, so the ASCII-escaped JSON form of
+        # a legal 64 KiB prompt cannot hit Linux's 128 KiB per-argument limit
+        # and fail in execve with no message; printf's stderr is dropped as
+        # above); captured with a sentinel so trailing newlines and the
+        # helper's exit status both survive.
         # Delivered in the one form each harness reads as data; the attached
         # forms keep a dash-leading value a value, and `--` keeps a variadic
         # option in args from swallowing Claude Code's positional.
         local -a tdir=()
         [[ -n "${TJOR_TASK_DIR:-}" ]] && tdir=(--task-dir="${TJOR_TASK_DIR}")
         local prompt bytes
-        prompt="$(printf '%s' "${prompt_json}" | python3 "${TJOR_ROOT}/python/tjor_launch.py" render --task="${TJOR_TASK_ID}" ${tdir[@]+"${tdir[@]}"} && printf x)" \
+        prompt="$(printf '%s' "${prompt_json}" 2>/dev/null | python3 "${TJOR_ROOT}/python/tjor_launch.py" render --task="${TJOR_TASK_ID}" ${tdir[@]+"${tdir[@]}"} && printf x)" \
             || die "task.prompt cannot be rendered (see above)"
         prompt="${prompt%x}"
         bytes="$(printf %s "${prompt}" | wc -c | tr -d ' ')"

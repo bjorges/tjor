@@ -22,6 +22,7 @@ last launch. A directory that could not be fully read reports unknown — never
 """
 from __future__ import annotations
 
+import errno
 import fcntl
 import json
 import os
@@ -313,17 +314,20 @@ def _flush(fd: int) -> None:
 
 
 def _flush_dir(path: str) -> None:
-    """fsync the directory so the rename reaches the disk too. Some
-    filesystems refuse fsync on a directory descriptor; that is not an error
-    of the write."""
+    """fsync the directory so the rename reaches the disk too. A filesystem
+    that does not support fsync on a directory descriptor (EINVAL, ENOTSUP)
+    is not an error of the write; anything else (EIO) is, and propagates.
+    A directory that cannot be opened for reading is left as it is: the
+    rename happened, and there is nothing more this can do."""
     try:
         dfd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
     except OSError:
         return
     try:
         _flush(dfd)
-    except OSError:
-        pass
+    except OSError as exc:
+        if exc.errno not in (errno.EINVAL, errno.ENOTSUP, errno.EOPNOTSUPP, errno.EBADF):
+            raise
     finally:
         os.close(dfd)
 

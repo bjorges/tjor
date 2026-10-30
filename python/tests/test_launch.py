@@ -7,6 +7,7 @@ import json
 import os
 import subprocess
 import sys
+import unicodedata
 from pathlib import Path
 
 import pytest
@@ -274,8 +275,16 @@ def test_covers_identity_not_spelling(roots):
 
 def test_canonical_caseless_form_is_the_comparison():
     assert tl._may_alias("PROJ-A", "proj-a") and tl._may_alias("séance", "SÉANCE")
-    assert tl._may_alias("straße", "STRASSE")          # casefold, not lower: ß folds to ss
-    assert tl._may_alias("Ω", "ω")                 # OHM SIGN → GREEK OMEGA under NFKC, then folded
+    assert tl._may_alias("straße", "STRASSE")          # casefold, not lower: U+00DF ß folds to ss
+    assert tl._may_alias("Ω", "ω")                 # U+2126 OHM SIGN → U+03A9 under NFKC, then folded to ω
+    # The outer normalisation: casefolding can yield a decomposed or reordered
+    # sequence. U+00DF + U+0301 folds to `s`, `s`, U+0301, which composes to
+    # `sś` only when normalised again; U+0130 İ + U+0316 (a mark below) folds
+    # to `i` + U+0307 + U+0316, which the canonical ordering turns into `i` +
+    # U+0316 + U+0307. Both fail without the outer step.
+    assert tl._may_alias("ß́", "sś")
+    assert tl._may_alias("İ̖", "i̖̇")
+    assert unicodedata.normalize("NFKC", "ß́".casefold()) != "ß́".casefold()   # the premise above
     assert not tl._may_alias("proj-a", "proj-b")
 
 
@@ -303,6 +312,35 @@ def test_covers_case_alias_on_case_insensitive_fs(roots):
     if not same:
         pytest.skip("case-sensitive filesystem: no alias to test")
     assert tl.covers(str(upper), str(sr), "sid") is True
+
+
+def test_covers_refuses_dot_components_and_relative_paths(roots):
+    tmp_path, sr = roots
+    # `L/../x` collapses lexically to `x`, so the link L would never be
+    # lstat'ed: refused by spelling before any walk, on either path.
+    link = tmp_path / "L"
+    link.symlink_to(tmp_path / "elsewhere")
+    with pytest.raises(tl.LaunchError, match="'\\.\\.' component"):
+        tl.covers(f"{link}/../new", str(sr), "sid")
+    with pytest.raises(tl.LaunchError, match="'\\.' component"):
+        tl.covers(f"{tmp_path}/./new", str(sr), "sid")
+    with pytest.raises(tl.LaunchError, match="'\\.\\.' component"):
+        tl.covers(str(tmp_path / "new"), f"{link}/../sessions", "sid")
+    with pytest.raises(tl.LaunchError, match="not an absolute path"):
+        tl.covers("new", str(sr), "sid")
+    assert tl.covers(str(tmp_path / "new"), str(sr), "sid") is False       # the same shape, spelled plainly
+
+
+def test_stdin_is_bounded(monkeypatch, capsys):
+    monkeypatch.setattr(tl, "MAX_STDIN", 16)
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps("Task {task} " + "x" * 40)))
+    assert tl._main(["render", "--task=a"]) == 2
+    assert "exceeds 16 bytes" in capsys.readouterr().err
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(["--model", "opus", "x" * 40])))
+    assert tl._main(["args", "--harness=claude"]) == 2
+    assert "exceeds 16 bytes" in capsys.readouterr().err
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps("Task {task}.")))
+    assert tl._main(["render", "--task=a"]) == 0 and capsys.readouterr().out == "Task a."
 
 
 def test_covers_errors_are_refusals_not_absence(roots, tmp_path):
