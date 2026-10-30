@@ -7,7 +7,7 @@ A per-task notes directory the agent can write, resolved from `--task <id>` by u
 
 ### Requirement: A task resolves a notes directory by user configuration
 
-When `task.notes_dir` is configured, a launch with `--task <id>` SHALL resolve the directory by substituting the id into the template and SHALL mount it writable at its host path as an additional writable root, through the same path as a `--dir` argument, so every rule that governs extra writable roots applies to it unchanged. Workspace resolution SHALL be unaffected. The `[task]` table SHALL be read from the defaults and the user config only. Without the setting, `--task` SHALL keep today's behaviour exactly.
+When `task.notes_dir` is configured, a launch with `--task <id>` SHALL resolve the directory from the template and mount it writable at its host path as an additional writable root, through the same path as a `--dir` argument, so every rule for extra writable roots applies unchanged. Workspace resolution SHALL be unaffected; the `[task]` table is read from the defaults and the user config only; without the setting `--task` SHALL behave exactly as today.
 
 #### Scenario: Notes mounted beside the workspace
 - **WHEN** `task.notes_dir = "~/scratch/tasks/{task}"` is in the user config and `tjor run --task a` is launched from a repository
@@ -47,7 +47,7 @@ When a notes directory is configured, a task id SHALL match `[a-z0-9][a-z0-9_-]{
 
 ### Requirement: The directory is created on the launch path only, below the prefix
 
-Resolution SHALL have no side effect, so lifecycle commands that resolve a session never create anything. On the launch path, after the sensitive-path gate has accepted the resolved path and the session lock is held, the directory SHALL be created when `task.create` is true, one component at a time below the prefix, each step opened relative to its parent without following links and verified to be a real directory; the prefix SHALL never be created. A symbolic link below the prefix SHALL refuse the launch naming it. With `task.create` false a missing directory SHALL refuse the launch.
+Resolution SHALL have no side effect, so lifecycle commands never create anything. On the launch path, after the sensitive-path gate accepted the resolved path and under the session lock, the directory SHALL be created when `task.create` is true, one component at a time below the prefix, each step opened relative to its parent without following links and verified to be a real directory. A link below the prefix, or a missing directory with `task.create` false, SHALL refuse the launch.
 
 #### Scenario: A symlink below the prefix
 - **WHEN** `~/scratch/tasks/a` is a symbolic link, wherever it points
@@ -103,7 +103,11 @@ The agent environment SHALL carry `TJOR_TASK_DIR`, the notes directory's host pa
 
 ### Requirement: Credential-shaped files in the notes directory are announced
 
-Before the agent starts, the launcher SHALL scan the notes directory, bounded in depth, entry count and bytes read, never following links and reading only regular files, for file names shaped like credentials (a name segment `token`, `credentials`, `secret` or `password`; `.netrc`, `.npmrc`, `kubeconfig`; `*.pem`, `*.key`, `*.p12`, `*.pfx`; `id_*`) and for the secret shapes the egress tripwire detects in content, and SHALL print a loud warning naming each match through the terminal-escape sanitizer. A scan that reached a bound or could not read a file SHALL say so. The scan SHALL NOT refuse the launch and SHALL NOT alter a file.
+Before the agent starts, the launcher SHALL scan the notes directory, bounded in depth, entries and bytes, never following links and reading only regular files, for credential-shaped names and for the secret shapes the egress tripwire detects in content, and SHALL print a loud warning naming each match through the terminal-escape sanitizer. A scan that reached a bound or could not read a file SHALL say so. The scan SHALL NOT refuse the launch and SHALL NOT alter a file.
+
+#### Scenario: Names that count as credential-shaped
+- **WHEN** the directory holds files whose name has a segment `token`, `credentials`, `secret` or `password`, is `.netrc`, `.npmrc` or `kubeconfig`, ends in `.pem`, `.key`, `.p12` or `.pfx`, or starts with `id_`
+- **THEN** each is named in the warning with the reason
 
 #### Scenario: A private key among the notes
 - **WHEN** the notes directory holds `deploy.pem` and a text file containing a GitHub token shape
