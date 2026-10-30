@@ -1514,10 +1514,10 @@ class TestHeadersStageEnforcement:
 
     def test_verdict_metadata_is_primitive_and_survives_flow_serialisation(self, tmp_path):
         import io
+        addon = self._addon(tmp_path)              # skips without mitmproxy, before the imports below
         from mitmproxy import io as mio
         from mitmproxy.connection import Client, Server
         from mitmproxy.http import HTTPFlow, Request
-        addon = self._addon(tmp_path)
         client = Client(peername=("10.9.8.7", 4), sockname=("10.0.0.2", 8080), timestamp_start=0.0)
         flow = HTTPFlow(client, Server(address=None))
         flow.request = Request.make("POST", "http://blocked.test/x", content=b"abc")
@@ -1532,8 +1532,8 @@ class TestHeadersStageEnforcement:
 
     def test_abort_goes_through_the_proxyserver_registry(self, tmp_path, monkeypatch):
         import types
+        addon = self._addon(tmp_path)              # skips without mitmproxy, before the import below
         from mitmproxy import ctx
-        addon = self._addon(tmp_path)
         calls = []
 
         class FakeClient:                       # hashable, like mitmproxy's Client
@@ -1562,8 +1562,8 @@ class TestHeadersStageEnforcement:
 
     def test_configure_reads_the_streaming_threshold(self, tmp_path, monkeypatch):
         import types
+        addon = self._addon(tmp_path)              # skips without mitmproxy, before the import below
         from mitmproxy import ctx
-        addon = self._addon(tmp_path)
         for raw, want in (("1m", 1024 * 1024), ("2m", 2 * 1024 * 1024), ("512k", 512 * 1024), ("", None), (None, None), ("0", 0)):
             monkeypatch.setattr(ctx, "options", types.SimpleNamespace(ssl_insecure=False, stream_large_bodies=raw), raising=False)
             addon.TjorPolicy().configure(set())
@@ -1978,8 +1978,8 @@ class TestMethodGateAtTheAddon:
 
     def test_two_connection_headers_are_both_read(self, tmp_path):
         import types
+        addon = self._addon(tmp_path)              # skips without mitmproxy, before the import below
         from mitmproxy.http import Headers
-        addon = self._addon(tmp_path)
         flow = _hflow("readonly.test", path="/ws", scheme="http", port=8080, host_header="readonly.test:8080")
         flow.request.headers = Headers([(b"host", b"readonly.test:8080"), (b"connection", b"keep-alive"),
                                         (b"connection", b"Upgrade")])

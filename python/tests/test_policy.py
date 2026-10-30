@@ -10,6 +10,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 import tjor_policy as tp
 
+PY_DIR = Path(__file__).resolve().parents[1]
 FIXTURES = Path(__file__).parent / "fixtures"
 
 
@@ -381,12 +382,16 @@ methods = ["POST"]
 
 
 def _oracle(policy, url, method):
-    """An independent statement of the gate, written set-wise rather than as
-    the matcher's loop, for the property test below: the expected verdict for
-    (policy, url, method) given the verdict of the same policy WITHOUT its
-    methods section. Admitted = listed by every matching restriction, or
-    lifted by an exception whose host matches and whose path matches EVERY
-    form of the request path."""
+    """A second statement of the gate's rules for the property test below,
+    written set-wise over the production host and path matchers (it is not
+    an independent specification of those, and a matcher bug would be shared):
+    the expected verdict for (policy, url, method) given the verdict of the
+    same policy WITHOUT its methods section. Admitted = listed by every
+    matching restriction, or lifted by an exception whose host matches and
+    whose path matches EVERY form of the request path. What it buys: the
+    exact verdict is predicted, so an edit to the gate's loop, precedence or
+    exception handling that wrongly denies fails as surely as one that
+    wrongly allows (the mutation test below holds that)."""
     import dataclasses
     stripped = dataclasses.replace(policy, method_restrict=[], method_except=[])
     base = tp.evaluate(stripped, url, method)
@@ -407,11 +412,58 @@ def _oracle(policy, url, method):
     return base if lifted else tp.Verdict(False, f"method-block:{method}", denying[0])
 
 
+# Gate mutants the property test must catch: (name, source line, mutated line).
+# Each anchor must occur exactly once in tjor_policy.py, so a refactor of the
+# gate fails this list loudly instead of letting a mutant go stale.
+_GATE_MUTANTS = [
+    ("exceptions ignored",
+     "    for hpat, ppat, methods in policy.method_except:\n",
+     "    for hpat, ppat, methods in []:\n"),
+    ("any-form exception",
+     "        if method in methods and host_matches(hpat, host) and all(path_matches(ppat, f) for f in forms):\n",
+     "        if method in methods and host_matches(hpat, host) and any(path_matches(ppat, f) for f in forms):\n"),
+    ("exception ignores its host",
+     "        if method in methods and host_matches(hpat, host) and all(path_matches(ppat, f) for f in forms):\n",
+     "        if method in methods and all(path_matches(ppat, f) for f in forms):\n"),
+    ("first restriction only",
+     "    denying = [hpat for hpat, allow in restricts if method not in allow]\n",
+     "    denying = [hpat for hpat, allow in restricts[:1] if method not in allow]\n"),
+    ("gate before the earlier stages' denial",
+     "    if not verdict.allowed:\n        return verdict          # an earlier stage's denial is reported as such, never as the gate's\n    return _method_gate(policy, host, forms, method, verdict)\n",
+     "    return _method_gate(policy, host, forms, method, verdict)\n"),
+    ("gate allows",
+     "    return Verdict(False, f\"method-block:{method}\", denying[0])\n",
+     "    return Verdict(True, f\"method-block:{method}\", denying[0])\n"),
+    ("method name folded",
+     "    denying = [hpat for hpat, allow in restricts if method not in allow]\n",
+     "    denying = [hpat for hpat, allow in restricts if method.upper() not in allow]\n"),
+]
+
+
+def _mutant_module(name, old, new):
+    """tjor_policy with one source edit, loaded as a separate module object:
+    nothing on disk changes and the real module is untouched."""
+    import sys
+    import types
+    src = (PY_DIR / "tjor_policy.py").read_text()
+    assert src.count(old) == 1, f"mutant anchor for {name!r} no longer matches the gate's source"
+    modname = "tjor_policy_mutant_" + "".join(c if c.isalnum() else "_" for c in name)
+    module = types.ModuleType(modname)
+    module.__file__ = str(PY_DIR / "tjor_policy.py")
+    sys.modules[modname] = module          # @dataclass resolves the class's module by name while the source runs
+    try:
+        exec(compile(src.replace(old, new), str(PY_DIR / "tjor_policy.py"), "exec"), module.__dict__)
+    finally:
+        sys.modules.pop(modname, None)
+    return module
+
+
 class TestMethodGateProperties:
-    """Seeded random policies × requests against an independent oracle: the
-    gate's exact verdict is predicted, so a gate that wrongly DENIES (an
-    exception ignored, the wrong restriction consulted, a stage order slip)
-    fails here as surely as one that wrongly allows."""
+    """Seeded random policies × requests against the oracle above: the gate's
+    exact verdict is predicted, so a gate that wrongly DENIES (an exception
+    ignored, the wrong restriction consulted, a stage order slip) fails here
+    as surely as one that wrongly allows. The mutation test keeps that claim
+    honest in CI: every listed mutant must disagree with the oracle."""
 
     HOSTS = ["api.test", "git.test", "sub.api.test", "deep.sub.api.test", "other.test", "vault.api.test"]
     HOST_PATTERNS = ["api.test", "*.api.test", "*.test", "*", "git.test", "vault.api.test", "other.test"]
@@ -448,19 +500,55 @@ class TestMethodGateProperties:
         assert policy.valid, policy.errors
         return policy
 
-    def test_gate_matches_the_oracle(self):
+    def _targeted(self, policy):
+        """For every exception in the policy, the requests the allow-side
+        asymmetry exists for: its path with one character percent-encoded and
+        with a dot-segment escape appended, sent with a listed method to a
+        host its pattern matches. Random sampling reaches these rarely; the
+        any-form mutant is told apart only by them."""
+        for hpat, ppat, methods in policy.method_except:
+            if "*" in ppat or "?" in ppat or len(ppat) < 2:
+                continue
+            hosts = [h for h in self.HOSTS if tp.host_matches(hpat, h)]
+            if not hosts:
+                continue
+            last = ppat.rfind("/") + 1
+            encoded = ppat[:last] + f"%{ord(ppat[last]):02x}" + ppat[last + 1:]
+            for path in (encoded, ppat + "/../other", ppat):
+                for method in sorted(methods):
+                    yield f"https://{hosts[0]}{path}", method
+
+    def _disagreements(self, evaluate, seed=66, policies=400, requests=12):
+        """Cases where `evaluate` (the real gate or a mutant) and the oracle
+        differ, plus how many gate denials the oracle predicted. Each policy
+        gets `requests` random requests and the targeted ones above. Verdicts
+        compare as tuples: a mutant module has its own Verdict class."""
         import random
-        rng = random.Random(66)
-        gated_denials = 0
-        for _ in range(400):
+        rng = random.Random(seed)
+        differ, gated = [], 0
+        for _ in range(policies):
             policy = self._policy(rng)
-            for _ in range(12):
-                url = f"https://{rng.choice(self.HOSTS)}{rng.choice(self.PATHS)}"
-                method = rng.choice(self.METHODS)
-                got, want = judge(policy, url, method), _oracle(policy, url, method)
-                assert got == want, (policy, url, method, got, want)
-                gated_denials += got.rule.startswith("method-block:")
-        assert gated_denials > 200            # the generator reaches the gate, not only the earlier stages
+            cases = [(f"https://{rng.choice(self.HOSTS)}{rng.choice(self.PATHS)}", rng.choice(self.METHODS))
+                     for _ in range(requests)]
+            cases += list(self._targeted(policy))
+            for url, method in cases:
+                got, want = evaluate(policy, url, method), _oracle(policy, url, method)
+                if (got.allowed, got.rule, got.pattern) != (want.allowed, want.rule, want.pattern):
+                    differ.append((url, method, got, want))
+                gated += want.rule.startswith("method-block:")
+        return differ, gated
+
+    def test_gate_matches_the_oracle(self):
+        differ, gated = self._disagreements(tp.evaluate)
+        assert differ == [], differ[:5]
+        assert gated > 200                    # the generator reaches the gate, not only the earlier stages
+
+    @pytest.mark.parametrize("mutant", _GATE_MUTANTS, ids=[m[0] for m in _GATE_MUTANTS])
+    def test_every_gate_mutant_is_caught(self, mutant):
+        name, old, new = mutant
+        module = _mutant_module(name, old, new)
+        differ, _ = self._disagreements(module.evaluate)
+        assert len(differ) >= 10, f"the property test would barely notice the {name!r} mutant: {differ[:3]}"
 
     def test_deny_only_over_the_corpus(self):
         # The one-directional statement, kept: with its methods section

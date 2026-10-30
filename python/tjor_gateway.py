@@ -131,13 +131,32 @@ def render_config(models):
     return json.dumps({"model_list": model_list}, indent=2) + "\n"
 
 
+_TOML_SHORT_ESCAPES = {"\b": "\\b", "\t": "\\t", "\n": "\\n", "\f": "\\f", "\r": "\\r",
+                       '"': '\\"', "\\": "\\\\"}
+
+
 def _toml_str(s):
-    """Quote a value as a TOML basic string. A JSON string literal is one:
-    the escapes JSON emits (`\\"`, `\\\\`, `\\n`, `\\t`, `\\uXXXX` for the other
-    control characters and, with ensure_ascii, for everything non-ASCII) are
-    all TOML basic-string escapes, so a path or host pattern holding a
-    control character round-trips instead of breaking the generated file."""
-    return json.dumps(str(s), ensure_ascii=True)
+    """Quote a value as a TOML basic string, ASCII only, so any string the
+    policy parser accepted round-trips: the short escapes for what has one,
+    `\\uXXXX` for the other control characters (DEL included: TOML forbids
+    it raw) and for non-ASCII BMP characters, `\\UXXXXXXXX` for supplementary
+    code points. Not JSON: a JSON encoder writes a supplementary character as
+    a surrogate pair, which TOML rejects as not a scalar value. A lone
+    surrogate cannot be written in TOML at all and raises."""
+    out = []
+    for ch in str(s):
+        cp = ord(ch)
+        if ch in _TOML_SHORT_ESCAPES:
+            out.append(_TOML_SHORT_ESCAPES[ch])
+        elif 0xD800 <= cp <= 0xDFFF:
+            raise ValueError(f"string holds a lone surrogate U+{cp:04X}, which TOML cannot represent")
+        elif cp > 0xFFFF:
+            out.append(f"\\U{cp:08X}")
+        elif cp < 0x20 or cp > 0x7E:
+            out.append(f"\\u{cp:04X}")
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
 
 
 def augment_policy(base_toml, gateway_host, inference_paths=INFERENCE_PATHS,

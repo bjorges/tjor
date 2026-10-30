@@ -130,6 +130,25 @@ class TestPolicyEdit:
         pol = tjor_policy.load_policy(str(q))
         assert pol.valid and pol.host_allow == ["c.test"] and q.read_bytes().count(b"[hosts]") == 1
 
+    def test_crlf_file_without_a_hosts_table_gains_one_in_its_own_endings(self, tmp_path):
+        p = tmp_path / "policy.toml"
+        p.write_bytes(b'mode = "strict-allow"\r\n')
+        tjor_policy_edit.add_hosts(str(p), ["a.test"])
+        raw = p.read_bytes()
+        assert b"\n" not in raw.replace(b"\r\n", b"") and raw.count(b"[hosts]") == 1
+        pol = tjor_policy.load_policy(str(p))
+        assert pol.valid and pol.host_allow == ["a.test"]
+
+    def test_mixed_line_endings_stay_a_valid_policy(self, tmp_path):
+        # TOML accepts LF and CRLF side by side; the insert follows the CRLF
+        # convention when any is present, and the result parses.
+        p = tmp_path / "policy.toml"
+        p.write_bytes(b'mode = "strict-allow"\n[hosts]\r\nallow = [\n  "a.test",\r\n]\n')
+        tjor_policy_edit.add_hosts(str(p), ["b.test"])
+        pol = tjor_policy.load_policy(str(p))
+        assert pol.valid, pol.errors
+        assert set(pol.host_allow) == {"a.test", "b.test"} and p.read_bytes().count(b"[hosts]") == 1
+
     def test_indented_next_table_ends_the_hosts_body(self, tmp_path):
         # TOML allows an indented table header; the body of [hosts] ends there
         # too, so the restrict rule's `allow` is never the insertion point.

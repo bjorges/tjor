@@ -191,16 +191,25 @@ class TestAugmentPolicy:
 
     def test_control_characters_in_base_rules_round_trip(self):
         # `_toml_str` must emit a TOML basic string for ANY string the parser
-        # accepted: a quote, a backslash, a tab, a newline, a control byte and
-        # a non-ASCII character in a path or host pattern all come back as the
-        # same rule, instead of a generated file that fails to parse.
+        # accepted: a quote, a backslash, a tab, a newline, a control byte,
+        # DEL, a non-ASCII character and a supplementary (non-BMP) character
+        # in a path or host pattern all come back as the same rule, instead
+        # of a generated file that fails to parse. A JSON encoder would write
+        # the last as a surrogate pair, which TOML rejects (re-review).
         base = BASE_POLICY + (
-            '[[paths.block]]\nhost = "q\\"uote\\\\.test"\npath = "/odd\\u0001\\n\\tpath\\u00e9"\n'
+            '[[paths.block]]\nhost = "q\\"uote\\\\.test"\npath = "/odd\\u0001\\n\\tpath\\u00e9\\u007f\\U0001F600"\n'
+            '[[paths.allow]]\nhost = "\U0001F600.test"\npath = "/lit\u00e9ral"\n'
         )
-        pol = tjor_policy.parse_policy(tjor_gateway.augment_policy(base, "tjor-gateway"))
+        text = tjor_gateway.augment_policy(base, "tjor-gateway")
+        assert text.isascii()
+        pol = tjor_policy.parse_policy(text)
         assert pol.valid, pol.errors
-        assert ('q"uote\\.test', "/odd\x01\n\tpath\u00e9") in pol.path_block
+        assert ('q"uote\\.test', "/odd\x01\n\tpath\u00e9\x7f\U0001F600") in pol.path_block
+        assert ("\U0001F600.test", "/lit\u00e9ral") in pol.path_allow
         assert tjor_gateway._toml_str("a\x00b") == '"a\\u0000b"'
+        assert tjor_gateway._toml_str("\U0001F600\x7f\u00e9\t") == '"\\U0001F600\\u007F\\u00E9\\t"'
+        with pytest.raises(ValueError, match="surrogate"):
+            tjor_gateway._toml_str("a\udc80b")
 
     def test_a_result_that_does_not_round_trip_raises(self, monkeypatch):
         # The check exists: a serialiser that drops something is caught at the
