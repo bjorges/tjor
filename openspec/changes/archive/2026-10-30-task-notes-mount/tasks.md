@@ -26,7 +26,7 @@
 ## 4. Live proof and the boundary matrix
 
 - [x] 4.1 `tests/integration/multirepo_test.sh`: with a user config whose `notes_dir` lies under the test's scratch root and `session_per_task = true`, `tjor run --task t1`; inside the container the directory is mounted writable at its host path, `TJOR_TASK_DIR` names it, a write lands on the host, the `tjor.workspace` label and the harness working directory are the repository (not the notes tree), and the session label ends in `-t1`. Verify: the case passes on a Linux engine (CI `multi-repo` job).
-- [ ] 4.2 `tests/integration/lifecycle_test.sh`: two task sessions (`--task a`, `--task b`) up at once; `tjor down --session a` tears down `a`'s containers and network and leaves `b` running; the two Compose project names differ; a second `tjor run --task b` with another harness while `b` runs meets the running-session guard and names `--session`; `tjor run --session other --task b` runs beside it. Verify: the case passes on a Linux engine (CI `lifecycle` job).
+- [x] 4.2 `tests/integration/lifecycle_test.sh`: two task sessions (`--task a`, `--task b`) up at once; `tjor down --session a` tears down `a`'s containers and network and leaves `b` running; the two Compose project names differ; a second `tjor run --task b` with another harness while `b` runs meets the running-session guard and names `--session`; `tjor run --session other --task b` runs beside it. Verify: the case passes on a Linux engine (CI `lifecycle` job).
 - [x] 4.3 Register `tests/integration/task_notes_test.sh` in `python/gen_boundary_matrix.py` as the launcher-side `task-notes` suite (each `check` name mapped to the `task-notes`, `session-launch` or `repo-config-trust` requirement it proves) and in `ci.yml` (unit job, next to the workspace-gate test); regenerate `docs/boundary-matrix.md`. Verify: `python3 python/gen_boundary_matrix.py` is clean, `tests/doc_consistency.sh` passes, and the matrix lists the new suite.
 
 ## 5. Documentation, slides, changelog
@@ -36,7 +36,7 @@
 
 ## 6. Gates
 
-- [ ] 6.1 Run and report `python -m pytest python/tests -q`, `bash tests/integration/task_notes_test.sh`, `bash tests/integration/workspace_gate_test.sh`, `tests/doc_consistency.sh`, `tests/slides_consistency.sh`, `shellcheck --severity=warning bin/tjor tests/integration/task_notes_test.sh tests/integration/multirepo_test.sh tests/integration/lifecycle_test.sh`, and `python3 python/gen_boundary_matrix.py`; verify every one is green and the draft PR's CI, the `multi-repo` and `lifecycle` jobs included, is green.
+- [x] 6.1 Run and report `python -m pytest python/tests -q`, `bash tests/integration/task_notes_test.sh`, `bash tests/integration/workspace_gate_test.sh`, `tests/doc_consistency.sh`, `tests/slides_consistency.sh`, `shellcheck --severity=warning bin/tjor tests/integration/task_notes_test.sh tests/integration/multirepo_test.sh tests/integration/lifecycle_test.sh`, and `python3 python/gen_boundary_matrix.py`; verify every one is green and the draft PR's CI, the `multi-repo` and `lifecycle` jobs included, is green.
 
 ## Workflow follow-up
 
