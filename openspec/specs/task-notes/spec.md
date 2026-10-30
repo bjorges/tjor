@@ -119,7 +119,7 @@ Because a fresh directory is empty and the generic bind-source check compares co
 
 ### Requirement: The notes directory is named inside the cage only
 
-The agent environment SHALL carry `TJOR_TASK_DIR`, the notes directory's host path, which is also its path inside the cage. No identity header SHALL be derived from it; the task id travels as `x-agent-task-id` as today, the directory's path does not.
+The agent environment SHALL carry `TJOR_TASK_DIR`, the notes directory's host path in its physical spelling (the resolved prefix plus the components below it, even when the template spells the prefix through a link), which is also its path inside the cage; the sensitive-path gate, the coverage checks, the `--dir-ro` conflict check, the mount and the scan SHALL all use that one spelling. No identity header SHALL be derived from it; the task id travels as `x-agent-task-id` as today, the directory's path does not.
 
 #### Scenario: Visible to the agent, no header derived
 - **WHEN** a session with a notes directory sends a request toward an `inject_hosts` destination

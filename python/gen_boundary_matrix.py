@@ -511,6 +511,14 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
         (TASK_NOTES, 'task-notes', 'No directory was created by any refusal', True),
     'task notes: refusals never reached docker':
         (TASK_NOTES, 'task-notes', 'Refusals never reached docker', True),
+    'task notes: a template spelled through a link resolves TJOR_TASK_DIR to the physical path':
+        (TASK_NOTES, 'task-notes', 'A template spelled through a link resolves TJOR_TASK_DIR to the physical path', True),
+    "task notes: the mount uses the physical path, not the template's spelling":
+        (TASK_NOTES, 'task-notes', "The mount uses the physical path, not the template's spelling (one spelling for the checks, the mount and the cage)", True),
+    'task notes: a --dir-ro naming the physical path conflicts with the link-spelled template':
+        (TASK_NOTES, 'task-notes', 'A --dir-ro naming the physical path conflicts with the link-spelled template', True),
+    'task notes: the conflict names the physical path':
+        (TASK_NOTES, 'task-notes', 'The conflict names the physical path', False),
     'task notes: launching from inside the notes repository is refused':
         (TASK_NOTES, 'task-notes', 'Launching from inside the notes repository is refused', True),
     'task notes: the refusal names the workspace and the notes root':

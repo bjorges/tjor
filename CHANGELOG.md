@@ -43,8 +43,9 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
   "~/scratch/tasks/{task}"`, `create`, `session_per_task`) makes `--task <id>`
   resolve a per-task notes directory and mount it writable at its host path
   through the same path as a `--dir`, so every rule for extra writable roots
-  applies to it unchanged; `TJOR_TASK_DIR` names it inside the cage, with no
-  identity header derived from it. The notes root must exist and is never
+  applies to it unchanged; `TJOR_TASK_DIR` names it inside the cage by its
+  physical path (the resolved root plus what lies below), with no identity
+  header derived from it. The notes root must exist and is never
   created; what lies below is created one real directory at a time, never
   through a link, with the template checked component by component. A launch
   is refused, with no override, when the workspace is the notes root or

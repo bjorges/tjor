@@ -49,18 +49,18 @@ import argparse
 import json
 import os
 import re
-import stat
 import sys
 import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import tjor_paths  # noqa: E402
 import tjor_safeprint  # noqa: E402
 
 HARNESSES = ("opencode", "claude", "copilot")
 MAX_ELEMENT = 65536
-MAX_STDIN = 8 << 20  # far above any legal value's JSON form (a 64 KiB prompt is under 800 KiB of ASCII-escaped JSON)
+MAX_STDIN = 8 << 20  # characters of the JSON on stdin (ASCII from the config reader, so bytes); far above any legal value: a 64 KiB prompt is under 800 KiB of ASCII-escaped JSON
 NOT_COVERED = 3     # `covers`: a distinct, non-default exit code for "no"; 1 (Python's own) is never "no"
 # The flags tjor itself adds (spec: "The prompt is delivered in a form each
 # harness reads as data"). An `args` entry equal to one of them, while tjor
@@ -169,18 +169,9 @@ def render(template: str, task: str, task_dir: str | None) -> str:
 # ----------------------------------------------------------------- covers
 
 def _lstat_dir(path: str, what: str):
-    """lstat a path that must be a real directory. None when absent."""
-    try:
-        st = os.lstat(path)
-    except FileNotFoundError:
-        return None
-    except OSError as exc:
-        raise LaunchError(f"cannot read {what} {_safe(path)}: {exc.strerror}") from exc
-    if stat.S_ISLNK(st.st_mode):
-        raise LaunchError(f"{what} {_safe(path)} is a symbolic link; it is never followed")
-    if not stat.S_ISDIR(st.st_mode):
-        raise LaunchError(f"{what} {_safe(path)} exists but is not a directory")
-    return st
+    """lstat a path that must be a real directory. None when absent; a link
+    or a non-directory is a LaunchError (shared rule: tjor_paths)."""
+    return tjor_paths.lstat_dir(path, what, LaunchError)
 
 
 def _is_ancestor_or_self(key: tuple[int, int], path: str, what: str) -> bool:
@@ -213,10 +204,11 @@ def _chain_is_real(path: str, what: str) -> None:
         cur = parent
 
 
-def _canonical_caseless(name: str) -> str:
-    """A compatibility caseless form (the comparison of Unicode D146,
-    computed as NFKC, casefold, NFKC): the same verdict as D146 on every
-    single code point of Unicode 15.1 (checked exhaustively), and the outer
+def _compat_caseless(name: str) -> str:
+    """A compatibility caseless form, computed as NFKC, casefold, NFKC. It
+    gives the same verdict as Unicode's compatibility caseless match (D146)
+    on every assigned code point of the interpreter's Unicode data
+    (test_caseless_form_agrees_with_d146_on_every_code_point), and the outer
     normalisation matters for sequences where casefolding yields a
     decomposed or reordered mark (`ß` + U+0301 against `sś`; `İ` + a mark
     below against `i` + that mark + U+0307) — see the tests."""
@@ -225,21 +217,15 @@ def _canonical_caseless(name: str) -> str:
 
 def _may_alias(a: str, b: str) -> bool:
     """Could a case-insensitive or Unicode-normalising filesystem treat the
-    two names as one directory? Conservative: equal canonical caseless forms
-    count as one, on every filesystem."""
-    return _canonical_caseless(a) == _canonical_caseless(b)
+    two names as one directory? Conservative: equal compatibility caseless
+    forms count as one, on every filesystem."""
+    return _compat_caseless(a) == _compat_caseless(b)
 
 
 def _plain_path(path: str, what: str) -> None:
-    """The launcher passes physical, absolute paths. A `.` or `..` component
-    is refused rather than collapsed: `L/../x` with `L` a link is `x` beside
-    `L` lexically, and the walk would never see `L`."""
-    if not path.startswith("/"):
-        raise LaunchError(f"{what} {_safe(path)} is not an absolute path")
-    for comp in path.split("/"):
-        if comp in (".", ".."):
-            raise LaunchError(f"{what} {_safe(path)} holds a {comp!r} component; the launcher passes physical paths, "
-                              "and a lexical '..' could hide a link above it")
+    """The launcher passes physical, absolute paths; a `.` or `..` component
+    is refused rather than collapsed (shared rule: tjor_paths)."""
+    tjor_paths.plain_path(path, what, LaunchError)
 
 
 def covers(root: str, state_root: str, session: str) -> bool:
@@ -300,12 +286,13 @@ def covers(root: str, state_root: str, session: str) -> bool:
 # ------------------------------------------------------------------- main
 
 def _read_stdin(what: str) -> str:
-    """The JSON value on stdin, bounded: over MAX_STDIN is a refusal (the
-    config reader's output is trusted, the bound is hygiene), never a
-    truncated read that would parse as something shorter."""
+    """The JSON value on stdin, bounded: over MAX_STDIN characters is a
+    refusal (the config reader's output is trusted, the bound is hygiene),
+    never a truncated read that would parse as something shorter. A text
+    read counts characters; the reader's JSON is ASCII, so they are bytes."""
     data = sys.stdin.read(MAX_STDIN + 1)
     if len(data) > MAX_STDIN:
-        raise LaunchError(f"{what}: its JSON form on stdin exceeds {MAX_STDIN} bytes")
+        raise LaunchError(f"{what}: its JSON form on stdin exceeds {MAX_STDIN} characters")
     return data
 
 

@@ -113,6 +113,9 @@ rule for extra writable roots applies to it unchanged (sensitive paths, the
 VM-share check, writability nesting, the self-mount guard, git trust as a
 tree, dotenv and git-metadata masks, the git-check baseline) — and names it
 `TJOR_TASK_DIR` inside the cage (no `x-agent-*` header is derived from it).
+That path is the directory's physical spelling, the resolved notes root plus
+what lies below it, even when the template spells the root through a link:
+the checks, the mount and the cage see one spelling.
 The workspace is still the repository you launched from, so its trusted
 `.tjor/` files and the harness's instruction discovery are unaffected. The
 notes **root** (everything before `{task}`) must exist; tjor never creates

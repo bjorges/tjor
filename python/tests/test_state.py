@@ -472,23 +472,31 @@ def test_flush_prefers_full_fsync_and_falls_back(tmp_path, monkeypatch):
         os.close(fd)
 
 
-def test_flush_dir_swallows_unsupported_closes_and_propagates_io_errors(tmp_path, monkeypatch):
+@pytest.mark.parametrize("code", sorted(ts.DIR_FSYNC_UNSUPPORTED))
+def test_flush_dir_tolerates_a_filesystem_without_directory_fsync(tmp_path, monkeypatch, code):
     closed = []
     real_close = os.close
     monkeypatch.setattr(ts.os, "close", lambda d: (closed.append(d), real_close(d)))
     def unsupported(d):
-        raise OSError(errno.EINVAL, "fsync on a directory")
+        raise OSError(code, "no directory fsync here")
     monkeypatch.setattr(ts, "_flush", unsupported)
     ts._flush_dir(str(tmp_path))                                               # not an error of the write
-    assert len(closed) == 1
+    assert len(closed) == 1                                                     # and the descriptor is closed
+
+
+def test_flush_dir_propagates_io_errors_and_closes_anyway(tmp_path, monkeypatch):
+    assert errno.EIO not in ts.DIR_FSYNC_UNSUPPORTED and errno.ENOSYS in ts.DIR_FSYNC_UNSUPPORTED
+    closed = []
+    real_close = os.close
+    monkeypatch.setattr(ts.os, "close", lambda d: (closed.append(d), real_close(d)))
     def broken(d):
         raise OSError(errno.EIO, "disk")
     monkeypatch.setattr(ts, "_flush", broken)
     with pytest.raises(OSError, match="disk"):
         ts._flush_dir(str(tmp_path))
-    assert len(closed) == 2                                                     # the descriptor is closed either way
+    assert len(closed) == 1                                                     # closed on the error path too
     ts._flush_dir(str(tmp_path / "gone"))                                      # a directory that cannot be opened: left alone
-    assert len(closed) == 2
+    assert len(closed) == 1
 
 
 def test_conversation_write_refuses_bad_values(tmp_path):

@@ -414,7 +414,7 @@ specs: [session-launch@45d44f04]
 ---
 layout: problem
 title: A task's notes live in another repo
-specs: [task-notes@d767fc16]
+specs: [task-notes@e076f334]
 adrs: ['0013']
 ---
 
@@ -425,7 +425,7 @@ adrs: ['0013']
 
 ::solution::
 
-- **`[task] notes_dir = "~/scratch/tasks/{task}"`** in the user config: `--task <id>` mounts that directory writable at its host path, **through the same path as a `--dir`**, so every rule for extra writable roots applies unchanged; `TJOR_TASK_DIR` names it in the cage.
+- **`[task] notes_dir = "~/scratch/tasks/{task}"`** in the user config: `--task <id>` mounts that directory writable at its physical host path, **through the same path as a `--dir`**, so every rule for extra writable roots applies unchanged; `TJOR_TASK_DIR` names it in the cage, one spelling for the checks, the mount and the agent.
 - The notes **root** must exist and is never created; below it, one real directory at a time, never through a link, the template checked component by component.
 - **Refused, no override: a workspace that is the notes root or contains it** (by filesystem identity along physical paths, never through a link). The table is **user-config only**: a repository cannot name a host path to mount (ADR 0013).
 - Task ids become plain lower-case names; with `session_per_task` the session's short name **is** the id (`tjor down --session <id>`, `tjor attach --task <id>`), and ids the resolver would misread are refused.

@@ -335,12 +335,45 @@ def test_stdin_is_bounded(monkeypatch, capsys):
     monkeypatch.setattr(tl, "MAX_STDIN", 16)
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps("Task {task} " + "x" * 40)))
     assert tl._main(["render", "--task=a"]) == 2
-    assert "exceeds 16 bytes" in capsys.readouterr().err
+    assert "exceeds 16 characters" in capsys.readouterr().err
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(["--model", "opus", "x" * 40])))
     assert tl._main(["args", "--harness=claude"]) == 2
-    assert "exceeds 16 bytes" in capsys.readouterr().err
+    assert "exceeds 16 characters" in capsys.readouterr().err
     monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps("Task {task}.")))
     assert tl._main(["render", "--task=a"]) == 0 and capsys.readouterr().out == "Task a."
+
+
+def test_stdin_bound_is_inclusive_and_never_truncates(monkeypatch, capsys):
+    doc = json.dumps("Task {task}.")
+    monkeypatch.setattr(tl, "MAX_STDIN", len(doc))                           # exactly the bound: accepted, whole
+    monkeypatch.setattr(sys, "stdin", io.StringIO(doc))
+    assert tl._main(["render", "--task=a"]) == 0 and capsys.readouterr().out == "Task a."
+    monkeypatch.setattr(tl, "MAX_STDIN", len(doc) - 1)                       # one over: refused, not parsed short
+    monkeypatch.setattr(sys, "stdin", io.StringIO(doc))
+    assert tl._main(["render", "--task=a"]) == 2
+    assert f"exceeds {len(doc) - 1} characters" in capsys.readouterr().err
+
+
+def test_caseless_form_agrees_with_d146_on_every_code_point():
+    # The docstring's claim, checked against the interpreter's own Unicode
+    # data (about a third of a second): for every assigned code point c,
+    # comparing c with the NFKC spelling of its D146 image gives the same
+    # verdict under our NFKC/casefold/NFKC form as under D146 itself
+    # (NFKD(casefold(NFKD(casefold(NFD(x)))))).
+    N = unicodedata.normalize
+    def d146(x):
+        return N("NFKD", N("NFKD", N("NFD", x).casefold()).casefold())
+    disagreements = []
+    for cp in range(0x20, 0x110000):
+        if 0xD800 <= cp <= 0xDFFF:
+            continue
+        c = chr(cp)
+        if not unicodedata.name(c, ""):
+            continue
+        y = N("NFKC", d146(c))
+        if tl._may_alias(c, y) != (d146(c) == d146(y)):
+            disagreements.append(hex(cp))
+    assert disagreements == [], f"Unicode {unicodedata.unidata_version}: {disagreements[:10]}"
 
 
 def test_covers_errors_are_refusals_not_absence(roots, tmp_path):

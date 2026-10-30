@@ -1334,7 +1334,12 @@ resolve_session() { # $1 = harness, $2 = task id (optional), $3 = session name (
                 3) ;;
                 *) die "task notes: cannot establish whether the workspace ${ws} contains the notes root ${notes_prefix} (see above) — refusing rather than guessing" ;;
             esac
-            TJOR_TASK_DIR="${notes_path}"; TJOR_TASK_PREFIX="${notes_prefix}"; TJOR_TASK_REL="${notes_rel}"
+            # One spelling everywhere: TJOR_TASK_DIR is the PHYSICAL path (the
+            # resolved prefix plus the components below it), so what the gates
+            # and the coverage checks judge, what is mounted, what the cage
+            # sees and what {task_dir} renders are the same directory even when
+            # the template spells its prefix through a link.
+            TJOR_TASK_DIR="${notes_prefix}/${notes_rel}"; TJOR_TASK_PREFIX="${notes_prefix}"; TJOR_TASK_REL="${notes_rel}"
         fi
         if [[ "${per_task}" == "true" && -z "${3:-}" ]]; then
             # One session per task: the short name IS the id, set here and
@@ -1638,19 +1643,20 @@ task_notes_prepare() {
     python3 "${TJOR_ROOT}/python/tjor_task.py" create --prefix "${TJOR_TASK_PREFIX}" \
         --relative "${TJOR_TASK_REL}" ${nocreate[@]+"${nocreate[@]}"} >/dev/null \
         || die "task notes: refusing to launch (see above)"
-    # Coverage by a writable root, by identity along the chain. Judged on the
-    # notes directory's PHYSICAL path (the resolved prefix plus the created
-    # components, what `create` just walked), never the template's spelling:
-    # the helper takes physical paths and refuses a link or a `..` anywhere.
-    local covered="" rc w_root seen notes_physical="${TJOR_TASK_PREFIX}/${TJOR_TASK_REL}"
+    # Coverage by a writable root, by identity along the chain. TJOR_TASK_DIR
+    # is the notes directory's physical path (what `create` just walked), so
+    # the check, the --dir-ro compare, the mount and the scan below all see
+    # one spelling; the helper takes physical paths and refuses a link or a
+    # `..` anywhere.
+    local covered="" rc w_root seen
     for w_root in "${TJOR_WORKSPACE}" "${TJOR_EXTRA_DIRS[@]:-}"; do
         [[ -n "${w_root}" ]] || continue
         rc=0
-        python3 "${TJOR_ROOT}/python/tjor_task.py" contains "${w_root}" "${notes_physical}" || rc=$?
+        python3 "${TJOR_ROOT}/python/tjor_task.py" contains "${w_root}" "${TJOR_TASK_DIR}" || rc=$?
         case "${rc}" in   # 0 covers, 3 does not, anything else is a refusal
             0) covered="${w_root}"; break ;;
             3) ;;
-            *) die "task notes: cannot establish whether ${w_root} covers ${notes_physical} (see above) — refusing rather than guessing" ;;
+            *) die "task notes: cannot establish whether ${w_root} covers ${TJOR_TASK_DIR} (see above) — refusing rather than guessing" ;;
         esac
     done
     for seen in "${TJOR_EXTRA_DIRS_RO[@]:-}"; do
@@ -1969,13 +1975,11 @@ build_agent_cmd() { # $1 = harness, $2 = "1" when --no-resume was given
         # identity where the paths exist and the one missing component by
         # string (the state directory usually does not exist yet); the helper
         # creates nothing, and an error is a refusal, never "not covered".
-        # The notes directory is judged by its PHYSICAL intended path (the
-        # resolved prefix plus the components to be created): the template
-        # path may spell the prefix through a link, which the helper refuses.
-        local notes_physical=""
-        [[ -z "${TJOR_TASK_DIR:-}" ]] || notes_physical="${TJOR_TASK_PREFIX}/${TJOR_TASK_REL}"
+        # The notes directory (TJOR_TASK_DIR, the physical intended path: the
+        # resolved prefix plus the components to be created) is judged as an
+        # intended root before it exists; the helper refuses a link anywhere.
         local w_root rc
-        for w_root in "${TJOR_WORKSPACE}" "${TJOR_EXTRA_DIRS[@]:-}" "${notes_physical}"; do
+        for w_root in "${TJOR_WORKSPACE}" "${TJOR_EXTRA_DIRS[@]:-}" "${TJOR_TASK_DIR:-}"; do
             [[ -n "${w_root}" ]] || continue
             rc=0
             python3 "${TJOR_ROOT}/python/tjor_launch.py" covers --root="${w_root}" --state-root="${TJOR_LOCK_ROOT}" --session="${TJOR_SESSION}" || rc=$?

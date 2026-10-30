@@ -45,6 +45,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+import tjor_paths  # noqa: E402
 import tjor_safeprint  # noqa: E402
 import tjor_secrets  # noqa: E402
 
@@ -226,28 +227,18 @@ def _open_child(fd: int, name: str, here: str) -> int | None:
 
 def _plain_path(path: str, what: str) -> None:
     """The launcher passes physical, absolute paths (`pwd -P`, the resolved
-    notes prefix). A `.` or `..` component is refused rather than collapsed:
-    `L/../x` with `L` a link is `x` beside `L` lexically, and the chain walk
-    would never see `L`."""
-    if not path.startswith("/"):
-        raise TaskError(f"{what} {_safe(path)} is not an absolute path")
-    for comp in path.split("/"):
-        if comp in (".", ".."):
-            raise TaskError(f"{what} {_safe(path)} holds a {comp!r} component; the launcher passes physical paths")
+    notes prefix); a `.` or `..` component is refused rather than collapsed
+    (shared rule: tjor_paths)."""
+    tjor_paths.plain_path(path, what, TaskError)
 
 
 def _lstat_real_dir(path: str, what: str) -> os.stat_result:
-    """lstat a path that must be a real directory: a link is an error, never
-    followed (the launcher's paths are physical; a link here means something
-    was swapped since), as is anything that is not a directory."""
-    try:
-        st = os.lstat(path)
-    except OSError as exc:
-        raise TaskError(f"cannot read {what} {_safe(path)}: {exc.strerror}") from exc
-    if stat.S_ISLNK(st.st_mode):
-        raise TaskError(f"{what} {_safe(path)} is a symbolic link; it is never followed")
-    if not stat.S_ISDIR(st.st_mode):
-        raise TaskError(f"{what} {_safe(path)} is not a directory")
+    """lstat a path that must exist and be a real directory: a link is an
+    error, never followed (the launcher's paths are physical; a link here
+    means something was swapped since), as is anything else (tjor_paths)."""
+    st = tjor_paths.lstat_dir(path, what, TaskError)
+    if st is None:
+        raise TaskError(f"cannot read {what} {_safe(path)}: no such directory")
     return st
 
 

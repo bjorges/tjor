@@ -126,6 +126,19 @@ check "task notes: a dotted id is refused" refused "${HOME}/proj" a.b
 check "task notes: no directory was created by any refusal" test -z "$(ls -A "${NOTES}")"
 check "task notes: refusals never reached docker" never_reached_docker
 
+# A template whose prefix is spelled through a link: TJOR_TASK_DIR is the
+# PHYSICAL path (the resolved prefix plus the components below it), so what
+# the checks judge, what is mounted, what a --dir-ro is compared with and
+# what the cage sees are one spelling.
+ln -s "${HOME}/scratch" "${HOME}/alias2"
+write_cfg $'[task]\nnotes_dir = "~/alias2/tasks/{task}"\ncreate = true\nsession_per_task = true'
+check "task notes: a template spelled through a link resolves TJOR_TASK_DIR to the physical path" launch_val "${HOME}/proj" a "" "${BASE}-a|a|${NOTES}/a"
+check "task notes: the mount uses the physical path, not the template's spelling" prepare_val "${HOME}/proj" a "${NOTES}/a"
+check "task notes: a --dir-ro naming the physical path conflicts with the link-spelled template" prepare_refused "${HOME}/proj" a ro:"${NOTES}/a"
+check "task notes: the conflict names the physical path" out_has "the task notes directory ${NOTES}/a is also given via --dir-ro"
+rm -f "${HOME:?}/alias2"; rm -rf "${NOTES:?}/a"
+write_cfg "${CFG_DEFAULT}"
+
 # === 2. The notes repository never becomes the workspace ====================
 mkdir -p "${NOTES}/a"
 check "task notes: launching from inside the notes repository is refused" refused "${NOTES}/a" a

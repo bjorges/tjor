@@ -4,7 +4,7 @@
      Regenerate: python3 python/gen_boundary_matrix.py
      Drift-checked by tests/doc_consistency.sh (`--check`). -->
 
-Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount`, `gitcheck`, `task-notes` and `harness-launch` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (548 checks total; 248 adversarial guarantees below, the rest functional/config checks the suites also run).
+Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount`, `gitcheck`, `task-notes` and `harness-launch` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (552 checks total; 251 adversarial guarantees below, the rest functional/config checks the suites also run).
 
 ## cage-network
 
@@ -146,6 +146,7 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | Guarantee | Probe | Suite |
 |---|---|---|
 | '..' as a task id is refused | `task notes: '..' as a task id is refused` | task-notes |
+| A --dir-ro naming the physical path conflicts with the link-spelled template | `task notes: a --dir-ro naming the physical path conflicts with the link-spelled template` | task-notes |
 | A 33-character id is refused | `task notes: a 33-character id is refused` | task-notes |
 | A FIFO does not block the scan | `task notes: a FIFO does not block the scan` | task-notes |
 | A coverage check whose helper dies with exit 1 refuses the launch | `task notes: a coverage check whose helper dies with exit 1 refuses the launch` | task-notes |
@@ -158,6 +159,7 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | A relative template is refused | `task notes: a relative template is refused` | task-notes |
 | A sensitive template is refused by the --dir gate before anything is created | `task notes: a sensitive template is refused by the --dir gate before anything is created` | task-notes |
 | A symbolic link at the task directory is refused | `task notes: a symbolic link at the task directory is refused` | task-notes |
+| A template spelled through a link resolves TJOR_TASK_DIR to the physical path | `task notes: a template spelled through a link resolves TJOR_TASK_DIR to the physical path` | task-notes |
 | A template whose root does not exist is refused | `task notes: a template whose root does not exist is refused` | task-notes |
 | A template with a dot-dot component is refused | `task notes: a template with a dot-dot component is refused` | task-notes |
 | A template with a trailing separator is refused | `task notes: a template with a trailing separator is refused` | task-notes |
@@ -189,6 +191,7 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | The gate refusal created nothing | `task notes: the gate refusal created nothing` | task-notes |
 | The gate refusal left no session state dir | `task notes: the gate refusal left no session state dir` | task-notes |
 | The link refusal names it | `task notes: the link refusal names it` | task-notes |
+| The mount uses the physical path, not the template's spelling (one spelling for the checks, the mount and the cage) | `task notes: the mount uses the physical path, not the template's spelling` | task-notes |
 | The probe binds nothing else | `task notes: the probe binds nothing else` | task-notes |
 | The probe binds the notes directory read-only | `task notes: the probe binds the notes directory read-only` | task-notes |
 | The probe container has no network | `task notes: the probe container has no network` | task-notes |
