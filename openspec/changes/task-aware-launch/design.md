@@ -2,61 +2,79 @@
 
 ## Context
 
-See proposal.md for motivation. What shapes the approach (observed unless marked):
+Verified against the pinned images (`tjor-agent-*:local`, `--network none`, `--help` and small probes), 2026-10-30:
 
-- `cmd_run` builds `agent_cmd` as either `"$@"` after `--` or the bare harness name, and hands it to `run_agent`, which passes it to `compose run … agent "$@"`; the entrypoint `exec`s it after the privilege drop and the sandbox wrap. Nothing between the launcher and the harness interprets the argv as a shell string.
-- Harness flags, read from the pinned images' `--help` (opencode 1.18.28, Claude Code 2.1.260, Copilot CLI 1.0.83): opencode `--prompt <text>` and `-c/--continue` on its default (TUI) command; Claude Code `[prompt]` as the trailing positional and `-c/--continue`; Copilot CLI `-i, --interactive <prompt>` ("start interactive mode and automatically execute this prompt") and `--continue` ("resume the most recent session"). Copilot's `-p/--prompt` is its non-interactive mode and is not used.
-- The session home persists under the state directory (`${TJOR_SESSION_DIR}/home`); `tjor_state.py` already names opencode's conversation store (`home/.local/share/opencode/storage`) as the `sessions` tier. Claude Code keeps transcripts under `home/.claude/projects/<encoded cwd>/`. Copilot CLI's store under `home/.copilot` is confirmed from a real session home in implementation (task 1.3) and recorded in the spec.
-- Profiles are directories of definition subdirectories; staging copies only allow-listed subdirectories (`tjor_profile.ALLOWED`), so a top-level `profile.toml` is never staged today either (observed: no top-level file is).
-- `[task]` is user-config only and a security table (ADR 0013, #69); `tjor_cfg.check` validates keys against the packaged defaults.
-- The relaunch of a stopped session recreates the agent container from the current command line (#78), so a builder that runs on every launch is what resume needs.
+- **opencode 1.18.28** (yargs): top-level `--prompt [string]`, `-c/--continue`, `-s/--session <id>`. Sessions live in SQLite: a real session home holds `home/.local/share/opencode/opencode.db`, `opencode.db-wal`, `opencode.db-shm`, `snapshot/`, `log/` and no `storage/` directory; `opencode db` is a subcommand. The sessions tier of `tjor_state.py` names `storage` and `log` only.
+- **Claude Code 2.1.260** (commander): `[prompt]` positional, `-c/--continue` ("the most recent conversation in the current directory"), `-r/--resume [id]`, `--session-id <uuid>`, `--add-dir <directories...>` variadic. Probes: `claude -p --add-dir /tmp hello` reports no prompt (the variadic swallowed `hello`); `claude -p --add-dir /tmp -- hello` delivers it; `claude -p -- --version` treats `--version` as the prompt; **`claude -- mcp` opens the `mcp` subcommand**, so `--` does not stop subcommand dispatch of a bare first operand. Transcripts: `home/.claude/projects/<cwd with every non-alphanumeric as ->/<uuid>.jsonl`, beside `memory/` in the same per-project directory.
+- **Copilot CLI 1.0.83** (commander): `-i/--interactive <prompt>`, `--continue`, `-r/--resume[=value]`, `--session-id <id>`; `-p/--prompt` is non-interactive and not used. Session store: `home/.copilot/session-state` (the package source names it; a real session home was not available).
+- The command reaches the container as argv: `cmd_run` builds `agent_cmd` and `run_agent` passes it to `compose run -d … agent "$@"`; the entrypoint `exec`s it. No shell, no environment variable carries it.
+- `cmd_run` order today: options, `resolve_session`, lock, extra dirs, notes directory, profile gate, **first write** (`mkdir home`), profile stage, `prepare_broker` (mint), gateway, secret scan, image, collision guard, metadata, `ensure_topology`, command, `run_agent`.
+- The state directory's root is not mounted anywhere: compose binds `home`, `ca.pem`, `policy.toml`, `proxy-ca`, the log files, `Corefile` and `conformance-tls` individually.
 
 ## Goals / Non-Goals
 
-**Goals:**
-- One builder, in the launcher, for the harness command line: config args, profile args, the task prompt, the continue flag; delivered per harness; printed at launch.
-- The explicit `-- cmd` path untouched.
-
-**Non-Goals:**
-- Any knowledge of what the agent should read first (a `SESSION-RESUME-*.md` convention): that stays in profile instructions, as the issue says.
-- Resuming a *specific* conversation (`--session <id>`, `--resume <id>`): the harness's "most recent" is the contract; per-task sessions make it the task's.
-- Prompts from a repository config: `[task]` is user-only (ADR 0013); a repository uses its instruction files.
+Goals: an owned command line from the operator's own config; a task prompt that is data on every harness; resume without reading harness internals; refusals before any state; the record and the stores under one reset tier; drift caught at the pin. Non-goals: profile-carried arguments (deferred, see the proposal); interpreting `args`; any knowledge of what the agent should read on start (profile instructions own that, per the issue).
 
 ## Decisions
 
-### D1. One builder function, `build_agent_cmd`, with a testable seam
+### D1. One builder, a bash array, a NUL-separated test seam
 
-`build_agent_cmd <harness> <profile-dir-or-empty>` prints the argv one element per line (NUL and newline are refused in every element, so lines are a faithful encoding) and the launcher reads it into `agent_cmd`; the docker-free test calls it directly. Inputs: `cfg harness.<name>.args` (JSON list), the profile's `profile.toml` `[harness.<name>].args` when present, `cfg task.prompt`, `cfg task.resume`, `TJOR_TASK_ID`, `TJOR_TASK_DIR`, and the conversation probe. Order: harness, args, `--continue` when resuming, then the prompt delivery. Rationale: one place to read, print and test; the per-harness differences are a small table inside it.
+`build_agent_cmd <harness>` is a bash function in `bin/tjor` that fills the global array `AGENT_CMD` and the string `AGENT_CMD_NOTE` ("fresh, prompt sent" / "fresh, no prompt" / "continuing the conversation recorded <time> for task <id>"). `cmd_run` calls it right after `profile_source` succeeds and before `mkdir -p "${TJOR_SESSION_DIR}/home"`; the explicit-command branch (`$# -gt 0`, with or without `--`, unchanged `*) break`) sets `AGENT_CMD=("$@")` and skips the builder entirely. `agent_cmd_print` writes the array NUL-separated for the docker-free test, which sources the launcher's functions as `task_notes_test.sh` does. No newline framing anywhere, so a multi-line prompt is one element like any other.
 
-### D2. Args: config, then profile, verbatim
+### D2. Arguments: user config, validated by a helper, never inspected beyond the collision rule
 
-`[harness.<name>] args = [...]` in `config/tjor.toml` (empty lists by default) is read through `cfg` as JSON; `profile.toml` is parsed by `python3 tjor_profile.py launch-args <dir> <harness>` (a small subcommand: reads the file with `tomllib`, validates the shape `{"harness": {<name>: {"args": [str...]}}}` with no unknown keys, prints the list as JSON or exits non-zero naming the key). The profile's list, when the file holds a table for the harness, replaces the config's. Every element is validated (string, no NUL, no newline) before use. Alternative: merge config and profile lists; rejected, a profile that wants to *remove* an argument could not.
+`cfg harness.<name>.args --default '[]'` yields JSON; `python3 python/tjor_launch.py args --harness <name> [--adding continue] [--adding prompt]` reads it on stdin, validates (list; each a `str`; no NUL, no newline; ≤ 65536 bytes; not `--`) and prints the entries NUL-separated (`mapfile -d ''`), exit 2 with a message naming the position and rule otherwise. The collision rule is exact: with `--adding continue`, an entry equal to `--continue` or `-c` refuses; with `--adding prompt`, an entry equal to `--prompt`, starting with `--prompt=`, equal to `-i` or `--interactive`, or starting with `--interactive=` refuses, per harness. Nothing else is looked at: tjor does not know the harnesses' flag sets and says so. `harness` joins `USER_ONLY_TABLES` and `SECURITY_TABLES` in `tjor_cfg.py`; the drop warning is generalised ("user-config only; ADR 0013/0014").
 
-### D3. The prompt: two placeholders, rendered without a shell, one argv element
+### D3. Prompt rendering in Python, captured with a sentinel
 
-Rendering is a literal substitution of `{task}` and `{task_dir}` after validating that the template's braces are exactly those (a regex over `{[^}]*}` occurrences, every match in the allowed set; a lone `{` or `}` refuses too). `{task_dir}` with `TJOR_TASK_DIR` empty refuses. No `printf`/`eval`: the rendered text goes into the argv array as one element. Delivery table: opencode → `--prompt <text>`; claude → `<text>` last; copilot → `-i <text>`. Without `--task` the prompt is skipped entirely (the template cannot render `{task}` and a task prompt without a task is meaningless). Rationale: the issue's design; the placeholders are values #69 already validated (grammar, physical path).
+`python3 python/tjor_launch.py render --template T --task ID [--task-dir DIR]` scans the template left to right: `{{` → `{`, `}}` → `}`, `{task}` → id, `{task_dir}` → DIR (refused when absent), any other `{` or `}` refuses naming the offending text; the result must hold no NUL, be ≤ 65536 bytes, and contain at least one whitespace and one non-whitespace character (the one-word rule from the Claude finding, applied to every harness so a template behaves alike). bash captures it as `p="$(python3 … && printf x)" || die; p="${p%x}"`, which keeps trailing newlines and the helper's exit status. The template is validated only when it is used (a launch with `--task` and `prompt` set), as `notes_dir` is today. The id grammar is unchanged by `prompt`: the delivery forms make a dash-leading label inert.
 
-### D4. Resume: host-side detection on the session home, per harness
+### D4. Delivery table
 
-`harness_conversation_exists <harness> <home>`: opencode → a non-empty `home/.local/share/opencode/storage/session` directory (the store the `sessions` tier already names; the exact subpath confirmed in implementation against a real home, like Copilot's); claude → any `*.jsonl` under `home/.claude/projects`; copilot → the confirmed store under `home/.copilot`. The probe never follows a symbolic link (the home is agent-writable: `find -type d` on the real path only, `-maxdepth` bounded) and reads nothing. With `resume = "auto"` and a hit: `--continue`, no prompt. Rationale: the launcher owns the state directory and knows the harness; the harness's own "most recent" is what `--continue` does, so tjor only decides *whether* to ask for it. Alternative: always pass `--continue` and let the harness fall back; rejected, Claude Code and Copilot error out on `--continue` with nothing to continue, and the prompt would be lost.
+| harness | arguments | prompt (fresh) | continue |
+|---|---|---|---|
+| opencode | `args…` | `--prompt=<p>` | `--continue` |
+| claude | `args…` | `-- <p>` | `--continue` |
+| copilot | `args…` | `--interactive=<p>` | `--continue` |
 
-### D5. `[harness]` and `[task]` as security tables; `[task]` stays user-only
+Order: harness, `args…`, continue flag, prompt. The attached forms rely on documented parser behaviour (yargs and commander read everything after the first `=` as the value); the TUIs need a terminal, so the live test checks what tjor passes (`docker inspect … .Config.Cmd`), not the harness's parse. Claude Code's `--` is verified above. `-c` is not used because Copilot CLI has no short form.
 
-`harness` joins `SECURITY_TABLES` (a misspelled `arg` would silently launch without the argument the operator counts on). `[task].prompt`/`resume` are keys of the user-only table: ADR 0013 made the *table* user-only, and a launch prompt chosen by a repository is the kind of steering that belongs in its instruction files. `[harness.<name>].args` is ordinary config (user and trusted repository): a trusted repository already shapes the session (policy, instructions), and args run inside the cage. The profile file is host-side and operator-selected. Stated in the README.
+### D5. The launch record
 
-### D6. What the launcher prints
+`conversation.json` at `${TJOR_SESSION_DIR}/conversation.json`: `{"schema": 1, "harness": "claude", "task": "a", "started": <epoch>}`. `python3 python/tjor_state.py conversation-read DIR` prints `harness<US>task<US>started` or nothing when the file is absent (exit 0) and exits 2 when it exists but is unreadable or not this shape (the launch refuses; absence is the only "no conversation"). `conversation-write DIR --harness H --task T` writes atomically (mkstemp in DIR, `os.replace`), like `meta.json`. Written in `run_agent` after `compose run` returned the container id and before `session_lock_release`, only when the builder ran with `--task` and `prompt` set or `resume = "auto"`. Read in the builder under the lock (taken right after `resolve_session`). Decision: `auto` and record (harness, task) equal (this harness, this task) and no `--no-resume` → continue; else fresh. `TIERS["sessions"]` gains `conversation.json`, `home/.local/share/opencode/opencode.db`, `…-wal`, `…-shm`, `home/.copilot/session-state` (the existing `storage` and `log` entries stay for older homes). `home/.claude/projects` is deliberately not added (memory lives there); the README states it.
 
-One line: `tjor: harness command: opencode --agent bob --continue` or `… + prompt (142 characters)`, every element through `safeprint`. An explicit `-- cmd` prints nothing new (today's behaviour). Rationale: the operator sees what tjor added without the prompt text flooding the terminal.
+### D6. Trust and provenance
 
-### D7. Proof
+`[harness]` is user-only for the reason ADR 0013 gives for `[task]`: approval reviews content, not consequence, and the consequence of repo-set harness flags is a steered agent (a prompt flag) or a relaxed harness (`--auto`, `--dangerously-skip-permissions`, `--allow-all-tools`) in every clone, which tjor elsewhere treats as meaningful (the root-owned managed opencode config, the `.opencode` mask). ADR 0014 records it and extends the general rule: no key a repository can set shapes the harness launch. The structural cage is unchanged either way; this is about not handing the repository the harness's own controls.
 
-- `tests/integration/harness_launch_test.sh` (docker-free, sourcing `bin/tjor`): the builder for all three harnesses: bare, args from config, args from a profile winning, another harness's args ignored, malformed entries refused, the prompt rendered and delivered per harness, unknown placeholder refused, `{task_dir}` without a notes directory refused, no task → no prompt, resume auto with and without a conversation per harness (seeded stores under a throwaway home), never, an invalid `resume` value refused, another harness's conversation not counted, a symlinked store not followed, the launch line, `-- cmd` overriding everything (through `cmd_run` to the docker shim: the recorded `compose run … agent <cmd>` arguments). Registered in the boundary matrix as `harness-launch`.
-- `python/tests/test_cfg_and_corefile.py`: `[harness]` typo aborts; defaults; `test_profile.py`: `launch-args` parsing, unknown key refused, file never staged.
-- Live (`lifecycle_test.sh`, opencode): a `[task] prompt` launch's container `Cmd` holds `opencode --prompt "Task t1 …"`; after seeding the session home's opencode store and relaunching under `resume = "auto"`, `Cmd` holds `--continue` and no `--prompt`. Claude Code and Copilot are covered by the builder test and the recorded `--help` facts, not live (the live jobs build the opencode image only); stated.
+### D7. Ordering in `cmd_run`
+
+options (`--no-resume` added; `--harness` checked against the three names before `resolve_session`) → `resolve_session` → lock → extra dirs → notes directory → profile gate → **`build_agent_cmd`** (reads config, renders the prompt, reads the record) → first write → profile stage → mint → … → `ensure_topology` → launch line → `run_agent` → container exists → record write → lock release. A refusal in the builder therefore leaves no directory, credential or sidecar, and the `session-launch` "lifecycle commands create no session state" rule holds: the builder reads, never writes.
+
+### D8. The launch line
+
+`tjor: harness command: claude --model opus -- <prompt: 142 bytes>` then `tjor: conversation: fresh, prompt sent` or `tjor: conversation: continuing the one recorded 2026-10-29 14:02 for task a`. The prompt never reaches the terminal (it may be long and hold anything the template holds); `args` are printed through the sanitizer.
+
+### D9. Flag drift at the pin
+
+The Dockerfile's harness stage runs, after each install, `<cli> --help` and greps for the flags tjor uses: opencode `--prompt` and `--continue`; claude `--continue` and `[prompt]`; copilot `--interactive` and `--continue`. A miss fails the build naming the harness and the flag. A Renovate bump that renames a flag is caught where the pin changes, not at an operator's launch.
+
+### D10. Proof
+
+- `python/tests/test_launch.py`: `args` rules and collisions; `render` placeholders, escapes, refusals, bounds, the one-word rule.
+- `python/tests/test_state.py`: the record round trip, absent vs unreadable, the extended tier list.
+- `python/tests/test_config_ergonomics.py`: a trusted repo cannot set `[harness]`; an unknown key under it refuses.
+- `tests/integration/harness_launch_test.sh` (docker-free; a docker shim that fails if invoked): per harness the built command for args / prompt / continue / `--no-resume` / explicit command with and without `--`; refusals (unknown harness, bad entries, collisions, bad template, `{task_dir}` without notes, invalid `resume`, corrupt record) and, for each, that no state directory appeared and the shim was never called. Registered in `gen_boundary_matrix.py` and run by both CI unit jobs.
+- Live, in `lifecycle_test.sh` under opencode: fresh launch → `Cmd` is `[opencode --prompt=…]` and the record exists; relaunch → `[opencode --continue]`; `--no-resume` → the prompt again; `tjor reset sessions --dry-run` lists the record; after the reset the next launch is fresh.
 
 ## Risks / Trade-offs
 
-- [The prompt is a process argument] → visible in `docker inspect` and `ps`; stated; it is a starting message, not a secret.
-- [A harness changes its flags in a future pin] → the builder's table is per harness and the pins are config; the live case catches opencode, the others rely on the help-text facts recorded here. The version bump checklist gains a line.
-- [Copilot's store path unknown at planning time] → confirmed in implementation from a real home before the spec text is final (task 1.3); until confirmed, `resume = "auto"` under copilot refuses with "not yet supported" rather than guessing.
-- [`--continue` picks the harness's most recent conversation, which under a shared (non per-task) session may be another task's] → stated; per-task sessions are the recommended pairing.
+- **Attached-form parsing is documented, not executed here.** The TUIs need a terminal; the live test checks tjor's side. Mitigation: D9 catches a flag disappearing; a parse change is a residual stated in the README.
+- **A record without a conversation.** The harness crashed before its first message, or the operator cleared its store: `--continue` then meets nothing (Claude Code 2.1.260 exits with an error in print mode; the others were not exercised). Remedy and residual stated: `--no-resume`, `tjor reset sessions`.
+- **Shared session home.** Without `session_per_task` the record is per session and `--continue` reaches only the most recent conversation; stated.
+- **`--help` grep.** Formatting changes could fail a build spuriously; the check names what it looked for, and the fix is a one-line edit at the same pin bump.
+- **Copilot store path** comes from the package source, not an observed home; the tier entry is harmless when absent, and the live proof is under opencode.
+
+## Migration
+
+None. Defaults are empty `args`, empty `prompt`, `resume = "never"`; no record is written unless a prompt or `auto` is configured; an explicit command is untouched. The only visible change without configuration is that `--harness <unknown>` now refuses instead of launching opencode.
