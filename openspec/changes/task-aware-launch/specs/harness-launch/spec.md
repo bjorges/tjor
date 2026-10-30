@@ -30,7 +30,7 @@ When the command line carries a command after the options, with or without `--`,
 
 ### Requirement: Configured harness arguments come from the user configuration and pass verbatim
 
-`[harness.<name>] args` (`opencode`, `claude`, `copilot`) SHALL be read from the defaults and the user config only; a repository config's `[harness]` table is dropped with a warning, trusted or not (ADR 0014). Each entry SHALL be a string without NUL or newline, at most 65536 bytes, not `--`; the list becomes one argv element per entry, before anything the launcher adds, never through a shell, never interpreted. Any other list SHALL refuse the launch.
+`[harness.<name>] args` (`opencode`, `claude`, `copilot`) SHALL be read from the defaults and the user config only; a trusted repository config's `[harness]` is dropped with a warning, an untrusted file is ignored whole as today (ADR 0014). Each entry SHALL be a non-empty string without NUL or newline, at most 65536 bytes, not `--`; the list becomes one argv element per entry, before anything the launcher adds, never through a shell, never interpreted. Any other list SHALL refuse.
 
 #### Scenario: Arguments precede what the launcher adds
 - **WHEN** `[harness.claude] args = ["--model", "opus"]` and a task prompt are configured, and `tjor run --task a` starts a fresh conversation
@@ -38,15 +38,23 @@ When the command line carries a command after the options, with or without `--`,
 
 #### Scenario: A repository cannot set them
 - **WHEN** a trusted repository config holds `[harness.opencode] args = ["--auto"]`
-- **THEN** the table is ignored with a warning naming the file and the table, the launch uses the user config's arguments or none, and the configuration check reports the same
+- **THEN** the table is ignored with a warning naming the file and the table, the launch uses the user config's arguments or none, and the configuration check reports the same; an unapproved file holding the table is ignored whole with the untrusted warning, as any unapproved file is
 
 #### Scenario: Entries that are not plain strings
-- **WHEN** an entry is a number, holds a newline or NUL, exceeds the bound, or is `--`
-- **THEN** the launch is refused naming the entry's position and the rule, before any session state exists
+- **WHEN** an entry is a number, is empty, holds a newline or NUL, exceeds the bound, or is `--`
+- **THEN** the launch is refused naming the entry's position and the rule, and nothing is created
 
 #### Scenario: A flag the launcher is about to add
 - **WHEN** the launcher is adding `--continue` for this launch and `args` holds `--continue` or `-c`, or it is adding the prompt and `args` holds `--prompt`, `--prompt=…`, `-i`, `--interactive` or `--interactive=…` for that harness
 - **THEN** the launch is refused naming the entry and the `[task]` key that owns the flag; no other entry is inspected
+
+### Requirement: Arguments are the operator's and may change what the harness does
+
+tjor SHALL NOT claim to know the harnesses' flag sets. Beyond the exact collision rule, an `args` entry that selects a conversation (`--continue`, `--resume`, `--session-id`), supplies a prompt, or names a subcommand changes the harness's mode without tjor noticing, as do short-option clusters and parser abbreviations; `resume = "never"` and `--no-resume` suppress only what tjor adds. The launch line SHALL report tjor's decision, never verified harness behaviour.
+
+#### Scenario: An operator's own resume flag
+- **WHEN** `[harness.claude] args = ["--resume", "abc"]` and `resume = "never"` are configured
+- **THEN** the launch passes `--resume abc` as given, adds nothing, and the launch line says the conversation is fresh from tjor's point of view; what Claude Code does with `--resume` is Claude Code's
 
 ### Requirement: The task prompt is rendered from two placeholders
 
@@ -62,7 +70,7 @@ When the command line carries a command after the options, with or without `--`,
 
 #### Scenario: Unknown placeholder or stray brace
 - **WHEN** the template holds `{taks}`, a lone `{` or a lone `}`
-- **THEN** the launch is refused naming the key and the offending text, before any session state exists
+- **THEN** the launch is refused naming the key and the offending text, and nothing is created
 
 #### Scenario: Notes placeholder without notes
 - **WHEN** the template uses `{task_dir}` and `task.notes_dir` is not set
@@ -70,7 +78,7 @@ When the command line carries a command after the options, with or without `--`,
 
 #### Scenario: One-word prompt refused
 - **WHEN** the template is `{task}` and the id is `mcp`
-- **THEN** the launch is refused: a bare word is not accepted as a prompt, because Claude Code reads a bare positional that names one of its subcommands as that subcommand, `--` notwithstanding, and the rule is the same for every harness
+- **THEN** the launch is refused: a bare word is not accepted as a prompt, because Claude Code reads a bare positional that names one of its subcommands as that subcommand, `--` notwithstanding, and the rule is the same for every harness; the README says so where the template is documented
 
 #### Scenario: No task, no prompt
 - **WHEN** `[task] prompt` is set and `tjor run` is launched without `--task`
@@ -78,19 +86,19 @@ When the command line carries a command after the options, with or without `--`,
 
 #### Scenario: A label-only id in the prompt
 - **WHEN** no notes directory and no per-task session are configured, so the id grammar is the label grammar, and `--task -x` is given with the template `Task {task} starts.`
-- **THEN** `Task -x starts.` is delivered as data; the delivery forms make a leading dash inert
+- **THEN** `Task -x starts.` is delivered as data: every helper receives the id in the attached form (`--task=-x`), and the delivery forms make a leading dash inert
 
 ### Requirement: The prompt is delivered in a form each harness reads as data
 
 Delivery SHALL be: opencode `--prompt=<prompt>` as one argv element (attached form: a value starting with `-` stays a value); Claude Code `--` then the prompt as the positional argument (`--` ends option parsing, so a variadic option in `args` cannot swallow it); Copilot CLI `--interactive=<prompt>` as one element. The prompt and the continue flag SHALL follow the configured arguments. The image build SHALL check each pinned CLI's `--help` still lists the flags used.
 
 #### Scenario: Delivery per harness
-- **WHEN** the rendered prompt is `P` and the launcher owns the command
-- **THEN** opencode is started as `opencode [args…] --prompt=P`, Claude Code as `claude [args…] -- P`, and Copilot CLI as `copilot [args…] --interactive=P`
+- **WHEN** the rendered prompt is `Task a begins.` and the launcher owns the command
+- **THEN** opencode is started as `opencode [args…] --prompt=Task a begins.` (the last element holding the spaces), Claude Code as `claude [args…] -- Task a begins.`, and Copilot CLI as `copilot [args…] --interactive=Task a begins.`
 
 #### Scenario: Variadic option before the prompt
-- **WHEN** `[harness.claude] args = ["--add-dir", "/data"]` and a prompt is delivered
-- **THEN** the command is `claude --add-dir /data -- P` and Claude Code reads `P` as the prompt, not as a second directory
+- **WHEN** `[harness.claude] args = ["--add-dir", "/data"]` and the prompt `Task a begins.` is delivered
+- **THEN** the command is `claude --add-dir /data -- Task a begins.` and Claude Code reads the prompt as the prompt, not as a second directory
 
 #### Scenario: Flag drift at the pin
 - **WHEN** a harness version is bumped and its `--help` no longer lists the flag tjor uses for the prompt or for resume
@@ -106,7 +114,7 @@ Delivery SHALL be: opencode `--prompt=<prompt>` as one argv element (attached fo
 
 #### Scenario: First launch under auto
 - **WHEN** `resume = "auto"` and the session has no record
-- **THEN** no continue flag is added, the prompt is sent, and the record is written once the container exists
+- **THEN** no continue flag is added, the prompt is sent if one is configured, and the record is written once the container exists
 
 #### Scenario: Another task or harness in the same session
 - **WHEN** the record names task `a` under `claude` and the launch is `--task b`, or `--task a` under `opencode`
@@ -122,27 +130,35 @@ Delivery SHALL be: opencode `--prompt=<prompt>` as one argv element (attached fo
 
 #### Scenario: Invalid value
 - **WHEN** `resume = "always"` is configured
-- **THEN** the launch is refused naming the key and the two values, before any session state exists
-
-#### Scenario: A record that cannot be read
-- **WHEN** the record exists but is not the launcher's format, or cannot be read
-- **THEN** the launch is refused naming the file; an unreadable record is never read as "no conversation"
+- **THEN** the launch is refused naming the key and the two values, and nothing is created
 
 #### Scenario: Reset forgets the conversation
 - **WHEN** `tjor reset sessions` runs for the session
 - **THEN** the record is deleted with the sessions tier and the next launch is fresh
 
+### Requirement: The record is read as a bounded regular file and is never agent-writable
+
+The record SHALL be read without following links: a symbolic link, a FIFO, a directory, any non-regular file, a file over 4096 bytes or one not in the launcher's exact format SHALL refuse the launch naming the file; only an absent path means "no conversation". When a writable root (the workspace or a `--dir`, which `--unsafe-dir` lets cover tjor's roots) equals or contains the state directory and the launch relies on the record, the launch SHALL be refused naming the root and the record.
+
+#### Scenario: A record that cannot be read
+- **WHEN** the record path is a symbolic link, a FIFO, a directory, an oversize file, or a file that is not the launcher's format
+- **THEN** the launch is refused naming the file, the existing state directory and record are left exactly as they were, no credential is minted and no container is created; an unreadable record is never read as "no conversation"
+
 #### Scenario: A planted file cannot force a resume
 - **WHEN** the agent writes any file under its home, including one in the record's format
 - **THEN** the decision is unaffected: the record lives at the state directory's root, which no container mounts
 
-### Requirement: Refusals precede any session state
+#### Scenario: A writable root over the state directory
+- **WHEN** `tjor run --unsafe-dir --task a` is launched from the home directory, or with `--dir` naming the session root, with `prompt` set or `resume = "auto"`
+- **THEN** the launch is refused naming the root and the record, because the agent could rewrite the record through that mount; a read-only root (`--dir-ro`) covering it is allowed, and so is the same launch with an explicit command or with `[task]` at its defaults
 
-The launcher SHALL validate the configuration and build the whole command, prompt and resume decision included, after the profile gate and before its first write into the state directory, before any credential is minted and before any sidecar exists. A refusal by any rule in this capability SHALL leave no state directory, no credential and no container behind.
+### Requirement: Refusals create nothing
+
+The launcher SHALL validate the configuration and build the whole command, prompt and resume decision included, after every path gate and before the notes directory is created, the profile is staged, the first write into the state directory, any credential mint and any sidecar. A refusal by any rule here SHALL create nothing: no notes directory, no state-directory content, no credential, no container. The session root and the lock, set up by every launch before the builder, are all that remains.
 
 #### Scenario: Malformed arguments leave nothing behind
-- **WHEN** `[harness.opencode] args` holds a newline and `tjor run` is launched for a session that has no state directory
-- **THEN** afterwards there is no state directory for the session, no minted credential and no container
+- **WHEN** `[harness.opencode] args` holds a newline and `tjor run --task a` is launched for a session that has no state directory and a task whose notes directory does not exist
+- **THEN** afterwards there is no state directory for the session, no notes directory, no minted credential and no container
 
 #### Scenario: The record is read under the lock
 - **WHEN** the launch reads the record to decide resume
@@ -158,8 +174,12 @@ Before starting the container the launcher SHALL print the command it built on o
 
 ### Requirement: Limits are stated
 
-The README SHALL state the limits in the scenario below plainly.
+The README SHALL state the limits in the scenarios below plainly, and the slide SHALL carry the first and the third.
 
-#### Scenario: Limits in the README
+#### Scenario: Limits of the owned command line
 - **WHEN** the README's harness-launch section is read
-- **THEN** it states that `args` are passed uninspected, so a flag that relaxes the harness's own permissions is the operator's choice; that the record says tjor started a conversation, not that the harness still holds one, so after a crash before the first message or a store cleared by hand the harness reports nothing to continue and `--no-resume` or `tjor reset sessions` is the remedy; that without `task.session_per_task` one session home serves every task, so only the most recent conversation can be continued; and that `tjor reset sessions` leaves Claude Code's transcripts on disk because their directory also holds its per-project memory
+- **THEN** it states that `args` are passed uninspected, so a flag that relaxes the harness's own permissions is the operator's choice; that an entry selecting a conversation, supplying a prompt or naming a subcommand changes the harness's mode without tjor noticing, clusters and abbreviations included, so `resume = "never"` and `--no-resume` suppress only what tjor adds; that a one-word prompt is refused; and that the prompt is visible in the container's command line (`docker inspect`, the process list inside the cage), which the launch line's redaction does not change
+
+#### Scenario: Limits of the record
+- **WHEN** the same section is read
+- **THEN** it states that the record says tjor started a conversation, not that the harness still holds one (a crash before the first message, a store cleared by hand), so the harness may report nothing to continue and `--no-resume` or `tjor reset sessions` is the remedy; that the record can be absent or stale (a crash between container creation and the write, an explicit command, a conversation switched inside the harness); that the launch line reports tjor's decision, not verified harness behaviour; that without `task.session_per_task` only the most recent conversation in a shared home can be continued; and that `tjor reset sessions` leaves Claude Code's transcripts on disk because their directory also holds its per-project memory
