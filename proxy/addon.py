@@ -357,10 +357,12 @@ def _current_policy() -> tjor_policy.Policy:
     return _cache["policy"]
 
 
-def decide(url: str) -> tjor_policy.Verdict:
+def decide(url: str, method: str, policy: "tjor_policy.Policy | None" = None) -> tjor_policy.Verdict:
     """Parity call site: identical inputs must yield identical verdicts to
-    the module API and the CLI."""
-    return tjor_policy.evaluate(_current_policy(), url)
+    the module API and the CLI. The method has no default here either. The
+    hooks pass the policy snapshot they took, so the verdict and the guards
+    judge the same policy (see requestheaders)."""
+    return tjor_policy.evaluate(_current_policy() if policy is None else policy, url, method)
 
 
 def decide_connect(host: str) -> tjor_policy.Verdict:
@@ -682,9 +684,10 @@ def connect_verdict(host: str) -> tjor_policy.Verdict:
     return _fail_closed(compute)
 
 
-def request_verdict(url: str, host: str) -> tjor_policy.Verdict:
+def request_verdict(url: str, host: str, method: str,
+                    policy: "tjor_policy.Policy | None" = None) -> tjor_policy.Verdict:
     def compute():
-        verdict = decide(url)
+        verdict = decide(url, method, policy)
         if verdict.allowed and _IP_GUARD:
             ok, why = resolved_addresses_ok(host)
             if not ok:
@@ -937,18 +940,72 @@ def _abort_client_connection(flow) -> bool:
         return False
 
 
-def _record_verdict(flow, verdict: tjor_policy.Verdict) -> None:
-    """Keep the headers-stage verdict on the flow for the `request` hook, as
+def _raw_method(flow) -> "str | None":
+    """The request method exactly as the client sent it, or None when it is
+    not ASCII or the raw bytes are not there. mitmproxy's `request.method` is
+    `.upper()`-ed and Python's upper() folds `ſ` to `S`; the raw bytes are
+    what goes upstream, so they are the only thing the gate judges: there is
+    no fallback to `.method`, which would judge a raw `get` as `GET`."""
+    try:
+        raw = getattr(getattr(flow.request, "data", None), "method", None)
+        if isinstance(raw, (bytes, bytearray)):
+            return bytes(raw).decode("ascii")
+        return None
+    except (UnicodeDecodeError, AttributeError):
+        return None
+
+
+# Header guards on a method-restricted host (#66, D6). A request that asks for
+# a protocol switch is not a read: `Upgrade`, an `upgrade` token in
+# `Connection`, or `Sec-WebSocket-Version` — mitmproxy keys its own WebSocket
+# upgrade on that last header, never on `Upgrade`. A method-override header
+# would make the upstream treat a GET as something else. Denied, not stripped,
+# so the agent and the operator see what happened. No rule lifts a guard; a
+# host that needs these is left unrestricted.
+_SWITCH_HEADERS = ("upgrade", "sec-websocket-version")
+_OVERRIDE_HEADERS = ("x-http-method-override", "x-http-method", "x-method-override")
+
+
+def _header_guard(flow, host: str, policy: tjor_policy.Policy) -> str:
+    """The `header-block:*` rule a restricted host's request trips, or ``""``.
+    Judged on the SAME policy snapshot as the verdict (never reloaded here):
+    a reload between the two must not let a header through, and an invalid
+    policy reads as restricted, not as unrestricted."""
+    if not tjor_policy.method_restricted(policy, host):
+        return ""
+    headers = flow.request.headers
+    get_all = getattr(headers, "get_all", None)       # every Connection header, not the first
+    values = get_all("connection") if get_all is not None else [headers.get("connection") or ""]
+    connection_tokens = [t.strip().lower() for v in values for t in str(v).split(",")]
+    if any(name in headers for name in _SWITCH_HEADERS) or "upgrade" in connection_tokens:
+        return "header-block:upgrade"
+    if any(name in headers for name in _OVERRIDE_HEADERS):
+        return "header-block:method-override"
+    return ""
+
+
+def _record_verdict(flow, verdict: tjor_policy.Verdict, host: str = "", restricted: bool = True) -> None:
+    """Keep the headers-stage judgement on the flow for the later hooks, as
     primitives: flow metadata is serialised with the flow (save-stream files,
-    flow copies), which rejects a NamedTuple."""
+    flow copies), which rejects a NamedTuple. Besides the verdict: the judged
+    host and whether it was method-restricted under the policy the verdict
+    used, so the response-side guard never re-derives either (a policy reload
+    in between must not change what a 101 on this flow means). The default
+    is restricted: a flow recorded without a judgement is treated as one."""
     flow.metadata["tjor_verdict"] = {
-        "allowed": bool(verdict.allowed), "rule": str(verdict.rule), "pattern": str(verdict.pattern or "")}
+        "allowed": bool(verdict.allowed), "rule": str(verdict.rule), "pattern": str(verdict.pattern or ""),
+        "host": str(host or ""), "restricted": bool(restricted)}
+
+
+def _recorded(flow) -> "dict | None":
+    meta = getattr(flow, "metadata", None)
+    raw = meta.get("tjor_verdict") if isinstance(meta, dict) else None
+    return raw if isinstance(raw, dict) else None
 
 
 def _recorded_verdict(flow) -> "tjor_policy.Verdict | None":
-    meta = getattr(flow, "metadata", None)
-    raw = meta.get("tjor_verdict") if isinstance(meta, dict) else None
-    if not isinstance(raw, dict):
+    raw = _recorded(flow)
+    if raw is None:
         return None
     return tjor_policy.Verdict(bool(raw.get("allowed")), str(raw.get("rule", "")), str(raw.get("pattern", "")))
 
@@ -1266,12 +1323,24 @@ class TjorPolicy:
         # guard, same invariant as http_connect: a throw anywhere in here must
         # deny, never forward a request without the intended handling.
         try:
+            # ONE policy snapshot for this request: the verdict, the header
+            # guards and the recorded restriction all read it. Loading twice
+            # would let a policy that changed between the reads be judged
+            # valid by one stage and unrestricted by the next.
+            policy = _current_policy()
             host, mismatch = _connection_host(flow)
+            method = _raw_method(flow)
             if mismatch:
                 verdict = tjor_policy.Verdict(False, "fail-closed:host-mismatch")
+            elif method is None:
+                verdict = tjor_policy.Verdict(False, "fail-closed:bad-method")
             else:
-                verdict = request_verdict(_judged_url(flow, host), host)
-            _record_verdict(flow, verdict)
+                verdict = request_verdict(_judged_url(flow, host), host, method, policy)
+                if verdict.allowed:
+                    guard = _header_guard(flow, host, policy)
+                    if guard:
+                        verdict = tjor_policy.Verdict(False, guard, host)
+            _record_verdict(flow, verdict, host, tjor_policy.method_restricted(policy, host))
             if verdict.allowed:
                 _apply_identity(flow)
                 _apply_broker(flow)
@@ -1328,6 +1397,40 @@ class TjorPolicy:
             _safe_log(f"tjor: request hook error — failing closed: {exc!r}")
 
     def responseheaders(self, flow) -> None:
+        # Method gate, response side (#66, D6): a `101` from a method-restricted
+        # host would switch the connection to a channel the gate cannot judge
+        # — mitmproxy hands it to its WebSocket layer when the request carried
+        # Sec-WebSocket-Version, or forwards it and closes otherwise. Refuse it
+        # before it reaches the agent: kill, abort the client transport, log.
+        # Fail-closed like the request hooks: an error here refuses too.
+        try:
+            status = getattr(getattr(flow, "response", None), "status_code", None)
+            if status == 101:
+                # The headers-stage judgement decides: the host the request was
+                # judged on and whether it was restricted THEN. The policy is not
+                # reloaded here (a reload cannot unrestrict a flow in flight) and
+                # a flow without a recorded judgement is refused as restricted.
+                rec = _recorded(flow)
+                if rec is None or rec.get("restricted", True):
+                    host = str(rec.get("host") or "") if rec else ""
+                    if not host:
+                        try:
+                            host = _logical_host(flow)
+                        except Exception:  # noqa: BLE001 — the log line is best effort
+                            host = "?"
+                    _log_denial(host, "header-block:upgrade-response")
+                    flow.kill()
+                    if not _abort_client_connection(flow):
+                        _log_abort_miss()
+                    return
+        except Exception as exc:  # noqa: BLE001 — never hand an unjudged 101 to the agent
+            try:
+                flow.kill()
+                _abort_client_connection(flow)
+            except Exception:  # noqa: BLE001
+                pass
+            _safe_log(f"tjor: responseheaders upgrade guard error — refusing the 101: {exc!r}")
+            return
         # #50 observability: count `pods/log` read volume WITHOUT touching the
         # body. A stream passthrough tallies chunk sizes (so follow=true / large
         # streamed bodies are counted too — flow.response.content would not be

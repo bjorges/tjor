@@ -121,6 +121,27 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
         (CONFORMANCE, "egress-policy", "HTTP/2 is not negotiated: HTTP/1.1 only, so every body is declared", True),
     "transport: the conformance trust anchor does not disable upstream verification":
         (CONFORMANCE, "egress-policy", "Upstream TLS verification holds; the conformance trust anchor is scoped", True),
+    # --- method gate (#66) ---
+    "method gate: a write to a read-only host is denied":
+        (CONFORMANCE, "egress-policy", "A write to a read-only host is denied (method-block)", True),
+    "method gate: a read on the read-only host reaches the upstream":
+        (CONFORMANCE, "egress-policy", "A read on a read-only host is served", True),
+    "method gate: an exception admits the listed method on its path":
+        (CONFORMANCE, "egress-policy", "A method exception admits the listed method on its exact path", True),
+    "method gate: encoding cannot widen a method exception":
+        (CONFORMANCE, "egress-policy", "Percent-encoding cannot widen a method exception", True),
+    "method gate: a redirect does not carry a method past the gate":
+        (CONFORMANCE, "egress-policy", "A redirected request is judged on its own", True),
+    "method gate: a write inside a tunnel is judged on the tunnel target":
+        (CONFORMANCE, "egress-policy", "A write inside a tunnel is gated on the tunnel target", True),
+    "method gate: a write inside a TLS tunnel is judged on the server name":
+        (CONFORMANCE, "egress-policy", "A write inside a TLS tunnel is gated on the server name", True),
+    "header guard: a protocol upgrade on a read-only host is refused":
+        (CONFORMANCE, "egress-policy", "A protocol switch on a read-only host is refused", True),
+    "header guard: a method-override header on a read-only host is refused":
+        (CONFORMANCE, "egress-policy", "A method-override header on a read-only host is refused", True),
+    "header guard: a 101 from the upstream of a read-only host is refused":
+        (CONFORMANCE, "egress-policy", "A 101 from a read-only host is refused before it reaches the agent", True),
 
     # --- kernel-sandbox suite: adversarial guarantees (rendered) ---
     "outside-tree read is kernel-denied":

@@ -75,15 +75,99 @@ class TestPolicyEdit:
         assert "keep this comment" in text                       # comment preserved
         pol = tjor_policy.load_policy(str(p))
         assert pol.valid
-        assert tjor_policy.evaluate(pol, "https://example.test/").allowed
-        assert tjor_policy.evaluate(pol, "https://github.com/").allowed
+        assert tjor_policy.evaluate(pol, "https://example.test/", "GET").allowed
+        assert tjor_policy.evaluate(pol, "https://github.com/", "GET").allowed
 
     def test_add_creates_hosts_when_absent(self, tmp_path):
         p = tmp_path / "policy.toml"
         p.write_text('mode = "strict-allow"\n')
         tjor_policy_edit.add_hosts(str(p), ["a.test"])
         pol = tjor_policy.load_policy(str(p))
-        assert pol.valid and tjor_policy.evaluate(pol, "https://a.test/").allowed
+        assert pol.valid and tjor_policy.evaluate(pol, "https://a.test/", "GET").allowed
+
+    def test_add_never_lands_in_a_restrict_rule(self, tmp_path):
+        # [hosts] has only `block`, and a [[methods.restrict]] with its own
+        # `allow` follows: the host must land in a NEW hosts.allow, and the
+        # restrict rule must be untouched (openspec policy-ergonomics scenario).
+        p = tmp_path / "policy.toml"
+        p.write_text(
+            'mode = "strict-allow"\n\n[hosts]\nblock = ["bad.test"]\n\n'
+            '[[methods.restrict]]\nhost = "api.test"\nallow = ["GET"]\n'
+        )
+        tjor_policy_edit.add_hosts(str(p), ["that.host"])
+        pol = tjor_policy.load_policy(str(p))
+        assert pol.valid, pol.errors
+        assert "that.host" in pol.host_allow
+        assert pol.method_restrict == [("api.test", frozenset({"GET"}))]
+        assert tjor_policy.evaluate(pol, "https://that.host/", "GET").allowed
+        assert tjor_policy.evaluate(pol, "https://that.host/", "POST").allowed    # the restriction is api.test's
+
+    def test_add_into_existing_allow_with_restrict_after(self, tmp_path):
+        p = tmp_path / "policy.toml"
+        p.write_text(
+            'mode = "strict-allow"\n[hosts]\nallow = [\n  "a.test",\n]\n'
+            '[[methods.restrict]]\nhost = "a.test"\nallow = ["GET"]\n'
+        )
+        tjor_policy_edit.add_hosts(str(p), ["b.test"])
+        pol = tjor_policy.load_policy(str(p))
+        assert pol.valid and set(pol.host_allow) == {"a.test", "b.test"}
+        assert pol.method_restrict == [("a.test", frozenset({"GET"}))]
+
+    def test_crlf_file_keeps_one_hosts_table(self, tmp_path):
+        # Windows line endings: `[hosts]\r` must still be recognised as the
+        # table (else a second one is appended, a TOML error) and the file
+        # keeps its own line endings.
+        p = tmp_path / "policy.toml"
+        p.write_bytes(b'mode = "strict-allow"\r\n\r\n[hosts]  # the table\r\nallow = [\r\n  "a.test",\r\n]\r\n')
+        tjor_policy_edit.add_hosts(str(p), ["b.test"])
+        raw = p.read_bytes()
+        assert raw.count(b"[hosts]") == 1 and b"\n" not in raw.replace(b"\r\n", b"")
+        pol = tjor_policy.load_policy(str(p))
+        assert pol.valid and set(pol.host_allow) == {"a.test", "b.test"}
+        q = tmp_path / "bare.toml"
+        q.write_bytes(b'mode = "strict-allow"\r\n[hosts]\r\nblock = ["x.test"]\r\n')
+        tjor_policy_edit.add_hosts(str(q), ["c.test"])
+        pol = tjor_policy.load_policy(str(q))
+        assert pol.valid and pol.host_allow == ["c.test"] and q.read_bytes().count(b"[hosts]") == 1
+
+    def test_crlf_file_without_a_hosts_table_gains_one_in_its_own_endings(self, tmp_path):
+        p = tmp_path / "policy.toml"
+        p.write_bytes(b'mode = "strict-allow"\r\n')
+        tjor_policy_edit.add_hosts(str(p), ["a.test"])
+        raw = p.read_bytes()
+        assert b"\n" not in raw.replace(b"\r\n", b"") and raw.count(b"[hosts]") == 1
+        pol = tjor_policy.load_policy(str(p))
+        assert pol.valid and pol.host_allow == ["a.test"]
+
+    def test_mixed_line_endings_stay_a_valid_policy(self, tmp_path):
+        # TOML accepts LF and CRLF side by side; the insert follows the CRLF
+        # convention when any is present, and the result parses.
+        p = tmp_path / "policy.toml"
+        p.write_bytes(b'mode = "strict-allow"\n[hosts]\r\nallow = [\n  "a.test",\r\n]\n')
+        tjor_policy_edit.add_hosts(str(p), ["b.test"])
+        pol = tjor_policy.load_policy(str(p))
+        assert pol.valid, pol.errors
+        assert set(pol.host_allow) == {"a.test", "b.test"} and p.read_bytes().count(b"[hosts]") == 1
+
+    def test_indented_next_table_ends_the_hosts_body(self, tmp_path):
+        # TOML allows an indented table header; the body of [hosts] ends there
+        # too, so the restrict rule's `allow` is never the insertion point.
+        p = tmp_path / "policy.toml"
+        p.write_text(
+            'mode = "strict-allow"\n[hosts]\nblock = ["bad.test"]\n\n'
+            '  [[methods.restrict]]\n  host = "api.test"\n  allow = ["GET"]\n'
+        )
+        tjor_policy_edit.add_hosts(str(p), ["that.host"])
+        pol = tjor_policy.load_policy(str(p))
+        assert pol.valid, pol.errors
+        assert pol.host_allow == ["that.host"] and pol.method_restrict == [("api.test", frozenset({"GET"}))]
+
+    def test_table_header_must_be_a_whole_line(self):
+        # The next-table search is anchored on a whole header line: an array
+        # continuation line or a key cannot end the [hosts] body early.
+        nt = tjor_policy_edit._NEXT_TABLE
+        assert nt.search("\n[paths]\n") and nt.search("\n  [[methods.restrict]]  # c\n") and nt.search("\n[hosts]\r\n")
+        assert not nt.search('\n["a.test"],\n') and not nt.search("\n[x = 1\n") and not nt.search("\nallow = [\n")
 
     def test_refuses_to_write_invalid(self, tmp_path):
         p = tmp_path / "policy.toml"
@@ -112,4 +196,4 @@ class TestPolicyEdit:
             tjor_policy_edit.add_hosts(str(p), ["real.test"])
         # and the real allow-list was NOT changed by the refused write
         pol = tjor_policy.load_policy(str(p))
-        assert not tjor_policy.evaluate(pol, "https://real.test/").allowed
+        assert not tjor_policy.evaluate(pol, "https://real.test/", "GET").allowed

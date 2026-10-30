@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -38,21 +39,34 @@ def load_addon():
 ADDON = load_addon()
 
 
-def cli_verdict(url: str) -> dict:
+def cli_verdict(url: str, method: str) -> dict:
     proc = subprocess.run(
         [sys.executable, str(PY_DIR / "tjor_policy.py"), "check",
-         "--policy", POLICY_FILE, "--json", url],
+         "--policy", POLICY_FILE, "--json", "--method", method, url],
         capture_output=True, text=True,
     )
     verdict = json.loads(proc.stdout)
     assert (proc.returncode == 0) == verdict["allowed"], "CLI exit code disagrees with verdict"
+    # The CLI's JSON is the verdict plus ONE declared field: whether the host
+    # is method-restricted (the proxy's header guards, unseen by a preview).
+    # Checked against the module API here, not discarded, so the schema cannot
+    # drift silently; the verdict keys themselves are compared below.
+    host = urlsplit(url if "//" in url else "//" + url).netloc
+    assert verdict.pop("header_guards") == tp.method_restricted(tp.load_policy(POLICY_FILE), host), url
+    assert set(verdict) == {"allowed", "rule", "pattern"}, verdict
     return verdict
 
 
-@pytest.mark.parametrize("case", CASES, ids=[c["url"] for c in CASES])
+def test_every_case_carries_a_method():
+    # No call site evaluates a request without its method (charter L4): the
+    # corpus has no default for it either.
+    assert all("method" in c for c in CASES)
+
+
+@pytest.mark.parametrize("case", CASES, ids=[f"{c['method']} {c['url']}" for c in CASES])
 def test_three_call_sites_agree(case):
-    api = tp.evaluate(tp.load_policy(POLICY_FILE), case["url"]).as_dict()
-    addon = ADDON.decide(case["url"]).as_dict()
-    cli = cli_verdict(case["url"])
-    assert api == addon == cli, f"call-site divergence for {case['url']}"
+    api = tp.evaluate(tp.load_policy(POLICY_FILE), case["url"], case["method"]).as_dict()
+    addon = ADDON.decide(case["url"], case["method"]).as_dict()
+    cli = cli_verdict(case["url"], case["method"])
+    assert api == addon == cli, f"call-site divergence for {case['method']} {case['url']}"
     assert api["allowed"] == case["allowed"] and api["rule"] == case["rule"], case

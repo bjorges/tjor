@@ -19,6 +19,9 @@ jobs:
   unit:
     name: unit + parity + lint
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      actions: read     # the required-check parity step lists this run's jobs
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
       - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
@@ -55,6 +58,31 @@ jobs:
         run: tests/doc_consistency.sh
       - name: slides-consistency (every spec capability has a reviewed slide)
         run: tests/slides_consistency.sh
+      - name: required-check parity (every ci.yml job is a required check on main, and nothing else is)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: tests/ruleset_consistency.sh
+
+  # The launcher's Python helpers must run on the minimum python3 the README
+  # names (3.11): the unit job above runs the newest, and a 3.13-only call in
+  # the policy editor once passed it and failed on the runner's default
+  # interpreter. Only what runs on the host is exercised here; the addon
+  # tests need mitmproxy, which runs in its own image, and are skipped.
+  unit-min-python:
+    name: unit + launcher helpers (minimum python 3.11)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: actions/setup-python@6d4fd22b20465ccc0f7354476588e8df7c9ca0e0 # v7
+        with:
+          python-version: "3.11"
+      - run: pip install pytest
+      - name: unit, corpus and call-site parity tests (addon tests skipped without mitmproxy)
+        run: python -m pytest python/tests -q
+      - name: LLM gateway wiring (policy augmentation and the editor through the launcher, no docker)
+        run: bash tests/integration/gateway_test.sh
+      - name: session state inventory, prune and lock (mock docker) (#68)
+        run: bash tests/integration/state_test.sh
 
   agent-image:
     name: agent image (${{ matrix.harness }})

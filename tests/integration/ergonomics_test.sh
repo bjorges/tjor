@@ -54,8 +54,9 @@ check "editing the repo policy revokes trust" bash -c \
 printf 'mode = "strict-allow"\n[hosts]\nallow = ["esc\x1b[31mX.test"]\n' > "${REPO}/.tjor/policy.toml"
 check "trust review neutralizes ANSI escapes (renders ^[ marker)" bash -c \
     "cd '${REPO}' && '${T}' trust --show 2>&1 | grep -q '\\^\\['"
-# Restore a clean, valid policy for the rest of the flow.
-printf 'mode = "strict-allow"\n[hosts]\nallow = ["added.test"]\n' > "${REPO}/.tjor/policy.toml"
+# Restore a clean, valid policy for the rest of the flow, with one read-only
+# host so the method preview below has something to deny (#66).
+printf 'mode = "strict-allow"\n[hosts]\nallow = ["added.test", "ro.test"]\n[[methods.restrict]]\nhost = "ro.test"\nallow = ["GET"]\n' > "${REPO}/.tjor/policy.toml"
 
 echo "== policy add + explain"
 ( cd "${REPO}" && "${T}" trust --yes >/dev/null 2>&1 )   # re-approve the edited policy
@@ -64,6 +65,27 @@ check "policy add makes a host allowed" bash -c \
     "cd '${REPO}' && '${T}' policy https://added.test/ 2>/dev/null | grep -q ALLOW"
 check "policy --explain names the active policy" bash -c \
     "cd '${REPO}' && '${T}' policy https://added.test/ --explain 2>&1 | grep -q 'active policy'"
+# The launcher forwards the preview's options (#66 review): --json reaches the
+# matcher in either argument order and yields one JSON object on stdout; an
+# empty --method value is a usage error, never a silent GET; a second URL or
+# an unknown option is a usage error.
+check "policy --json yields a JSON verdict" bash -c \
+    "cd '${REPO}' && '${T}' policy https://added.test/ --json 2>/dev/null | python3 -c 'import json,sys; v=json.load(sys.stdin); assert v[\"allowed\"] is True and v[\"rule\"]==\"host-allow\" and v[\"header_guards\"] is False'"
+check "policy --json before the URL is the same" bash -c \
+    "cd '${REPO}' && '${T}' policy --json https://added.test/ 2>/dev/null | python3 -c 'import json,sys; assert json.load(sys.stdin)[\"allowed\"] is True'"
+check "policy --method with an empty value is refused" bash -c \
+    "cd '${REPO}' && ! '${T}' policy https://added.test/ --method '' >/dev/null 2>&1 && ! '${T}' policy https://added.test/ --method= >/dev/null 2>&1"
+# On the read-only host: GET is allowed and flags the header guards; POST is
+# denied with the exact rule and a non-zero exit, so a launcher that dropped
+# the method and previewed GET would fail here.
+check "policy on a read-only host flags the header guards" bash -c \
+    "cd '${REPO}' && '${T}' policy https://ro.test/x --json 2>/dev/null | python3 -c 'import json,sys; v=json.load(sys.stdin); assert v[\"allowed\"] is True and v[\"header_guards\"] is True'"
+check "policy --method POST is forwarded as typed (method-block:POST, exit 1)" bash -c \
+    "cd '${REPO}' && out=\$('${T}' policy https://ro.test/x --method POST --json 2>/dev/null); rc=\$?; [ \"\$rc\" -eq 1 ] && printf %s \"\$out\" | python3 -c 'import json,sys; v=json.load(sys.stdin); assert v[\"allowed\"] is False and v[\"rule\"]==\"method-block:POST\" and v[\"pattern\"]==\"ro.test\"'"
+check "policy --method=POST text mode names the rule" bash -c \
+    "cd '${REPO}' && '${T}' policy https://ro.test/x --method=POST 2>/dev/null | grep -q 'DENY .*method-block:POST'"
+check "policy refuses a second URL and an unknown option" bash -c \
+    "cd '${REPO}' && ! '${T}' policy https://a.test/ https://b.test/ >/dev/null 2>&1 && ! '${T}' policy https://a.test/ --bogus >/dev/null 2>&1"
 
 echo "== denial log"
 ( cd "${REPO}" && "${T}" run --detach sleep 200 >/dev/null 2>&1 )

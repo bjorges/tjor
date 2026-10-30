@@ -511,19 +511,31 @@ ensure_topology() { # expects TJOR_PROJECT, TJOR_SESSION_DIR exported
     pfile="$(policy_file)" || exit 1
     session_policy="${TJOR_SESSION_DIR}/policy.toml"
     corefile="${TJOR_SESSION_DIR}/Corefile"
-    cp "${pfile}" "${session_policy}"
 
     # LLM gateway (D4): make the gateway host inference-ONLY in the session
     # policy — it joins hosts.block and only the inference paths are carved back
     # in (paths.allow), so the whole management API is denied by construction.
     # This is the ONE host the policy gains; the gateway's key is NOT here.
+    # The augmentation parses the BASE policy with the one policy parser and
+    # refuses an invalid one (#66, llm-gateway spec); the session policy is
+    # written only from a successful augmentation, so an invalid base leaves
+    # no session policy behind — not even one from an earlier launch into this
+    # (reused) session directory.
     if [[ -n "${TJOR_GATEWAY_ENABLED:-}" && -n "${TJOR_GATEWAY_HOST:-}" ]]; then
         local augmented
-        if augmented="$(python3 "${TJOR_ROOT}/python/tjor_gateway.py" augment-policy "${session_policy}" "${TJOR_GATEWAY_HOST}")"; then
+        # Stdout is the policy, captured; stderr (the parser's errors) goes
+        # straight to the operator — no temp file to leak on an interrupt.
+        if augmented="$(python3 "${TJOR_ROOT}/python/tjor_gateway.py" augment-policy "${pfile}" "${TJOR_GATEWAY_HOST}")"; then
             printf '%s' "${augmented}" > "${session_policy}"
         else
-            die "gateway: failed to augment the egress policy with the gateway carve-outs"
+            if [[ -e "${session_policy}" ]]; then
+                rm -f "${session_policy}"
+                warn "removed the session policy left by an earlier launch (${session_policy}); sidecars still running from that launch keep the policy they loaded until 'tjor down'"
+            fi
+            die "gateway: the base egress policy is invalid (${pfile}); nothing was started"
         fi
+    else
+        cp "${pfile}" "${session_policy}"
     fi
 
     if ! python3 "${TJOR_ROOT}/python/tjor_policy.py" validate --policy "${session_policy}" >/dev/null 2>&1; then
@@ -2136,20 +2148,27 @@ import collections
 import sys
 
 sys.path.insert(0, sys.argv[2])
+import tjor_policy                      # the one denial-kind classifier and hint table (#66)
 from tjor_safeprint import sanitize
 
 hosts = collections.Counter()
+kinds = collections.Counter()
 with open(sys.argv[1], "rb") as fh:
     for raw in fh.read().decode("utf-8", "surrogateescape").splitlines():
         parts = raw.split("\t")
         if len(parts) < 2:
             continue  # the cap notice, or a malformed line
         hosts[parts[0]] += 1
+        kind = tjor_policy.denial_kind(parts[1])
+        if kind is not None:
+            kinds[kind] += 1
 total = sum(hosts.values())
 if total:
     top = ", ".join(f"{sanitize(h)} ({n})" for h, n in hosts.most_common(5))
     print(f"tjor: this session had {total} denied egress attempt(s) across {len(hosts)} host(s) — top: {top}")
     print("tjor: review with 'tjor denials'; allow what you need with: tjor policy add <host>")
+    for line in tjor_policy.denial_hints(kinds):
+        print(line)
 PY
     fi
     # Workload-log read-volume recap (#50): teardown surfaces how much pods/log
@@ -2756,13 +2775,35 @@ cmd_policy() {
         echo "tjor: added to ${target}: ${addhosts[*]}" >&2
         return 0
     fi
-    local explain=""
-    local -a rest=()
-    for a in "$@"; do [[ "${a}" == "--explain" ]] && explain=1 || rest+=("${a}"); done
-    [[ ${#rest[@]} -ge 1 ]] || die "usage: tjor policy <url> [--explain]  |  tjor policy add <host>"
+    # Preview a verdict. --method <M> / --method=<M> previews a method other
+    # than GET, passed exactly as typed (the proxy compares byte for byte); an
+    # empty value is an error, never a silent GET. --json is forwarded (one
+    # object on stdout, the --explain line on stderr). Exactly one URL.
+    local explain="" json="" method="" want_method="" usage
+    usage="usage: tjor policy <url> [--method <M>] [--explain] [--json]  |  tjor policy add <host>"
+    local -a rest=() margs=()
+    for a in "$@"; do
+        if [[ -n "${want_method}" ]]; then
+            [[ -n "${a}" ]] || die "${usage} (--method needs a value)"
+            method="${a}"; want_method=""; continue
+        fi
+        case "${a}" in
+            --explain)  explain=1 ;;
+            --json)     json=1 ;;
+            --method)   want_method=1 ;;
+            --method=*) method="${a#--method=}"; [[ -n "${method}" ]] || die "${usage} (--method needs a value)" ;;
+            -*)         die "${usage} (unknown option ${a})" ;;
+            *)          rest+=("${a}") ;;
+        esac
+    done
+    [[ -z "${want_method}" ]] || die "${usage} (--method needs a value)"
+    [[ ${#rest[@]} -eq 1 ]] || die "${usage}"
     local pf; pf="$(policy_file)" || exit 1
     [[ -n "${explain}" ]] && echo "tjor: active policy: ${pf}" >&2
-    python3 "${TJOR_ROOT}/python/tjor_policy.py" check --policy "${pf}" "${rest[0]}"
+    [[ -n "${method}" ]] && margs+=(--method "${method}")
+    [[ -n "${json}" ]] && margs+=(--json)
+    # ${arr[@]+"${arr[@]}"}: an empty array is unbound under set -u on bash 3.2
+    python3 "${TJOR_ROOT}/python/tjor_policy.py" check --policy "${pf}" ${margs[@]+"${margs[@]}"} "${rest[0]}"
 }
 
 cmd_init() {
@@ -2830,6 +2871,16 @@ cmd_trust() {
     echo "tjor: approved this repo's .tjor config — honored on the next launch (re-run after any edit)" >&2
 }
 
+# The method gate's denials (#66) are not widened by `tjor policy add`; say
+# what does widen each kind. One classifier and one hint table, in
+# tjor_policy.py (the teardown recap uses the same), so the two outputs
+# cannot drift apart. Advisory: a failure here prints nothing.
+denial_kind_hints() { # <denials.log>
+    # the hints (stdout) go to our stderr; the helper's own stderr is dropped
+    python3 "${TJOR_ROOT}/python/tjor_policy.py" denial-hints "$1" >&2 2>/dev/null || true
+    return 0
+}
+
 cmd_denials() {
     local name="" root sid dir
     [[ "${1:-}" == "--session" ]] && name="$2"
@@ -2842,6 +2893,7 @@ cmd_denials() {
         # hostile hostname can't inject ANSI/OSC sequences into this display.
         python3 "${TJOR_ROOT}/python/tjor_safeprint.py" "${dir}/denials.log"
         echo "tjor: add any you need with: tjor policy add <host>" >&2
+        denial_kind_hints "${dir}/denials.log"
     else
         echo "tjor: no denied egress recorded for session ${TJOR_SESSION}" >&2
     fi
@@ -3115,7 +3167,7 @@ usage: tjor <command> [args]
                                                      delete session STATE (never containers): one selector, dry-runnable; refuses a session that still has containers (tjor down first) and, without --discard-unreviewed (per --session only), one whose git-check is pending
   down [--session <name|id>]                         tear down a session's topology (short name, or any session's full id)
   status [--session <name|id>]                       show a session's containers
-  policy <url> [--explain]                           evaluate a URL against the active egress policy
+  policy <url> [--method <M>] [--explain] [--json]   evaluate a request against the active egress policy (method defaults to GET)
   policy add <host>... [--yes]                       add host(s) to the active policy (re-approving a trusted repo policy is confirmed; --yes to skip)
   denials [--session <name>]                         show egress denied in a session (then: tjor policy add <host>)
   init                                               scaffold a per-repo .tjor/ (policy + config)

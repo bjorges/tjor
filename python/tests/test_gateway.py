@@ -117,26 +117,26 @@ class TestAugmentPolicy:
         pol, _ = self._policy()
         # inference carve-outs -> allowed
         for p in ("/v1/chat/completions", "/chat/completions", "/v1/models", "/v1/messages"):
-            v = tjor_policy.evaluate(pol, f"http://tjor-gateway:4000{p}")
+            v = tjor_policy.evaluate(pol, f"http://tjor-gateway:4000{p}", "GET")
             assert v.allowed, (p, v.rule)
         # every management path -> denied by the host-block (no carve-out)
         for p in ("/key/generate", "/user/new", "/ui", "/model/new", "/team/list", "/anything"):
-            v = tjor_policy.evaluate(pol, f"http://tjor-gateway:4000{p}")
+            v = tjor_policy.evaluate(pol, f"http://tjor-gateway:4000{p}", "GET")
             assert not v.allowed, (p, v.rule)
             assert v.rule == "host-block"
 
     def test_base_allows_and_blocks_preserved(self):
         pol, _ = self._policy()
-        assert tjor_policy.evaluate(pol, "https://github.com/x").allowed
-        assert tjor_policy.evaluate(pol, "https://api.anthropic.com/v1/messages").allowed
-        assert not tjor_policy.evaluate(pol, "https://telemetry.evil.test/x").allowed
+        assert tjor_policy.evaluate(pol, "https://github.com/x", "GET").allowed
+        assert tjor_policy.evaluate(pol, "https://api.anthropic.com/v1/messages", "GET").allowed
+        assert not tjor_policy.evaluate(pol, "https://telemetry.evil.test/x", "GET").allowed
         # existing path-block still fires
-        assert not tjor_policy.evaluate(pol, "https://api.githubcopilot.com/telemetry/x").allowed
+        assert not tjor_policy.evaluate(pol, "https://api.githubcopilot.com/telemetry/x", "GET").allowed
 
     def test_gateway_not_reachable_off_inference_even_with_encoding(self):
         # a percent-encoded admin path must not sneak past the carve-out
         pol, _ = self._policy()
-        v = tjor_policy.evaluate(pol, "http://tjor-gateway:4000/key/%67enerate")
+        v = tjor_policy.evaluate(pol, "http://tjor-gateway:4000/key/%67enerate", "GET")
         assert not v.allowed
 
     def test_idempotent(self):
@@ -145,6 +145,98 @@ class TestAugmentPolicy:
         # augmenting an already-augmented policy doesn't duplicate the host/carve-outs
         assert twice.count('host = "tjor-gateway"') == once.count('host = "tjor-gateway"')
         assert twice.count('"tjor-gateway"') == once.count('"tjor-gateway"')
+
+    def test_invalid_base_policy_raises(self):
+        # A misspelled restrict key must fail the launch, never be re-emitted
+        # as a valid policy without its restriction (llm-gateway spec).
+        bad = BASE_POLICY + '[[methods.restrict]]\nhost = "api.example.test"\nallows = ["GET"]\n'
+        with pytest.raises(ValueError, match="methods.restrict"):
+            tjor_gateway.augment_policy(bad, "tjor-gateway")
+        with pytest.raises(ValueError):
+            tjor_gateway.augment_policy("mode = [broken", "tjor-gateway")
+
+    def test_method_rules_survive_augmentation(self):
+        base = BASE_POLICY + (
+            '[[methods.restrict]]\nhost = "github.com"\nallow = ["GET", "HEAD"]\n'
+            '[[methods.except]]\nhost = "github.com"\npath = "/*/git-upload-pack"\nmethods = ["POST"]\n'
+        )
+        pol = tjor_policy.parse_policy(tjor_gateway.augment_policy(base, "tjor-gateway"))
+        assert pol.valid, pol.errors
+        assert tjor_policy.evaluate(pol, "https://github.com/x", "POST").rule == "method-block:POST"
+        assert tjor_policy.evaluate(pol, "https://github.com/org/repo/git-upload-pack", "POST").allowed
+        assert tjor_policy.evaluate(pol, "http://tjor-gateway:4000/v1/chat/completions", "POST").allowed
+
+    @pytest.mark.parametrize("allow", ['["GET"]', '[]', '["POST"]'])
+    def test_wildcard_restriction_does_not_break_inference(self, allow):
+        # Every inference path stays reachable with the method it uses — POST
+        # for completions, embeddings and messages, GET for model listing and
+        # health — whatever a `host = "*"` restriction allows, `allow = []`
+        # included. The host block is never lifted.
+        base = BASE_POLICY + f'[[methods.restrict]]\nhost = "*"\nallow = {allow}\n'
+        pol = tjor_policy.parse_policy(tjor_gateway.augment_policy(base, "tjor-gateway"))
+        assert pol.valid, pol.errors
+        for p in tjor_gateway.INFERENCE_PATHS:
+            method = "POST" if p in tjor_gateway.POST_INFERENCE_PATHS else "GET"
+            v = tjor_policy.evaluate(pol, f"http://tjor-gateway:4000{p}", method)
+            assert v.allowed, (allow, p, method, v)
+        for p, method in (("/key/generate", "POST"), ("/key/generate", "GET"), ("/models/x", "GET")):
+            v = tjor_policy.evaluate(pol, f"http://tjor-gateway:4000{p}", method)
+            assert not v.allowed and v.rule == "host-block", (allow, p, method, v)
+        github = tjor_policy.evaluate(pol, "https://github.com/x", "POST")
+        assert github.rule == ("host-allow" if allow == '["POST"]' else "method-block:POST")
+
+    def test_the_two_method_tables_cover_every_inference_path(self):
+        post, get = set(tjor_gateway.POST_INFERENCE_PATHS), set(tjor_gateway.GET_INFERENCE_PATHS)
+        assert post | get == set(tjor_gateway.INFERENCE_PATHS) and not post & get
+
+    def test_control_characters_in_base_rules_round_trip(self):
+        # `_toml_str` must emit a TOML basic string for ANY string the parser
+        # accepted: a quote, a backslash, a tab, a newline, a control byte,
+        # DEL, a non-ASCII character and a supplementary (non-BMP) character
+        # in a path or host pattern all come back as the same rule, instead
+        # of a generated file that fails to parse. A JSON encoder would write
+        # the last as a surrogate pair, which TOML rejects (re-review).
+        base = BASE_POLICY + (
+            '[[paths.block]]\nhost = "q\\"uote\\\\.test"\npath = "/odd\\u0001\\n\\tpath\\u00e9\\u007f\\U0001F600"\n'
+            '[[paths.allow]]\nhost = "\U0001F600.test"\npath = "/lit\u00e9ral"\n'
+        )
+        text = tjor_gateway.augment_policy(base, "tjor-gateway")
+        assert text.isascii()
+        pol = tjor_policy.parse_policy(text)
+        assert pol.valid, pol.errors
+        assert ('q"uote\\.test', "/odd\x01\n\tpath\u00e9\x7f\U0001F600") in pol.path_block
+        assert ("\U0001F600.test", "/lit\u00e9ral") in pol.path_allow
+        assert tjor_gateway._toml_str("a\x00b") == '"a\\u0000b"'
+        assert tjor_gateway._toml_str("\U0001F600\x7f\u00e9\t") == '"\\U0001F600\\u007F\\u00E9\\t"'
+        with pytest.raises(ValueError, match="surrogate"):
+            tjor_gateway._toml_str("a\udc80b")
+
+    def test_a_result_that_does_not_round_trip_raises(self, monkeypatch):
+        # The check exists: a serialiser that drops something is caught at the
+        # augmentation, with a message that says so, not downstream as an
+        # "invalid policy" with no hint of why.
+        monkeypatch.setattr(tjor_gateway, "_toml_str", lambda s: '"' + str(s) + '"')
+        with pytest.raises(ValueError, match="does not (parse|round-trip)"):
+            tjor_gateway.augment_policy(BASE_POLICY + '[[paths.block]]\nhost = "a.test"\npath = "/x\\ny"\n',
+                                        "tjor-gateway")
+        import json
+        monkeypatch.setattr(tjor_gateway, "_toml_str",          # valid TOML, but every path altered
+                            lambda s: json.dumps(str(s) + "x" if str(s).startswith("/") else str(s)))
+        with pytest.raises(ValueError, match="round-trip"):
+            tjor_gateway.augment_policy(BASE_POLICY, "tjor-gateway")
+
+    def test_idempotent_with_method_rules(self):
+        base = BASE_POLICY + '[[methods.restrict]]\nhost = "*"\nallow = ["GET"]\n'
+        once = tjor_gateway.augment_policy(base, "tjor-gateway")
+        twice = tjor_gateway.augment_policy(once, "tjor-gateway")
+        assert once == twice
+
+    def test_cli_exits_nonzero_on_an_invalid_base(self, tmp_path):
+        bad = tmp_path / "policy.toml"
+        bad.write_text(BASE_POLICY + '[[methods.restirct]]\nhost = "h"\nallow = ["GET"]\n')
+        with pytest.raises(SystemExit) as exc:
+            tjor_gateway._main(["tjor_gateway.py", "augment-policy", str(bad), "tjor-gateway"])
+        assert exc.value.code != 0 and "methods" in str(exc.value.code)
 
     def test_dual_membership_block_wins(self):
         # The exact adversarial state the security claim rests on: the gateway
@@ -157,9 +249,9 @@ class TestAugmentPolicy:
         )
         pol = tjor_policy.parse_policy(tjor_gateway.augment_policy(base, "tjor-gateway"))
         assert pol.valid, pol.errors
-        v = tjor_policy.evaluate(pol, "http://tjor-gateway:4000/key/generate")
+        v = tjor_policy.evaluate(pol, "http://tjor-gateway:4000/key/generate", "GET")
         assert not v.allowed and v.rule == "host-block"     # block wins over allow
-        assert tjor_policy.evaluate(pol, "http://tjor-gateway:4000/v1/chat/completions").allowed
+        assert tjor_policy.evaluate(pol, "http://tjor-gateway:4000/v1/chat/completions", "GET").allowed
 
 
 class TestCli:

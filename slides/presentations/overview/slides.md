@@ -116,7 +116,7 @@ What the agent can talk to. The network boundary is the cage's primary guarantee
 ---
 layout: problem
 title: The agent can reach any host
-specs: [cage-network@b36c84fa, egress-policy@484f4e5a]
+specs: [cage-network@b36c84fa, egress-policy@b752140c]
 adrs: ['0004']
 ---
 
@@ -149,7 +149,7 @@ specs: [cage-network@b36c84fa]
 ---
 layout: problem
 title: Policy has to see the request, not just the host
-specs: [cage-network@b36c84fa, egress-policy@484f4e5a]
+specs: [cage-network@b36c84fa, egress-policy@b752140c]
 adrs: ['0007', '0012']
 ---
 
@@ -163,7 +163,7 @@ adrs: ['0007', '0012']
 
 - The proxy **terminates TLS** with a per-session CA that only the cage trusts, so every request is seen in the clear at the boundary and policy applies to the path, not just the host.
 - That is what lets the proxy **overwrite a placeholder with a brokered credential**, **strip forged identity headers**, and carve inference paths out of a blocked gateway host.
-- The verdict, the denial and every rewrite happen **at the headers stage, before any byte is forwarded**: a denied streamed body is cut off, not delivered and then refused. HTTP/1.1 only, so every body is declared up front.
+- The verdict, the denial and every rewrite happen **at the headers stage, before any byte is forwarded**: a denied streamed body is cut off, not delivered and then refused. HTTP/1.1 only, so every body is declared up front. The method is judged there with the path.
 - Every request is judged on the **host its connection was opened to** (the `CONNECT` target, which must equal the server name), never on a `Host` header or an absolute-form request target; either naming another host is denied.
 
 <Plainly>
@@ -195,7 +195,7 @@ specs: [cage-network@b36c84fa]
 ---
 layout: problem
 title: A policy that can be bent
-specs: [egress-policy@484f4e5a]
+specs: [egress-policy@b752140c]
 ---
 
 ::problem::
@@ -206,16 +206,21 @@ specs: [egress-policy@484f4e5a]
 
 ::solution::
 
-- **Fixed, tested precedence**: host blocklist → path allow carve-outs → path blocks → default deny.
+- **Fixed, tested precedence**: host blocklist → path allow carve-outs → path blocks → default deny → method gate.
 - **Fails closed**: a missing, unparseable or invalid policy denies all egress, loudly.
-- **One matcher, everywhere**: proxy addon, `tjor policy` and the launcher share one implementation, and a parity corpus in CI asserts identical verdicts.
-- **Encoding-aware, asymmetric matching**: encoding can never widen an allow or evade a block; dot-segments cannot escape a carve-out.
+- **One matcher, everywhere**: proxy addon, `tjor policy` and the launcher share one implementation, and a parity corpus in CI asserts identical verdicts, method included.
+- **Encoding-aware, asymmetric matching**: encoding can never widen an allow, a block or a method exception; dot-segments cannot escape a carve-out.
+- **Read-only hosts**: `[[methods.restrict]]` narrows a host to listed methods, `[[methods.except]]` admits one method on one exact path; the gate runs last and can only deny; protocol switches and override headers are refused on such a host, judged on the same reading of the policy as the verdict.
 - Harness vendor endpoints get path-level treatment, not a blanket host allow.
+
+<Plainly>
+<p>The gate sees the verb, not what a request does: a <code>POST</code> exception on a GraphQL endpoint admits mutations, listing <code>GET</code> admits neither <code>HEAD</code> nor <code>OPTIONS</code>, and <code>*</code> in a path spans <code>/</code>. Methods are compared byte for byte, at most 32 characters.</p>
+</Plainly>
 
 ---
 layout: problem
 title: Blocked, and no idea why
-specs: [policy-ergonomics@1774a891]
+specs: [policy-ergonomics@46a94f79]
 ---
 
 ::problem::
@@ -230,11 +235,12 @@ specs: [policy-ergonomics@1774a891]
 $ tjor denials                          # host + deciding rule, live
 $ tjor policy add registry.example.com  # widen by one host
 $ tjor policy https://x/ --explain      # verdict, stage, pattern
+$ tjor policy https://x/ --method POST  # preview a write on a read-only host
 $ tjor down                             # teardown: denial recap
 ```
 
 - The active policy is layered, most specific first: a **trusted** repo `.tjor/policy.toml` → `~/.config/tjor/policy.toml` → the packaged default.
-- The denial log lives in session state and is readable while the session runs.
+- The denial log lives in session state and is readable while the session runs. Each rule kind gets its own hint: a `method-block:` line is widened by a `[[methods.except]]` rule, not `tjor policy add`; a `header-block:` line has no exception.
 
 ---
 layout: section
@@ -292,7 +298,7 @@ specs: [credential-broker@036bd52a]
 ---
 layout: problem
 title: One LLM endpoint, no admin hole
-specs: [llm-gateway@8a0193e8]
+specs: [llm-gateway@37adb449]
 adrs: ['0009']
 ---
 
@@ -307,6 +313,7 @@ adrs: ['0009']
 - An optional **LiteLLM sidecar on the egress network**, never on the agent network. The egress policy gains **exactly one host**.
 - The proxy allows **only inference paths** toward it; the gateway host is default-denied with those paths carved back in, so the entire management API, including routes LiteLLM adds later, is unreachable by construction.
 - A per-install **master key is injected by the proxy** and never enters the agent; provider keys reach the gateway sidecar only. `tjor gateway rotate-key` rotates it.
+- The session policy is generated from your base policy by the one parser: every section survives, the inference paths get exceptions for the methods they use, the result is parsed again before it is written, and a base policy that does not parse fails the launch before anything starts.
 
 <Plainly>
 <p>Keys reach the gateway and proxy sidecars as container env, visible to <code>docker inspect</code>, inside the docker-socket-trusted threat model (ADR 0009). The gateway host is exempt from the resolved-address guard. A live provider round-trip is a manual check; CI has no keys.</p>

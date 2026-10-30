@@ -116,6 +116,13 @@ class Echo(BaseHTTPRequestHandler):
             self._read_body(entry)
             with _LOCK:
                 entry["complete"] = True
+            if self.path.split("?", 1)[0] == "/redirect":      # the method-gate redirect probe
+                self._status(307, [("Location", "/items")])
+                return
+            if self.path.split("?", 1)[0] == "/switch":        # a 101 whatever the request carried
+                self._status(101, [("Upgrade", "websocket"), ("Connection", "Upgrade")])
+                self.close_connection = True
+                return
             self._reply({
                 "method": self.command,
                 "headers": {k.lower(): v for k, v in self.headers.items()},
@@ -171,6 +178,15 @@ class Echo(BaseHTTPRequestHandler):
                 raise ConnectionError("chunk data not followed by CRLF")
 
     # --- reply ------------------------------------------------------------
+    def _status(self, code: int, headers: list[tuple[str, str]]) -> None:
+        self.send_response(code)
+        for name, value in headers:
+            self.send_header(name, value)
+        if code != 101:
+            self.send_header("content-length", "0")
+        self.end_headers()
+        self.wfile.flush()
+
     def _reply(self, obj: dict) -> None:
         body = json.dumps(obj).encode()
         self.send_response(200)

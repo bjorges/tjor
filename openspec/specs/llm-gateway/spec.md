@@ -64,3 +64,35 @@ to the configured host.
 - **THEN** the proxy permits it (gateway exemption)
 - **WHEN** any other allow-listed host resolves to a private/non-global IP
 - **THEN** the proxy still denies it
+
+### Requirement: Session policy augmentation derives from the validated base policy
+
+When the gateway is enabled, the session policy SHALL be generated from the base policy as parsed and validated by the one policy parser, re-emitting every section, the `methods` rules included. A base policy the parser rejects SHALL fail the launch with the parser's errors: no session policy is written, one left by an earlier launch into the same directory is removed, no agent starts, and the launcher says what that means for sidecars still running from an earlier launch.
+
+#### Scenario: A malformed methods section fails the launch
+- **WHEN** the gateway is enabled and the base policy has a `[[methods.restrict]]` rule with a misspelled key
+- **THEN** the launch stops with the parser's error, and no session policy file exists in the session directory
+
+#### Scenario: A reused session directory does not keep a stale policy
+- **WHEN** the session directory holds a session policy from an earlier launch and the base policy is now rejected by the parser
+- **THEN** the launch stops with the parser's error, the stale session policy is removed, no agent starts, and the output names the running-sidecar consequence
+
+#### Scenario: Method rules survive augmentation
+- **WHEN** the gateway is enabled and the base policy restricts a host to `GET` with a `POST` exception on one path
+- **THEN** the session policy denies `POST` to that host with `method-block:POST`, admits the excepted path, and still carves the gateway's inference paths
+
+#### Scenario: The generated policy is checked before it is written
+- **WHEN** the augmentation serialises the parsed base policy, whose host or path patterns may hold a quote, a backslash or a control character
+- **THEN** every string is emitted as a TOML basic string, the result is parsed by the same parser and compared rule for rule with the base plus the gateway additions, and a mismatch fails the launch with a message naming the augmentation, not a later "invalid policy"
+
+#### Scenario: The launcher path is tested
+- **WHEN** the launcher's topology step runs against a malformed base policy with the gateway enabled, in a fresh session directory and in one seeded with a stale session policy
+- **THEN** the integration test sees a non-zero exit, the parser's error on stderr, and no session policy file in either case
+
+### Requirement: Inference paths stay reachable under method restrictions
+
+The augmentation SHALL add a `[[methods.except]]` rule for the gateway host admitting `POST` on each of the gateway's POST inference paths and `GET` on its model-listing and health paths, so a restrict rule that matches the gateway host (for example `host = "*"`, even with `allow = []`) cannot deny inference. The management surface SHALL stay denied by the host block regardless.
+
+#### Scenario: A wildcard restriction does not break inference
+- **WHEN** the base policy restricts `*` to `GET`, to `POST`, or to nothing (`allow = []`) and the gateway is enabled
+- **THEN** every inference path toward the gateway host is allowed with the method it uses (`POST /v1/chat/completions`, `GET /v1/models`, `GET /health/readiness`) and `POST /key/generate` is denied with `host-block`

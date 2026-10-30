@@ -22,7 +22,9 @@ import os
 import pathlib
 import secrets
 import sys
-import tomllib
+
+sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
+import tjor_policy  # noqa: E402 — the one policy parser (charter L4)
 
 MASTER_KEY_PREFIX = "sk-tjor-"
 
@@ -37,6 +39,25 @@ INFERENCE_PATHS = (
     "/embeddings", "/v1/embeddings",
     "/models", "/v1/models",
     "/messages", "/v1/messages",           # Anthropic-format passthrough
+    "/health/liveliness", "/health/readiness",
+)
+# The inference paths that are POST in practice (#66): a `[[methods.except]]`
+# POST rule is added for each on the gateway host, so a `[[methods.restrict]]`
+# written for third-party hosts (`host = "*"`) cannot take tjor's own
+# inference host down with a confusing method-block:POST. /models and the
+# health paths are GET and need no exception.
+POST_INFERENCE_PATHS = (
+    "/chat/completions", "/v1/chat/completions",
+    "/completions", "/v1/completions",
+    "/embeddings", "/v1/embeddings",
+    "/messages", "/v1/messages",
+)
+# The inference paths that are GET: model listing and health. They get a GET
+# exception for the same reason, so a restriction with `allow = []` (or one
+# that lists only POST) cannot take them down either. Together the two tuples
+# cover every inference path (a test holds that).
+GET_INFERENCE_PATHS = (
+    "/models", "/v1/models",
     "/health/liveliness", "/health/readiness",
 )
 
@@ -110,51 +131,108 @@ def render_config(models):
     return json.dumps({"model_list": model_list}, indent=2) + "\n"
 
 
+_TOML_SHORT_ESCAPES = {"\b": "\\b", "\t": "\\t", "\n": "\\n", "\f": "\\f", "\r": "\\r",
+                       '"': '\\"', "\\": "\\\\"}
+
+
 def _toml_str(s):
-    """Quote a value as a TOML basic string."""
-    return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
+    """Quote a value as a TOML basic string, ASCII only, so any string the
+    policy parser accepted round-trips: the short escapes for what has one,
+    `\\uXXXX` for the other control characters (DEL included: TOML forbids
+    it raw) and for non-ASCII BMP characters, `\\UXXXXXXXX` for supplementary
+    code points. Not JSON: a JSON encoder writes a supplementary character as
+    a surrogate pair, which TOML rejects as not a scalar value. A lone
+    surrogate cannot be written in TOML at all and raises."""
+    out = []
+    for ch in str(s):
+        cp = ord(ch)
+        if ch in _TOML_SHORT_ESCAPES:
+            out.append(_TOML_SHORT_ESCAPES[ch])
+        elif 0xD800 <= cp <= 0xDFFF:
+            raise ValueError(f"string holds a lone surrogate U+{cp:04X}, which TOML cannot represent")
+        elif cp > 0xFFFF:
+            out.append(f"\\U{cp:08X}")
+        elif cp < 0x20 or cp > 0x7E:
+            out.append(f"\\u{cp:04X}")
+        else:
+            out.append(ch)
+    return '"' + "".join(out) + '"'
 
 
-def augment_policy(base_toml, gateway_host, inference_paths=INFERENCE_PATHS):
+def augment_policy(base_toml, gateway_host, inference_paths=INFERENCE_PATHS,
+                   post_paths=POST_INFERENCE_PATHS, get_paths=GET_INFERENCE_PATHS):
     """Return a policy TOML that makes `gateway_host` an inference-ONLY host on
     top of the base policy: the host joins `hosts.block` (so it is denied for
     every path) and each inference path is added as a `paths.allow` carve-out
     (rescuing only those). Every other path on the gateway — the management API,
-    known or future — is denied by construction. The base policy's own
-    allow/block/path rules are preserved. Comments are not (this is a generated
-    session policy); the result is re-validated by the policy parser downstream.
+    known or future — is denied by construction. The base policy's own rules,
+    the `methods` section included, are preserved: the base is parsed by THE
+    policy parser first and an invalid base raises (an invalid policy must fail
+    the launch loudly, never be re-emitted without the part that failed), and
+    the result is serialised from the parsed Policy, so nothing the parser
+    accepted can be dropped and nothing it rejected can be healed. The POST
+    inference paths get a `[[methods.except]]` POST rule on the gateway host,
+    the GET ones (model listing, health) a GET rule. Comments are not kept
+    (this is a generated session policy). Before it is returned the result is
+    parsed by the same parser and compared, rule for rule, with what was meant
+    to be written: a serialisation that does not round-trip raises here, with
+    a message that says so, instead of failing closed later as "invalid
+    policy" with no hint of why.
     """
-    data = tomllib.loads(base_toml)
-    mode = data.get("mode", "strict-allow")
-    hosts = data.get("hosts", {}) if isinstance(data.get("hosts"), dict) else {}
-    allow = [h for h in hosts.get("allow", []) if isinstance(h, str)]
-    block = [h for h in hosts.get("block", []) if isinstance(h, str)]
+    base = tjor_policy.parse_policy(base_toml, source="base policy")
+    if not base.valid:
+        raise ValueError("base policy is invalid: " + "; ".join(base.errors))
+    allow = list(base.host_allow)
+    block = list(base.host_block)
     if gateway_host not in block:
         block.append(gateway_host)
-    paths = data.get("paths", {}) if isinstance(data.get("paths"), dict) else {}
-    p_allow = [(r["host"], r["path"]) for r in paths.get("allow", [])
-               if isinstance(r, dict) and "host" in r and "path" in r]
-    p_block = [(r["host"], r["path"]) for r in paths.get("block", [])
-               if isinstance(r, dict) and "host" in r and "path" in r]
+    p_allow = list(base.path_allow)
     for pth in inference_paths:
         if (gateway_host, pth) not in p_allow:
             p_allow.append((gateway_host, pth))
+    p_block = list(base.path_block)
+    m_restrict = list(base.method_restrict)
+    m_except = list(base.method_except)
+    for paths, method in ((post_paths, "POST"), (get_paths, "GET")):
+        for pth in paths:
+            if (gateway_host, pth, frozenset({method})) not in m_except:
+                m_except.append((gateway_host, pth, frozenset({method})))
 
-    out = [f"mode = {_toml_str(mode)}", "", "[hosts]",
-           "allow = [" + ", ".join(_toml_str(h) for h in allow) + "]",
-           "block = [" + ", ".join(_toml_str(h) for h in block) + "]", ""]
+    def _list(values):
+        return "[" + ", ".join(_toml_str(v) for v in values) + "]"
+
+    out = [f"mode = {_toml_str(base.mode)}", "", "[hosts]",
+           f"allow = {_list(allow)}", f"block = {_list(block)}", ""]
     for h, p in p_allow:
         out += ["[[paths.allow]]", f"host = {_toml_str(h)}", f"path = {_toml_str(p)}", ""]
     for h, p in p_block:
         out += ["[[paths.block]]", f"host = {_toml_str(h)}", f"path = {_toml_str(p)}", ""]
-    return "\n".join(out) + "\n"
+    for h, methods in m_restrict:
+        out += ["[[methods.restrict]]", f"host = {_toml_str(h)}", f"allow = {_list(sorted(methods))}", ""]
+    for h, p, methods in m_except:
+        out += ["[[methods.except]]", f"host = {_toml_str(h)}", f"path = {_toml_str(p)}",
+                f"methods = {_list(sorted(methods))}", ""]
+    text = "\n".join(out) + "\n"
+
+    check = tjor_policy.parse_policy(text, source="augmented policy")
+    if not check.valid:
+        raise ValueError("the augmented policy does not parse: " + "; ".join(check.errors))
+    meant = (base.mode, allow, block, p_allow, p_block, m_restrict, m_except)
+    got = (check.mode, check.host_allow, check.host_block, check.path_allow, check.path_block,
+           check.method_restrict, check.method_except)
+    if got != meant:
+        raise ValueError("the augmented policy does not round-trip through the policy parser")
+    return text
 
 
 def _main(argv):
     if len(argv) == 4 and argv[1] == "augment-policy":
         # augment-policy <base-policy-file> <gateway-host>  -> print augmented TOML
         base = pathlib.Path(argv[2]).read_text()
-        sys.stdout.write(augment_policy(base, argv[3]))
+        try:
+            sys.stdout.write(augment_policy(base, argv[3]))
+        except ValueError as exc:
+            sys.exit(f"tjor_gateway: {exc}")
         return
     if len(argv) >= 2 and argv[1] == "master-key":
         # master-key [path]  -> ensure + print the key (used by the launcher)

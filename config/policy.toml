@@ -42,3 +42,17 @@ path = "/telemetry*"
 [[paths.block]]
 host = "*.githubcopilot.com"
 path = "/telemetry*"
+
+# Read-only hosts (#66): a [[methods.restrict]] rule makes a host read-only
+# and a [[methods.except]] rule admits one method on exactly one path — for
+# APIs that query by POST. Commented out: the default policy restricts nothing.
+# Preview with: tjor policy https://api.example.test/x --method POST --explain
+#
+# [[methods.restrict]]
+# host = "api.example.test"
+# allow = ["GET", "HEAD"]
+#
+# [[methods.except]]
+# host = "api.example.test"
+# path = "/rest/api/2/search"
+# methods = ["POST"]
