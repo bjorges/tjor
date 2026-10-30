@@ -4,7 +4,7 @@
 
 ### Requirement: Named session derivation
 
-When `--session <name>` is given (name matching `[A-Za-z0-9._-]{1,32}`), the session id SHALL be derived from both the workspace and the name; without it, derivation is unchanged (repo-scoped default session). Derivation SHALL be idempotent: a value already equal to, or prefixed by, the current workspace's qualified id SHALL resolve to the same session as its short form — never to a doubled id. A value that is an existing *other* workspace's fully-qualified session id SHALL be refused at launch with a clear error (launching this workspace under another workspace's session identity is never derived silently). With `task.session_per_task` enabled, `--task <id>` given and no `--session`, the short name SHALL be the task id itself, set by the launcher without passing through the `--session` canonicalisation; an explicit `--session <name>` names the session as today. An id the lifecycle resolver would read otherwise — equal to or prefixed by this workspace's base id, or the full id of an existing session — SHALL be refused at launch.
+When `--session <name>` is given (name matching `[A-Za-z0-9._-]{1,32}`), the session id SHALL be derived from both the workspace and the name; without it, derivation is unchanged (repo-scoped default session). Derivation SHALL be idempotent: a value already equal to, or prefixed by, the current workspace's qualified id SHALL resolve to the same session as its short form — never to a doubled id. A value that is an existing *other* workspace's fully-qualified session id SHALL be refused at launch with a clear error (launching this workspace under another workspace's session identity is never derived silently). With `task.session_per_task` enabled, `--task <id>` given and no `--session`, the short name SHALL be the task id itself, set by the launcher without passing through the `--session` canonicalisation; an explicit `--session <name>` names the session as today. For that derived name the launch SHALL refuse an id equal to or prefixed by this workspace's base id, and a qualified-looking id that names an existing session (the lifecycle resolver's own lookup; an unreachable engine refuses rather than guesses).
 
 #### Scenario: Same repo, different names
 - **WHEN** sessions `a` and `b` are launched from the same repo
@@ -40,4 +40,20 @@ When `--session <name>` is given (name matching `[A-Za-z0-9._-]{1,32}`), the ses
 
 #### Scenario: Round trip
 - **WHEN** `tjor run --task bug-12345678` launched the session and `tjor down --session bug-12345678` runs from the workspace
-- **THEN** that session is torn down (with the resolver's notice that the value looked qualified), not the default session
+- **THEN** that session is torn down (with the resolver's notice that the value looked qualified), not the default session; a session with the full id `bug-12345678` created later makes the same command refuse as ambiguous rather than tear down either
+
+### Requirement: Single config merge path
+
+Every entry point SHALL obtain effective configuration through one shared merge implementation covering all config sections. When the current repo carries a `.tjor/config.toml` that the user has approved (`repo-config-trust`), it layers over the user config in that one merge path, except for the user-only tables, which the merge takes from the defaults and the user config alone; an unapproved repo config is excluded from the merge.
+
+#### Scenario: Override honored everywhere
+- **WHEN** a user override is set for any config section
+- **THEN** every entry point (launcher, debug CLI, topology setup) observes the same effective value
+
+#### Scenario: Trusted repo layer applies through the same path
+- **WHEN** an approved repo `.tjor/config.toml` sets a value outside the user-only tables
+- **THEN** every entry point observes it via the same merge path, layered over the user config
+
+#### Scenario: User-only tables are skipped in the same path
+- **WHEN** an approved repo `.tjor/config.toml` sets `task.notes_dir`
+- **THEN** every entry point observes the user config's value, and the merge path reports the skipped table once

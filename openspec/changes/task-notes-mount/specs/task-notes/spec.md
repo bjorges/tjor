@@ -7,7 +7,7 @@ A per-task notes directory the agent can write, resolved from `--task <id>` by u
 
 ### Requirement: A task resolves a notes directory by user configuration
 
-When `task.notes_dir` is configured, a launch with `--task <id>` SHALL resolve the directory from the template and mount it writable at its host path as an additional writable root, through the same path as a `--dir` argument, so every rule for extra writable roots applies unchanged. Workspace resolution SHALL be unaffected; the `[task]` table is read from the defaults and the user config only; without the setting `--task` SHALL behave exactly as today.
+When `task.notes_dir` is configured, a launch with `--task <id>` SHALL resolve the directory from the template and mount it writable at its host path as an additional writable root, through the same path as a `--dir` argument, so every rule for extra writable roots applies unchanged. Workspace resolution SHALL be unaffected; the `[task]` table is read from the defaults and the user config only; with neither `task.notes_dir` nor `task.session_per_task` set, `--task` SHALL behave exactly as today.
 
 #### Scenario: Notes mounted beside the workspace
 - **WHEN** `task.notes_dir = "~/scratch/tasks/{task}"` is in the user config and `tjor run --task a` is launched from a repository
@@ -26,19 +26,19 @@ When `task.notes_dir` is configured, a launch with `--task <id>` SHALL resolve t
 - **THEN** the launch is refused naming the error; an error is never read as "not covered" or "not contained"
 
 #### Scenario: Unchanged without configuration
-- **WHEN** no `task.notes_dir` is configured and `tjor run --task A` is launched
+- **WHEN** neither `task.notes_dir` nor `task.session_per_task` is set and `tjor run --task A` is launched
 - **THEN** nothing is mounted for the task, the task id grammar, the session name and every command behave as before
 
 ### Requirement: The notes template is absolute and names the task once
 
-`task.notes_dir` SHALL be an absolute path (a leading `~` expands), already normalised (no `.` or `..` component, no empty component, no trailing separator), holding the placeholder `{task}` exactly once inside one component; its fixed prefix is everything before that component, and the prefix SHALL exist as a real directory. Any other template SHALL refuse the launch before any session state exists.
+`task.notes_dir` SHALL be an absolute path (a leading `~` expands) whose components, checked one by one, are each non-empty and neither `.` nor `..`, with a single leading separator and no trailing one, holding the placeholder `{task}` exactly once inside one component; its fixed prefix is everything before that component, and the prefix SHALL exist as a real directory. Any other template SHALL refuse the launch before any session state exists.
 
 #### Scenario: Malformed template
 - **WHEN** `task.notes_dir` is relative, holds no `{task}`, holds it twice, or its prefix does not exist
 - **THEN** the launch is refused naming the setting, before any session state exists
 
 #### Scenario: Traversal in the template
-- **WHEN** `task.notes_dir` is `/safe/tasks/{task}/../../elsewhere` or `/safe/tasks/{task}//notes`
+- **WHEN** `task.notes_dir` is `/safe/tasks/{task}/../../elsewhere`, `/safe/tasks/{task}//notes`, `//safe/tasks/{task}` or `/safe/tasks/{task}/`
 - **THEN** the launch is refused naming the setting, and nothing is created or mounted
 
 ### Requirement: A task id that resolves to a path is a plain lower-case name
@@ -73,6 +73,10 @@ Resolution SHALL have no side effect, so lifecycle commands never create anythin
 - **WHEN** `tjor status --session a` runs for a task whose directory does not exist
 - **THEN** no directory is created
 
+#### Scenario: What a refusal leaves behind, precisely
+- **WHEN** the launch is refused by the template, the id, the notes-root rule, the sensitive-path gate or the creation walk
+- **THEN** no notes directory and no session state directory were created; a refusal by the share probe comes later, after session state and sidecars exist, as for every extra-dir share check
+
 #### Scenario: Missing directory with creation off
 - **WHEN** `task.create` is false and the resolved directory does not exist
 - **THEN** the launch is refused naming the directory
@@ -93,17 +97,21 @@ A launch SHALL be refused, with no override, when the resolved workspace is the 
 - **WHEN** the workspace is a repository at `~/scratch/tasks/a/repo` under the same configuration
 - **THEN** the launch proceeds: the workspace is not an ancestor of the notes root
 
-### Requirement: The share check for the notes directory is a correspondence check
+### Requirement: The share check for the notes directory uses a probe file
 
-Because a freshly created directory is empty and the generic bind-source check compares content only, the notes directory SHALL be verified by binding its parent into a throwaway container and requiring that the container sees the directory by name. A parent the container sees without that entry, or an unshared parent, SHALL refuse the launch naming the directory.
+Because a fresh directory is empty and the generic bind-source check compares content only, the notes directory SHALL be verified, covered or not, by a probe: an empty file with an unpredictable name created in the directory itself, which a throwaway container with the directory bound read-only and nothing else must see; the probe SHALL be removed afterwards whatever the outcome. A container that does not see the probe SHALL refuse the launch naming the directory.
 
 #### Scenario: Fresh directory on an unshared path
-- **WHEN** `task.create` just created the directory and its parent is not shared with the container runtime
-- **THEN** the launch is refused naming the directory, before the agent starts
+- **WHEN** `task.create` just created the directory and it is not shared with the container runtime
+- **THEN** the launch is refused naming the directory, before the agent starts, and no probe file remains
 
-#### Scenario: A VM-side parent with other content
-- **WHEN** the container sees a parent directory holding other entries but not the notes directory
-- **THEN** the launch is refused all the same
+#### Scenario: A VM-side directory of the same name
+- **WHEN** the container runtime holds a stale directory at the same path with other content
+- **THEN** the probe is not seen and the launch is refused all the same
+
+#### Scenario: The probe container is isolated
+- **WHEN** the probe runs
+- **THEN** it uses the pinned proxy image with a plain shell entrypoint, `--network none`, a read-only bind of the notes directory only, no environment and no socket, and the probe name is passed as an argument, never interpolated into a shell string
 
 ### Requirement: The notes directory is named inside the cage only
 
@@ -139,8 +147,8 @@ Before the agent starts, the launcher SHALL scan the notes directory, bounded in
 
 ### Requirement: The notes directory's residuals are stated
 
-The README SHALL state: the directory is writable and git-trusted as a tree like any `--dir`; every session launched with the same task id shares it; what the agent writes there reaches the host, including nested repositories, links and committed secrets a host-side notes repository may then pick up; and the bind source is handed to the container engine as a path, so a component swapped after the launcher's checks is outside what it can see.
+The README SHALL state each residual in the scenario below plainly.
 
 #### Scenario: Residuals in the README
 - **WHEN** the README's task-notes section is read
-- **THEN** each residual above is stated plainly
+- **THEN** it states that the directory is writable and git-trusted as a tree like any `--dir`; that every session launched with the same task id shares it, and one task id is one session for every harness unless `--session` names one; that what the agent writes there reaches the host, including nested repositories, links and committed secrets a host-side notes repository may then pick up; that the bind source is handed to the container engine as a path, so a component swapped after the launcher's checks is outside what it can see; and that a probe file may remain if tjor is killed during the share check
