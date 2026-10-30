@@ -9,22 +9,29 @@ command line and before it writes anything.
         strings without NUL or newline, at most 65536 bytes, never `--`; with
         --adding, an entry equal to the flag tjor is adding in this launch
         refuses (exact spellings only; nothing else is inspected).
-  render --template=T --task=ID [--task-dir=DIR]
-        Render `[task] prompt`: `{task}` and `{task_dir}` by literal
-        substitution, `{{`/`}}` for literal braces, any other brace refuses;
+  render --template-json=J --task=ID [--task-dir=DIR]
+        Render `[task] prompt` (J is the value as `tjor_cfg get --json`
+        prints it, so its type and every byte survive the shell): `{task}`
+        and `{task_dir}` by literal substitution, `{{`/`}}` for literal
+        braces, any other brace refuses;
         no NUL, at most 65536 bytes, at least one whitespace and one other
         character (a bare word is refused: Claude Code reads a bare positional
         naming one of its subcommands as that subcommand). Prints the prompt
         and nothing else.
   covers --root=P --state-root=R --session=S
         Would the writable root P cover the session's state directory R/S?
-        Exit 0 yes, 1 no, 2 cannot tell. Read-only, never following a link,
-        never creating anything: identity (st_dev, st_ino) on the parts that
-        exist, the one component that may not exist yet by string.
+        Exit 0 yes, 3 no, anything else cannot tell (the launcher refuses).
+        Read-only, never following a link, never creating anything: identity
+        (st_dev, st_ino) on the parts that exist; the one component that may
+        not exist yet is compared conservatively (case-folded, Unicode-
+        normalised), so a spelling a case-insensitive or normalising
+        filesystem would fold onto the state directory counts as covering.
 
 Every option takes the attached form (`--task=-x`), so a dash-leading value
-is a value. Every refusal is one line on stderr and exit 2; the launcher
-refuses the launch on any of them.
+is a value. Every refusal is one line on stderr and exit 2; an unexpected
+exception is a refusal too (exit 2, never Python's default 1, which `covers`
+must not be able to confuse with "no"). The launcher refuses the launch on
+any of them.
 """
 
 from __future__ import annotations
@@ -35,6 +42,7 @@ import os
 import re
 import stat
 import sys
+import unicodedata
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -43,6 +51,7 @@ import tjor_safeprint  # noqa: E402
 
 HARNESSES = ("opencode", "claude", "copilot")
 MAX_ELEMENT = 65536
+NOT_COVERED = 3     # `covers`: a distinct, non-default exit code for "no"; 1 (Python's own) is never "no"
 # The flags tjor itself adds (spec: "The prompt is delivered in a form each
 # harness reads as data"). An `args` entry equal to one of them, while tjor
 # is adding it, is a visible mistake rather than two flags.
@@ -131,12 +140,17 @@ def render(template: str, task: str, task_dir: str | None) -> str:
     prompt = "".join(out)
     if "\0" in prompt:
         raise LaunchError(f"{key} renders to a prompt holding a NUL byte")
-    if len(prompt.encode("utf-8")) > MAX_ELEMENT:
+    try:
+        size = len(prompt.encode("utf-8", "surrogateescape"))
+    except UnicodeError as exc:
+        raise LaunchError(f"{key} renders to text that cannot be encoded: {exc}") from exc
+    if size > MAX_ELEMENT:
         raise LaunchError(f"{key} renders to more than {MAX_ELEMENT} bytes")
-    if not _NON_WS.search(prompt):
+    core = prompt.strip()   # surrounding whitespace does not make a word a sentence: `mcp\n` is still `mcp` to a parser
+    if not core:
         raise LaunchError(f"{key} renders to an empty or whitespace-only prompt")
-    if not _WS.search(prompt):
-        raise LaunchError(f"{key} renders to the single word {_safe(prompt)!r}: a one-word prompt is refused "
+    if not _WS.search(core):
+        raise LaunchError(f"{key} renders to the single word {_safe(core)!r}: a one-word prompt is refused "
                           "(Claude Code reads a bare positional that names one of its subcommands as that subcommand, "
                           "`--` notwithstanding; the rule is the same for every harness) — add words to the template")
     return prompt
@@ -175,6 +189,26 @@ def _is_ancestor_or_self(key: tuple[int, int], path: str, what: str) -> bool:
         cur = parent
 
 
+def _chain_is_real(path: str, what: str) -> None:
+    """Every ancestor of `path` is a real directory (lstat'ed, a link is an
+    error). The launcher passes physical paths; a link in the chain means
+    something was swapped since, and is refused rather than resolved."""
+    cur = os.path.dirname(os.path.abspath(path))
+    while True:
+        if _lstat_dir(cur, what) is None:
+            raise LaunchError(f"{what} {_safe(cur)} vanished while it was being read")
+        parent = os.path.dirname(cur)
+        if parent == cur:
+            return
+        cur = parent
+
+
+def _may_alias(a: str, b: str) -> bool:
+    """Could a case-insensitive or Unicode-normalising filesystem treat the
+    two names as one directory? Conservative: NFKC then casefold."""
+    return unicodedata.normalize("NFKC", a).casefold() == unicodedata.normalize("NFKC", b).casefold()
+
+
 def covers(root: str, state_root: str, session: str) -> bool:
     """Would a writable root at `root` cover the state directory
     `state_root/session`? The state root exists (the launcher created it); the
@@ -190,6 +224,7 @@ def covers(root: str, state_root: str, session: str) -> bool:
     st_d = _lstat_dir(state_dir, "the state directory")
     st_p = _lstat_dir(root, "the writable root")
     if st_p is not None:
+        _chain_is_real(root, "a directory above the writable root")
         key_p = (st_p.st_dev, st_p.st_ino)
         # An existing root covers an existing state directory when it is that
         # directory or an ancestor of it; a MISSING state directory lies one
@@ -201,7 +236,11 @@ def covers(root: str, state_root: str, session: str) -> bool:
         return False   # every ancestor of an existing directory exists; a missing root is none of them
     # Both missing: the root would be created where the state directory will
     # be only if its deepest existing ancestor IS the session root and the
-    # single missing component is the session id.
+    # single missing component is the session id — or a spelling of it that
+    # a case-insensitive or normalising filesystem would fold onto it (a
+    # template such as `/root/PROJ-{task}` beside the session `proj-a`):
+    # nothing exists yet to compare identities, so the comparison is
+    # conservative and refuses what MIGHT become the same directory.
     cur = os.path.abspath(root)
     missing: list[str] = []
     while True:
@@ -213,17 +252,26 @@ def covers(root: str, state_root: str, session: str) -> bool:
             raise LaunchError(f"no existing ancestor for {_safe(root)}")
         missing.insert(0, os.path.basename(cur))
         cur = parent
-    return (st.st_dev, st.st_ino) == key_r and missing == [session]
+    _chain_is_real(cur, "a directory above the writable root")   # the same rule above the deepest existing ancestor
+    return (st.st_dev, st.st_ino) == key_r and len(missing) == 1 and _may_alias(missing[0], session)
 
 
 # ------------------------------------------------------------------- main
 
 def _main(argv: list[str]) -> int:
+    # The streams carry UTF-8 whatever the locale (a non-UTF-8 LC_ALL would
+    # otherwise skew the byte bound and fail on a non-ASCII prompt); raw
+    # bytes in a path round-trip through surrogateescape.
+    for stream in (sys.stdin, sys.stdout):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="surrogateescape")
+        except (AttributeError, ValueError):
+            pass
     parser = argparse.ArgumentParser(prog="tjor_launch", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("args"); p.add_argument("--harness", required=True)
     p.add_argument("--adding", action="append", default=[], choices=("continue", "prompt"))
-    p = sub.add_parser("render"); p.add_argument("--template", required=True); p.add_argument("--task", required=True)
+    p = sub.add_parser("render"); p.add_argument("--template-json", required=True); p.add_argument("--task", required=True)
     p.add_argument("--task-dir", default=None)
     p = sub.add_parser("covers"); p.add_argument("--root", required=True); p.add_argument("--state-root", required=True)
     p.add_argument("--session", required=True)
@@ -237,13 +285,22 @@ def _main(argv: list[str]) -> int:
             for entry in validate_args(raw, args.harness, tuple(args.adding)):
                 print(entry)
         elif args.cmd == "render":
-            sys.stdout.write(render(args.template, args.task, args.task_dir))
+            try:
+                template = json.loads(args.template_json)
+            except ValueError as exc:
+                raise LaunchError(f"task.prompt is not valid JSON from the config reader: {exc}") from exc
+            if not isinstance(template, str):
+                raise LaunchError(f"task.prompt must be a string (got {type(template).__name__})")
+            sys.stdout.write(render(template, args.task, args.task_dir))
             sys.stdout.flush()
         elif args.cmd == "covers":
-            return 0 if covers(args.root, args.state_root, args.session) else 1
+            return 0 if covers(args.root, args.state_root, args.session) else NOT_COVERED
         return 0
     except LaunchError as exc:
         print(f"tjor_launch: {exc}", file=sys.stderr)
+        return 2
+    except Exception as exc:  # noqa: BLE001 — fail closed: an unexpected fault is a refusal, never exit 1
+        print(f"tjor_launch: internal error, refusing ({type(exc).__name__}: {exc})", file=sys.stderr)
         return 2
 
 

@@ -224,7 +224,8 @@ so only the most recent conversation can be continued; and `tjor reset
 sessions` leaves Claude Code's transcripts on disk, because their directory
 (`~/.claude/projects`) also holds its per-project memory. The three
 harnesses' flags were verified against the pinned versions, and the agent
-image build fails when a pinned CLI's `--help` no longer lists them.
+image build fails when a pinned CLI's `--help` no longer lists them; that is
+a check on the flag names, not on the attached forms behaving as assumed.
 **Sensitive host paths are refused** — as the primary workspace and as
 `--dir`/`--dir-ro` alike: `/` and system directories, your home directory and
 anything above it, credential directories (`~/.ssh`, `~/.config`, `~/.aws`,

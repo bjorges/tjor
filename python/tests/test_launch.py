@@ -112,6 +112,8 @@ def test_render_dash_leading_label_id_is_data():
     ("Task { x", "stray brace"),
     ("Task } x", "stray '}' at offset 5"),
     ("{task}", "one-word prompt is refused"),
+    ("{task}\n", "one-word prompt"),          # surrounding whitespace does not make a sentence
+    ("  {task}  ", "one-word prompt"),
     ("   ", "empty or whitespace-only"),
     ("a{task}b", "one-word prompt"),
 ])
@@ -133,13 +135,45 @@ def test_render_bounds():
         tl.render("Task {task} x", "a\0b", None)
 
 
+def test_render_surrogate_escaped_path_is_a_prompt_not_a_traceback():
+    out = tl.render("Task {task} in {task_dir}", "a", "/n/\udcff")
+    assert out.startswith("Task a in /n/") and "\udcff" in out
+
+
 def test_render_cli_writes_the_prompt_only_and_accepts_attached_dash_values():
-    r = _run("render", "--template=Task {task} starts.", "--task=-x")
+    r = _run("render", f"--template-json={json.dumps('Task {task} starts.')}", "--task=-x")
     assert r.returncode == 0 and r.stdout == "Task -x starts." and r.stderr == ""
-    r = _run("render", "--template=Task {task}\n", "--task=a")
+    r = _run("render", f"--template-json={json.dumps('Task {task}' + chr(10))}", "--task=a")
     assert r.stdout == "Task a\n"
-    r = _run("render", "--template={task}", "--task=mcp")
+    r = _run("render", f"--template-json={json.dumps('{task}')}", "--task=mcp")
     assert r.returncode == 2 and r.stdout == "" and "one-word" in r.stderr
+
+
+def test_render_cli_template_type_and_json_are_checked():
+    r = _run("render", '--template-json=["hello world"]', "--task=a")
+    assert r.returncode == 2 and "must be a string" in r.stderr
+    r = _run("render", "--template-json=not json", "--task=a")
+    assert r.returncode == 2 and "not valid JSON" in r.stderr
+    r = _run("render", f"--template-json={json.dumps('Task {task} x' + chr(0))}", "--task=a")   # an escaped NUL survives the shell
+    assert r.returncode == 2 and "NUL" in r.stderr
+
+
+def test_render_cli_is_utf8_under_a_c_locale():
+    env = {**os.environ, "LC_ALL": "C", "LANG": "C", "LANGUAGE": ""}
+    env.pop("PYTHONIOENCODING", None)
+    r = subprocess.run([sys.executable, "-I", str(HELPER), "render", f"--template-json={json.dumps('Tásk {task} ü')}", "--task=a"],
+                       capture_output=True, env=env)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == "Tásk a ü".encode("utf-8")
+
+
+def test_main_turns_any_exception_into_a_refusal(monkeypatch, tmp_path):
+    def boom(*_a, **_k):
+        raise RuntimeError("boom")
+    monkeypatch.setattr(tl, "covers", boom)
+    assert tl._main(["covers", f"--root={tmp_path}", f"--state-root={tmp_path}", "--session=x"]) == 2
+    monkeypatch.setattr(tl, "render", boom)
+    assert tl._main(["render", '--template-json="Task {task} x"', "--task=a"]) == 2
 
 
 # ---- covers ----------------------------------------------------------------------
@@ -198,13 +232,29 @@ def test_covers_identity_not_spelling(roots):
     # physical paths; a link here means something was swapped).
     with pytest.raises(tl.LaunchError, match="symbolic link"):
         tl.covers(str(alias), str(sr), "sid")
-    # A root spelled through a LINKED PARENT denotes the same directory (the
-    # kernel resolves intermediate components exactly as a bind mount would);
-    # the answer is by identity of what the path denotes, never its spelling.
+    # A link ANYWHERE in the root's chain is refused too (the launcher passes
+    # physical paths; a link in the chain means something was swapped), the
+    # same whether the leaf exists or not.
     linked_parent = tmp_path / "lp"
     linked_parent.symlink_to(tmp_path)
-    assert tl.covers(str(linked_parent / "sessions"), str(sr), "sid") is True
-    assert tl.covers(str(linked_parent / "sessions-other"), str(sr), "sid") is False if (tmp_path / "sessions-other").mkdir() is None else None
+    with pytest.raises(tl.LaunchError, match="symbolic link"):
+        tl.covers(str(linked_parent / "sessions"), str(sr), "sid")
+    with pytest.raises(tl.LaunchError, match="symbolic link"):
+        tl.covers(str(linked_parent / "sessions" / "sid"), str(sr), "sid")
+
+
+def test_covers_missing_component_that_a_folding_filesystem_would_alias(roots):
+    tmp_path, sr = roots
+    before = sorted(str(p) for p in tmp_path.rglob("*"))
+    # Both missing: the notes directory `<root>/PROJ-12345678-A` would be the
+    # state directory `proj-12345678-a` on a case-insensitive filesystem;
+    # nothing exists to compare identities, so the spelling is judged
+    # conservatively (case-folded, Unicode-normalised).
+    assert tl.covers(str(sr / "PROJ-12345678-A"), str(sr), "proj-12345678-a") is True
+    assert tl.covers(str(sr / "proj-12345678-a"), str(sr), "proj-12345678-a") is True
+    assert tl.covers(str(sr / "proj-12345678-a-other"), str(sr), "proj-12345678-a") is False
+    assert tl.covers(str(sr / "se\u0301ance"), str(sr), "s\u00e9ance") is True       # NFD vs NFC
+    _nothing_created(tmp_path, before)
 
 
 def test_covers_case_alias_on_case_insensitive_fs(roots):
@@ -237,6 +287,6 @@ def test_covers_errors_are_refusals_not_absence(roots, tmp_path):
 def test_covers_cli_exit_codes(roots):
     tmp_path, sr = roots
     assert _run("covers", f"--root={sr}", f"--state-root={sr}", "--session=sid").returncode == 0
-    assert _run("covers", f"--root={tmp_path}/other", f"--state-root={sr}", "--session=sid").returncode == 1
+    assert _run("covers", f"--root={tmp_path}/other", f"--state-root={sr}", "--session=sid").returncode == tl.NOT_COVERED == 3
     r = _run("covers", f"--root={tmp_path}", f"--state-root={tmp_path}/nope", "--session=sid")
     assert r.returncode == 2 and "does not exist" in r.stderr

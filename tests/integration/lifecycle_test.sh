@@ -482,9 +482,7 @@ printf '[session]\nroot = "%s"\n[task]\nprompt = "Task {task} begins."\nresume =
 SID_TAL="${BASE_SID}-tal"
 TAL_RECORD="${SROOT}/${SID_TAL}/conversation.json"
 tal_run() { ( cd "${REPO}" && TJOR_USER_CONFIG="${TAL_CONFIG_DIR}/config.toml" "${T}" run --detach --session tal --task tal1 "$@" > "${SCRATCH}/tal.out" 2>&1 ); }
-tal_down() { ( cd "${REPO}" && TJOR_USER_CONFIG="${TAL_CONFIG_DIR}/config.toml" "${T}" down --session tal >/dev/null 2>&1 ) || true; }
-tal_ctr() { docker ps -aq --filter "label=tjor.role=agent" --filter "label=tjor.session=${SID_TAL}" | head -1; }
-tal_cmd() { docker inspect -f '{{json .Config.Cmd}}' "$(tal_ctr)" 2>/dev/null; }
+tal_down() { ( cd "${REPO}" && TJOR_USER_CONFIG="${TAL_CONFIG_DIR}/config.toml" "${T}" down --session tal >/dev/null 2>&1 ); }
 check "harness launch: a fresh launch with a task prompt starts" tal_run
 check "harness launch: the container's command line is the harness, the configured argument and the prompt" bash -c \
     "[[ \"\$(docker inspect -f '{{json .Config.Cmd}}' \"\$(docker ps -aq --filter label=tjor.role=agent --filter label=tjor.session=${SID_TAL} | head -1)\")\" == '[\"opencode\",\"--print-logs\",\"--prompt=Task tal1 begins.\"]' ]]"
@@ -492,26 +490,26 @@ check "harness launch: the launch line showed the prompt by length only" bash -c
 check "harness launch: the launch line said fresh, prompt sent" grep -qF "conversation: fresh, prompt sent" "${SCRATCH}/tal.out"
 check "harness launch: the record exists once the container exists" test -f "${TAL_RECORD}"
 check "harness launch: the record names the harness and the task" bash -c "grep -qF '\"harness\": \"opencode\"' '${TAL_RECORD}' && grep -qF '\"task\": \"tal1\"' '${TAL_RECORD}'"
-tal_down
+check "harness launch: the task session tears down between launches" tal_down
 check "harness launch: a relaunch continues the recorded conversation" tal_run
 check "harness launch: the relaunch command line is the harness, the argument and --continue" bash -c "[[ \"\$(docker inspect -f '{{json .Config.Cmd}}' \"\$(docker ps -aq --filter label=tjor.role=agent --filter label=tjor.session=${SID_TAL} | head -1)\")\" == '[\"opencode\",\"--print-logs\",\"--continue\"]' ]]"
 check "harness launch: the launch line named the recorded task" grep -qF "continuing the conversation recorded" "${SCRATCH}/tal.out"
-tal_down
+check "harness launch: the task session tears down between launches" tal_down
 check "harness launch: --no-resume forces a fresh conversation" tal_run --no-resume
 check "harness launch: the forced-fresh command line carries the prompt again" bash -c "[[ \"\$(docker inspect -f '{{json .Config.Cmd}}' \"\$(docker ps -aq --filter label=tjor.role=agent --filter label=tjor.session=${SID_TAL} | head -1)\")\" == '[\"opencode\",\"--print-logs\",\"--prompt=Task tal1 begins.\"]' ]]"
-tal_down
+check "harness launch: the task session tears down between launches" tal_down
 check "harness launch: reset sessions --dry-run lists the record" bash -c \
     "cd '${REPO}' && TJOR_USER_CONFIG='${TAL_CONFIG_DIR}/config.toml' '${T}' reset sessions --session tal --dry-run 2>&1 | grep -qF '${TAL_RECORD}' && test -f '${TAL_RECORD}'"
 check "harness launch: reset sessions forgets the conversation" bash -c \
     "cd '${REPO}' && TJOR_USER_CONFIG='${TAL_CONFIG_DIR}/config.toml' '${T}' reset sessions --session tal >/dev/null 2>&1; ! test -e '${TAL_RECORD}'"
 check "harness launch: after the reset the next launch is fresh" tal_run
 check "harness launch: the post-reset command line carries the prompt" bash -c "[[ \"\$(docker inspect -f '{{json .Config.Cmd}}' \"\$(docker ps -aq --filter label=tjor.role=agent --filter label=tjor.session=${SID_TAL} | head -1)\")\" == '[\"opencode\",\"--print-logs\",\"--prompt=Task tal1 begins.\"]' ]]"
-tal_down
+check "harness launch: the task session tears down between launches" tal_down
 cp "${TAL_RECORD}" "${SCRATCH}/tal-record.before"
 check "harness launch: an explicit command replaces everything" tal_run -- opencode --help
 check "harness launch: the explicit command line is exactly what was given" bash -c "[[ \"\$(docker inspect -f '{{json .Config.Cmd}}' \"\$(docker ps -aq --filter label=tjor.role=agent --filter label=tjor.session=${SID_TAL} | head -1)\")\" == '[\"opencode\",\"--help\"]' ]]"
 check "harness launch: the explicit command left the record byte-identical" cmp -s "${SCRATCH}/tal-record.before" "${TAL_RECORD}"
-tal_down
+check "harness launch: the task session tears down between launches" tal_down
 rm -rf "${TAL_CONFIG_DIR}"
 
 echo

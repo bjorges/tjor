@@ -86,3 +86,12 @@ The Dockerfile's harness stage runs, after each install, `<cli> --help` and chec
 ## Migration
 
 None. Defaults are empty `args`, empty `prompt`, `resume = "never"`; no record is written unless a prompt or `auto` is configured; an explicit command is untouched. The only visible changes without configuration are that `--harness <unknown>` now refuses instead of launching opencode, and that `tjor reset sessions` removes two more stores.
+
+## Implementation notes (post-review, head after `6a2942b`)
+
+- `tjor_launch.py covers` exits **3** for "not covered" (not 1): Python's own exit for an uncaught exception is 1, and the launcher must never read a fault as "no". Both helpers (`tjor_launch.py`, `tjor_task.py`) turn any unexpected exception into a refusal exit.
+- The one missing component in `covers` is compared case-folded and Unicode-normalised (NFKC), so a notes template such as `/root/PROJ-{task}` beside the session `proj-a` is refused on every filesystem; a link anywhere in the root's chain is refused, whether the leaf exists or not; the launcher passes the notes directory's **physical** intended path (`TJOR_TASK_PREFIX/TJOR_TASK_REL`).
+- Config values reach the builder as JSON (`tjor_cfg get --json`) and `render` takes `--template-json`, so a value's type and every byte (an escaped NUL, a trailing newline) survive the shell and are judged by the helper.
+- The record reader opens with `O_NONBLOCK`, `fstat`s the descriptor against the `lstat`, reads in a bounded loop, requires `schema` to be an `int` and bounds `started`; the writer `fsync`s before the rename; `conversation-write` failures exit 2 like a bad read.
+- The one-word rule applies to the stripped prompt (`mcp\n` is still `mcp`); `--no-resume` with an explicit command warns that it has no effect; the record-write failure message says an older record may still stand.
+- The Dockerfile flag check matches flag names as whole tokens and reports a CLI that crashes under `--help` with its exit status and output; it is a check on names, not on attached-form behaviour (stated residual).

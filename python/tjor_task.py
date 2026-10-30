@@ -442,6 +442,9 @@ def _main(argv: list[str]) -> int:
     except TaskError as exc:
         print(f"tjor_task: {exc}", file=sys.stderr)
         return 2 if args.cmd == "contains" else 1
+    except Exception as exc:  # noqa: BLE001 — fail closed: `contains` answers "no" with 1, so a fault must never exit 1
+        print(f"tjor_task: internal error, refusing ({type(exc).__name__}: {exc})", file=sys.stderr)
+        return 2 if args.cmd == "contains" else 1
 
 
 if __name__ == "__main__":

@@ -584,7 +584,7 @@ resume = "auto"
 - Built before the notes directory, the first write, the mint and the sidecars: **a refusal creates nothing**. The launch line shows the prompt by its length and tjor's decision.
 
 <Plainly>
-<p><code>args</code> are uninspected: a flag that relaxes the harness, selects a conversation or names a subcommand is yours, and <code>resume = "never"</code> only stops what tjor adds. The prompt is in the container's command line (<code>docker inspect</code>). The record says tjor started a conversation, not that the harness kept one; without <code>session_per_task</code> only the newest conversation can be continued.</p>
+<p><code>args</code> are uninspected: a flag that relaxes the harness, selects a conversation or names a subcommand is yours, and <code>resume = "never"</code> only stops what tjor adds. The prompt is in the container's command line (<code>docker inspect</code>). The record says tjor started a conversation, not that the harness kept one, and it can be absent or stale after a crash between container creation and the write, an explicit command, or a conversation switched inside the harness; <code>--no-resume</code> or <code>reset sessions</code> is the remedy. Without <code>session_per_task</code> only the newest conversation can be continued.</p>
 </Plainly>
 
 ---

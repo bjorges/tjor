@@ -235,6 +235,8 @@ def _main(argv: list[str]) -> int:
     p_get = sub.add_parser("get")
     p_get.add_argument("key")
     p_get.add_argument("--default", default=None)
+    p_get.add_argument("--json", action="store_true",
+                       help="print the value as JSON whatever its type, so the caller keeps the type and every byte")
     sub.add_parser("dump")
     sub.add_parser("check")
     args = parser.parse_args(argv)
@@ -253,6 +255,9 @@ def _main(argv: list[str]) -> int:
     if value is None:
         print(f"tjor_cfg: no value for {args.key}", file=sys.stderr)
         return 1
+    if args.json:
+        print(json.dumps(value))
+        return 0
     if isinstance(value, (dict, list)):
         print(json.dumps(value))
     elif isinstance(value, bool):

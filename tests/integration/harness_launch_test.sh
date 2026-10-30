@@ -88,6 +88,9 @@ out_has()  { grep -qF -- "$1" "${LAST_OUT}"; }
 # launch path: every refusal here must happen before anything is created).
 run_from()    { ( cd "${HOME}/proj" && cmd_run "$@" ) >/dev/null 2>"${LAST_OUT}"; }
 refused_run() { ! run_from "$@"; }
+run_from_dir() { local dir="$1"; shift; ( cd "${dir}" && cmd_run "$@" ) >/dev/null 2>"${LAST_OUT}"; }
+docker_log_has() { grep -qF -- "$1" "${WORK}/docker_log"; }
+test_workspace_cover() { ! run_from_dir "${WORK}/state" --unsafe-dir --task a; }
 no_session_state() { local d; for d in "${STATE}/${BASE}"*/; do [[ -e "${d}" ]] && return 1; done; return 0; }
 no_state_under() { local d; for d in "$1"/*/; do [[ -e "${d}" ]] && return 1; done; return 0; }   # the lock dir (.locks) may exist
 never_reached_docker() { [[ ! -e "${WORK}/docker_log" ]]; }
@@ -109,6 +112,8 @@ check "harness launch: an explicit command replaces everything" build_from openc
 check "harness launch: the explicit command is passed as given" cmd_is opencode --help
 check "harness launch: an explicit command writes no record" rec_flag ""
 check "harness launch: the explicit command's note says nothing was added" note_has "explicit command, as given"
+check "harness launch: --no-resume with an explicit command is accepted" build_from opencode a 1 -- opencode --help
+check "harness launch: --no-resume with an explicit command warns that it has no effect" out_has "--no-resume has no effect"
 write_cfg ""
 check "harness launch: without [task] the command is the bare harness" build_from opencode a ""
 check "harness launch: the bare harness, nothing added" cmd_is opencode
@@ -225,6 +230,13 @@ check "harness launch: another task in the same session is fresh" build_from ope
 check "harness launch: the other task gets the prompt, not --continue" cmd_is opencode "--prompt=Task b begins."
 check "harness launch: another harness in the same session is fresh" build_from claude a ""
 check "harness launch: the other harness gets the prompt" cmd_is claude -- "Task a begins."
+seed_record claude a
+check "harness launch: claude continues from its own record" build_from claude a ""
+check "harness launch: the claude relaunch command is --continue" cmd_is claude --continue
+seed_record copilot a
+check "harness launch: copilot continues from its own record" build_from copilot a ""
+check "harness launch: the copilot relaunch command is --continue" cmd_is copilot --continue
+seed_record opencode a
 check "harness launch: --no-resume forces a fresh conversation" build_from opencode a 1
 check "harness launch: the forced-fresh command carries the prompt" cmd_is opencode "--prompt=Task a begins."
 write_cfg $'[task]\nprompt = "Task {task} begins."\nresume = "never"'
@@ -269,7 +281,13 @@ check "harness launch: the coverage refusal names conversation.json" out_has "co
 check "harness launch: a writable root equal to the session root refuses" build_refused opencode a "" rw:"${STATE}"
 check "harness launch: a writable sibling of the session root is fine" build_from opencode a "" rw:"${HOME}/data"
 check "harness launch: the coverage refusal on the launch path refuses --unsafe-dir over the session root" refused_run --unsafe-dir --dir "${WORK}/state" --task a
+check "harness launch: the launch-path coverage refusal names the root and the record" out_has "would cover the session's state directory"
 check "harness launch: the coverage refusal on the launch path created nothing" no_session_state
+git -C "${WORK}/state" init -q
+check "harness launch: a workspace covering the session root is refused" test_workspace_cover
+check "harness launch: the workspace coverage refusal names the workspace" out_has "the writable root ${WORK}/state would cover"
+check "harness launch: the workspace coverage refusal created nothing" no_session_state
+rm -rf "${WORK:?}/state/.git"
 check "harness launch: that refusal never reached docker" never_reached_docker
 check "harness launch: a read-only root over the session root is allowed" build_from opencode a "" ro:"${WORK}/state"
 check "harness launch: the read-only case still delivers the prompt" cmd_is opencode "--prompt=Task a begins."
@@ -294,7 +312,25 @@ check "harness launch: the notes directory for zz is absent" absent "${NOTES}/zz
 check "harness launch: no session state for the refused task" no_session_state
 check "harness launch: nothing reached docker in the whole suite" never_reached_docker
 
-# === 7. Help text =============================================================
+# === 7. The explicit command on the full launch path =========================
+# The builder is skipped with or without `--`: a corrupt record would refuse
+# a managed launch, but an explicit command never reads it and the launch
+# runs on to its first docker call (which the shim fails, ending it there).
+# Runs LAST: it is the one path that writes session state before docker.
+write_cfg "${PROMPT_CFG}"
+seed_record opencode a; printf '{broken' > "${SDIR}/conversation.json"
+reset_docker_log
+check "harness launch: an explicit command after -- skips the builder on the launch path" refused_run --task a -- opencode --help
+check "harness launch: it was not refused for the corrupt record" bash -c "! grep -qF 'conversation.json cannot be read' '${LAST_OUT}'"
+check "harness launch: it ran on to docker instead" docker_log_has "docker ps"
+reset_docker_log
+check "harness launch: an explicit command without -- skips the builder on the launch path" refused_run --task a opencode --help
+check "harness launch: the bare form was not refused for the corrupt record either" bash -c "! grep -qF 'conversation.json cannot be read' '${LAST_OUT}'"
+check "harness launch: the bare form ran on to docker" docker_log_has "docker ps"
+check "harness launch: the explicit launches left the corrupt record untouched" bash -c "[[ \"\$(cat '${SDIR}/conversation.json')\" == '{broken' ]]"
+clear_record; reset_docker_log
+
+# === 8. Help text =============================================================
 check "harness launch: help text names --no-resume" bash -c "'${ROOT}/bin/tjor' help | grep -qF -- '--no-resume'"
 check "harness launch: help text says an explicit command is passed as given" bash -c "'${ROOT}/bin/tjor' help | grep -qF 'passed as given'"
 

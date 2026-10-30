@@ -35,6 +35,7 @@ META_NAME = "meta.json"
 CONVERSATION_NAME = "conversation.json"   # the launch record (#73, spec: harness-launch)
 CONVERSATION_MAX = 4096                   # bytes; the record is three short fields
 CONVERSATION_HARNESSES = ("opencode", "claude", "copilot")
+STARTED_MAX = 4102444800                  # 2100-01-01: a later "started" is not a record tjor wrote
 LOCKS_DIR = ".locks"   # the launcher's per-session locks live beside the state dirs
 US = "\x1f"
 UNKNOWN = "-"
@@ -222,28 +223,48 @@ def read_conversation(state_dir: str) -> tuple[str, str, int] | None:
         raise StateError(f"the launch record {path} is not a regular file")
     if st.st_size > CONVERSATION_MAX:
         raise StateError(f"the launch record {path} is {st.st_size} bytes, more than the {CONVERSATION_MAX} the record can be")
+    # Descriptor-safe: O_NONBLOCK so a FIFO swapped in between lstat and open
+    # cannot hang the launcher while it holds the session lock, then fstat the
+    # descriptor itself — what is read must be the regular file that was
+    # inspected, not whatever the path names now.
     try:
-        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW)
+        fd = os.open(path, os.O_RDONLY | os.O_NOFOLLOW | os.O_NONBLOCK)
     except OSError as e:
         raise StateError(f"cannot open the launch record {path}: {e.strerror}")
     try:
-        with os.fdopen(fd, "rb") as f:
-            data = f.read(CONVERSATION_MAX + 1)
-    except OSError as e:
-        raise StateError(f"cannot read the launch record {path}: {e.strerror}")
+        fst = os.fstat(fd)
+        if not stat.S_ISREG(fst.st_mode) or (fst.st_dev, fst.st_ino) != (st.st_dev, st.st_ino):
+            raise StateError(f"the launch record {path} changed while it was being opened")
+        if fst.st_size > CONVERSATION_MAX:
+            raise StateError(f"the launch record {path} grew past {CONVERSATION_MAX} bytes while being read")
+        chunks: list[bytes] = []
+        total = 0
+        while total <= CONVERSATION_MAX:
+            try:
+                chunk = os.read(fd, CONVERSATION_MAX + 1 - total)
+            except OSError as e:
+                raise StateError(f"cannot read the launch record {path}: {e.strerror}")
+            if not chunk:
+                break
+            chunks.append(chunk)
+            total += len(chunk)
+    finally:
+        os.close(fd)
+    data = b"".join(chunks)
     if len(data) > CONVERSATION_MAX:
         raise StateError(f"the launch record {path} grew past {CONVERSATION_MAX} bytes while being read")
     try:
         rec = json.loads(data.decode("utf-8"))
-    except (ValueError, UnicodeDecodeError) as e:
+    except (ValueError, UnicodeDecodeError, RecursionError) as e:
         raise StateError(f"the launch record {path} is not valid JSON: {e}")
+    started = rec.get("started") if isinstance(rec, dict) else None
     if (not isinstance(rec, dict) or set(rec) != {"schema", "harness", "task", "started"}
-            or rec["schema"] != SCHEMA
+            or type(rec["schema"]) is not int or rec["schema"] != SCHEMA     # a bool or a float is not the schema
             or rec["harness"] not in CONVERSATION_HARNESSES
             or not isinstance(rec["task"], str) or not _TASK_ID.fullmatch(rec["task"])
-            or not isinstance(rec["started"], int) or isinstance(rec["started"], bool) or rec["started"] < 0):
+            or type(started) is not int or not 0 <= started <= STARTED_MAX):
         raise StateError(f"the launch record {path} is not in the launcher's format (expected schema, harness, task, started)")
-    return rec["harness"], rec["task"], rec["started"]
+    return rec["harness"], rec["task"], started
 
 
 def write_conversation(state_dir: str, *, harness: str, task: str, now: int | None = None) -> dict:
@@ -260,6 +281,8 @@ def write_conversation(state_dir: str, *, harness: str, task: str, now: int | No
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             json.dump(rec, f, sort_keys=True)
             f.write("\n")
+            f.flush()
+            os.fsync(f.fileno())   # durable before the rename: a crash right after must not lose the record
         os.chmod(tmp, 0o644)
         os.replace(tmp, os.path.join(state_dir, CONVERSATION_NAME))
     except BaseException:
@@ -416,7 +439,11 @@ def main(argv: list[str]) -> int:
             if not (harness and task):
                 print(USAGE, file=sys.stderr)
                 return 2
-            write_conversation(argv[2], harness=harness, task=task)
+            try:
+                write_conversation(argv[2], harness=harness, task=task)
+            except StateError as e:   # the same failure class as a bad read: exit 2
+                print(f"tjor_state: {e}", file=sys.stderr)
+                return 2
             return 0
     except (OSError, StateError) as e:
         print(f"tjor_state: {e}", file=sys.stderr)

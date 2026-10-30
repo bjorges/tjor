@@ -460,12 +460,23 @@ def test_conversation_write_refuses_bad_values(tmp_path):
     (lambda p: p.write_text('{"schema": 1, "harness": "claude", "task": "a b", "started": 1}'), "launcher's format"),
     (lambda p: p.write_text('{"schema": 1, "harness": "claude", "task": "a", "started": true}'), "launcher's format"),
     (lambda p: p.write_text('{"schema": 1, "harness": "claude", "task": "a", "started": -1}'), "launcher's format"),
+    (lambda p: p.write_text('{"schema": true, "harness": "claude", "task": "a", "started": 1}'), "launcher's format"),
+    (lambda p: p.write_text('{"schema": 1.0, "harness": "claude", "task": "a", "started": 1}'), "launcher's format"),
+    (lambda p: p.write_text('{"schema": 1, "harness": "claude", "task": "a", "started": 4102444801}'), "launcher's format"),
 ])
 def test_conversation_read_refuses_everything_but_the_record(tmp_path, make, needle):
     make(tmp_path / "conversation.json")
     with pytest.raises(ts.StateError) as exc:
         ts.read_conversation(str(tmp_path))
     assert needle in str(exc.value)
+
+
+def test_conversation_deep_nesting_is_a_refusal_whatever_the_parser_does(tmp_path):
+    # 4000 bytes of nesting: a RecursionError (older Pythons) or a parsed list
+    # (newer ones) — either way not the record, never a crash.
+    (tmp_path / "conversation.json").write_text("[" * 2000 + "]" * 2000)
+    with pytest.raises(ts.StateError):
+        ts.read_conversation(str(tmp_path))
 
 
 def test_conversation_cli(tmp_path):
@@ -482,7 +493,7 @@ def test_conversation_cli(tmp_path):
     r = _run("conversation-write", str(tmp_path), "--harness=opencode")
     assert r.returncode == 2
     r = _run("conversation-write", str(tmp_path), "--harness", "vim", "--task", "a")
-    assert r.returncode == 1 and "not a harness" in r.stderr
+    assert r.returncode == 2 and "not a harness" in r.stderr                    # the same class as a bad read
 
 
 def test_reset_sessions_dry_run_lists_the_record(tmp_path):

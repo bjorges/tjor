@@ -1922,30 +1922,35 @@ agent_cmd_select() { # $1 = harness, $2 = "1" when --no-resume was given, $3... 
     if [[ $# -gt 0 ]]; then
         AGENT_CMD=("$@"); AGENT_CMD_SHOW="$(safeprint "$*")"
         AGENT_CMD_NOTE="explicit command, as given (nothing added; the launch record is neither read nor written)"
+        [[ -z "${no_resume}" ]] || warn "--no-resume has no effect with an explicit command: nothing is added or decided"
     else
         build_agent_cmd "${harness}" "${no_resume}"
     fi
 }
 build_agent_cmd() { # $1 = harness, $2 = "1" when --no-resume was given
     local harness="$1" no_resume="${2:-}"
-    local prompt_tpl resume_mode
-    # The config reader prints the value plus ONE newline and a command
-    # substitution would strip every trailing newline — the template's own
-    # trailing newlines are part of the prompt, so keep them: a sentinel
-    # keeps the output intact, then exactly the printer's newline goes.
-    prompt_tpl="$(cfg task.prompt --default '' && printf x)" || die "cannot read task.prompt"
-    prompt_tpl="${prompt_tpl%x}"; prompt_tpl="${prompt_tpl%$'\n'}"
-    resume_mode="$(cfg task.resume --default never)"
-    case "${resume_mode}" in
-        never|auto) ;;
-        *) die "task.resume must be \"never\" or \"auto\" (got $(safeprint "${resume_mode}"))" ;;
+    local prompt_json resume_json resume_mode
+    # Config values travel as JSON (`cfg --json`): the type survives (a list
+    # where a string belongs is refused by the helper, not read as text), and
+    # so does every byte — an escaped NUL or a trailing newline in the
+    # template would otherwise be stripped by the shell before validation.
+    # The keys exist in the packaged defaults, so a missing value is a broken
+    # install and a refusal.
+    prompt_json="$(cfg task.prompt --json)" || die "cannot read task.prompt"
+    resume_json="$(cfg task.resume --json)" || die "cannot read task.resume"
+    case "${resume_json}" in
+        '"never"') resume_mode=never ;;
+        '"auto"')  resume_mode=auto ;;
+        *) die "task.resume must be \"never\" or \"auto\" (got $(safeprint "${resume_json}"))" ;;
     esac
     # The prompt and the record exist only with --task, and only when the
-    # operator configured them; without that, every launch is as before.
+    # operator configured them; without that, every launch is as before. Any
+    # value but the empty string counts as configured; the helper then judges
+    # its type and content.
     local want_prompt="" want_record="" decision="fresh"
     if [[ -n "${TJOR_TASK_ID:-}" ]]; then
-        [[ -n "${prompt_tpl}" ]] && want_prompt=1
-        [[ -n "${prompt_tpl}" || "${resume_mode}" == "auto" ]] && want_record=1
+        [[ "${prompt_json}" != '""' ]] && want_prompt=1
+        [[ "${prompt_json}" != '""' || "${resume_mode}" == "auto" ]] && want_record=1
     fi
     local rec="" rec_harness="" rec_task="" rec_started=""
     if [[ -n "${want_record}" ]]; then
@@ -1958,14 +1963,21 @@ build_agent_cmd() { # $1 = harness, $2 = "1" when --no-resume was given
         # identity where the paths exist and the one missing component by
         # string (the state directory usually does not exist yet); the helper
         # creates nothing, and an error is a refusal, never "not covered".
+        # The notes directory is judged by its PHYSICAL intended path (the
+        # resolved prefix plus the components to be created): the template
+        # path may spell the prefix through a link, which the helper refuses.
+        local notes_physical=""
+        [[ -z "${TJOR_TASK_DIR:-}" ]] || notes_physical="${TJOR_TASK_PREFIX}/${TJOR_TASK_REL}"
         local w_root rc
-        for w_root in "${TJOR_WORKSPACE}" "${TJOR_EXTRA_DIRS[@]:-}" "${TJOR_TASK_DIR:-}"; do
+        for w_root in "${TJOR_WORKSPACE}" "${TJOR_EXTRA_DIRS[@]:-}" "${notes_physical}"; do
             [[ -n "${w_root}" ]] || continue
             rc=0
             python3 "${TJOR_ROOT}/python/tjor_launch.py" covers --root="${w_root}" --state-root="${TJOR_LOCK_ROOT}" --session="${TJOR_SESSION}" || rc=$?
+            # 0 covers, 3 does not; ANYTHING else (a fault, Python's own 1
+            # included) is a refusal — this check guards the record.
             case "${rc}" in
                 0) die "refusing to launch: the writable root ${w_root} would cover the session's state directory ${TJOR_LOCK_ROOT}/${TJOR_SESSION}, so the agent could rewrite the launch record (conversation.json) that decides the task prompt and resume — mount it read-only (--dir-ro) or drop the --unsafe-dir coverage, or launch with [task] prompt/resume unset or with an explicit command" ;;
-                1) ;;
+                3) ;;
                 *) die "cannot establish whether ${w_root} covers the session's state directory (see above) — refusing rather than guessing" ;;
             esac
         done
@@ -1987,7 +1999,7 @@ build_agent_cmd() { # $1 = harness, $2 = "1" when --no-resume was given
     [[ "${decision}" == "continue" ]] && adding+=(--adding=continue)
     [[ "${decision}" == "fresh" && -n "${want_prompt}" ]] && adding+=(--adding=prompt)
     local args_json out
-    args_json="$(cfg "harness.${harness}.args" --default '[]')"
+    args_json="$(cfg "harness.${harness}.args" --json)" || die "cannot read harness.${harness}.args"
     out="$(printf '%s' "${args_json}" | python3 "${TJOR_ROOT}/python/tjor_launch.py" args --harness="${harness}" ${adding[@]+"${adding[@]}"})" \
         || die "harness.${harness}.args is invalid (see above)"
     if [[ -n "${out}" ]]; then mapfile -t hargs <<<"${out}"; fi
@@ -2008,7 +2020,7 @@ build_agent_cmd() { # $1 = harness, $2 = "1" when --no-resume was given
         local -a tdir=()
         [[ -n "${TJOR_TASK_DIR:-}" ]] && tdir=(--task-dir="${TJOR_TASK_DIR}")
         local prompt bytes
-        prompt="$(python3 "${TJOR_ROOT}/python/tjor_launch.py" render --template="${prompt_tpl}" --task="${TJOR_TASK_ID}" ${tdir[@]+"${tdir[@]}"} && printf x)" \
+        prompt="$(python3 "${TJOR_ROOT}/python/tjor_launch.py" render --template-json="${prompt_json}" --task="${TJOR_TASK_ID}" ${tdir[@]+"${tdir[@]}"} && printf x)" \
             || die "task.prompt cannot be rendered (see above)"
         prompt="${prompt%x}"
         bytes="$(printf %s "${prompt}" | wc -c | tr -d ' ')"
@@ -2370,7 +2382,7 @@ for p in json.load(sys.stdin):
     if [[ -n "${AGENT_CMD_RECORD:-}" ]]; then
         python3 "${TJOR_ROOT}/python/tjor_state.py" conversation-write "${TJOR_SESSION_DIR}" \
             --harness="${AGENT_CMD_HARNESS}" --task="${TJOR_TASK_ID}" \
-            || loud "the launch record ${TJOR_SESSION_DIR}/conversation.json could not be written — the next launch of this task starts a fresh conversation"
+            || loud "the launch record ${TJOR_SESSION_DIR}/conversation.json could not be written — an older record, if any, still stands and may decide the next launch; pass --no-resume then, or forget it with: tjor reset sessions --session ${TJOR_SESSION}"
     fi
     # The agent container exists: it, not the lock, now refuses prune (#68).
     session_lock_release
