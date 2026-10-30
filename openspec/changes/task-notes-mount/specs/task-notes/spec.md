@@ -19,7 +19,11 @@ When `task.notes_dir` is configured, a launch with `--task <id>` SHALL resolve t
 
 #### Scenario: Already covered by a writable root
 - **WHEN** the resolved notes directory lies under the workspace or under a `--dir` root
-- **THEN** it is not mounted a second time, and `TJOR_TASK_DIR` still names it
+- **THEN** it is still created or validated and scanned, it is not mounted a second time, and `TJOR_TASK_DIR` names it
+
+#### Scenario: Coverage that cannot be established
+- **WHEN** the identity walk that decides coverage or the notes-root refusal fails (a component vanished, a permission error)
+- **THEN** the launch is refused naming the error; an error is never read as "not covered" or "not contained"
 
 #### Scenario: Unchanged without configuration
 - **WHEN** no `task.notes_dir` is configured and `tjor run --task A` is launched
@@ -27,27 +31,31 @@ When `task.notes_dir` is configured, a launch with `--task <id>` SHALL resolve t
 
 ### Requirement: The notes template is absolute and names the task once
 
-`task.notes_dir` SHALL be an absolute path (a leading `~` expands) holding the placeholder `{task}` exactly once; its fixed prefix is everything before the component holding the placeholder, and the prefix SHALL exist as a real directory. Any other template SHALL refuse the launch before any session state exists.
+`task.notes_dir` SHALL be an absolute path (a leading `~` expands), already normalised (no `.` or `..` component, no empty component, no trailing separator), holding the placeholder `{task}` exactly once inside one component; its fixed prefix is everything before that component, and the prefix SHALL exist as a real directory. Any other template SHALL refuse the launch before any session state exists.
 
 #### Scenario: Malformed template
 - **WHEN** `task.notes_dir` is relative, holds no `{task}`, holds it twice, or its prefix does not exist
 - **THEN** the launch is refused naming the setting, before any session state exists
 
+#### Scenario: Traversal in the template
+- **WHEN** `task.notes_dir` is `/safe/tasks/{task}/../../elsewhere` or `/safe/tasks/{task}//notes`
+- **THEN** the launch is refused naming the setting, and nothing is created or mounted
+
 ### Requirement: A task id that resolves to a path is a plain lower-case name
 
-When a notes directory is configured, a task id SHALL match `[a-z0-9][a-z0-9_-]{0,31}`: no dot (so `.`, `..` and hidden names are impossible), no upper case (one spelling per directory on every filesystem) and at most 32 characters (it is also the session's short name). Without a configured notes directory the id grammar SHALL be unchanged.
+When a notes directory is configured or `task.session_per_task` is enabled, a task id SHALL match `[a-z0-9][a-z0-9_-]{0,31}`: no dot (so `.`, `..` and hidden names are impossible), no upper case (one spelling per directory on every filesystem) and at most 32 characters (it is also the session's short name). With neither setting the id grammar SHALL be unchanged.
 
 #### Scenario: Ids outside the grammar refused
 - **WHEN** `--task ..`, `--task .notes`, `--task JIRA-123` or a 33-character id is given with a notes directory configured
 - **THEN** the launch is refused naming the id and the grammar, and no directory is created
 
 #### Scenario: Label-only ids unchanged
-- **WHEN** no notes directory is configured and `--task JIRA-123` or `--task .notes` is given
+- **WHEN** neither `task.notes_dir` nor `task.session_per_task` is set and `--task JIRA-123` or `--task .notes` is given
 - **THEN** the id is accepted as a label, as before
 
 ### Requirement: The directory is created on the launch path only, below the prefix
 
-Resolution SHALL have no side effect, so lifecycle commands never create anything. On the launch path, after the sensitive-path gate accepted the resolved path and under the session lock, the directory SHALL be created when `task.create` is true, one component at a time below the prefix, each step opened relative to its parent without following links and verified to be a real directory. A link below the prefix, or a missing directory with `task.create` false, SHALL refuse the launch.
+Resolution SHALL have no side effect, so lifecycle commands never create anything. On the launch path the order SHALL be: gate the intended path; under the session lock create (when `task.create` is true) or validate the directory, one component at a time below the prefix, each opened relative to its parent without following links and verified to be a real directory; judge coverage; mount; scan. A link below the prefix, or a missing directory with `task.create` false, SHALL refuse the launch.
 
 #### Scenario: A symlink below the prefix
 - **WHEN** `~/scratch/tasks/a` is a symbolic link, wherever it points
@@ -85,17 +93,21 @@ A launch SHALL be refused, with no override, when the resolved workspace is the 
 - **WHEN** the workspace is a repository at `~/scratch/tasks/a/repo` under the same configuration
 - **THEN** the launch proceeds: the workspace is not an ancestor of the notes root
 
-### Requirement: An empty notes directory is still share-checked
+### Requirement: The share check for the notes directory is a correspondence check
 
-When the resolved directory is empty at launch, the VM-share verification SHALL run on the notes root instead, which holds at least that directory, so an unshared path is refused rather than silently landing in a VM-side directory the host never sees.
+Because a freshly created directory is empty and the generic bind-source check compares content only, the notes directory SHALL be verified by binding its parent into a throwaway container and requiring that the container sees the directory by name. A parent the container sees without that entry, or an unshared parent, SHALL refuse the launch naming the directory.
 
 #### Scenario: Fresh directory on an unshared path
-- **WHEN** `task.create` just created the directory and the notes root is not shared with the container runtime
-- **THEN** the launch is refused naming the notes root, before the agent starts
+- **WHEN** `task.create` just created the directory and its parent is not shared with the container runtime
+- **THEN** the launch is refused naming the directory, before the agent starts
+
+#### Scenario: A VM-side parent with other content
+- **WHEN** the container sees a parent directory holding other entries but not the notes directory
+- **THEN** the launch is refused all the same
 
 ### Requirement: The notes directory is named inside the cage only
 
-The agent environment SHALL carry `TJOR_TASK_DIR`, the notes directory's host path, which is also its path inside the cage. No identity header SHALL be derived from it; the task id, which is the directory's basename by construction, travels as `x-agent-task-id` as today.
+The agent environment SHALL carry `TJOR_TASK_DIR`, the notes directory's host path, which is also its path inside the cage. No identity header SHALL be derived from it; the task id travels as `x-agent-task-id` as today, the directory's path does not.
 
 #### Scenario: Visible to the agent, no header derived
 - **WHEN** a session with a notes directory sends a request toward an `inject_hosts` destination
@@ -103,7 +115,7 @@ The agent environment SHALL carry `TJOR_TASK_DIR`, the notes directory's host pa
 
 ### Requirement: Credential-shaped files in the notes directory are announced
 
-Before the agent starts, the launcher SHALL scan the notes directory, bounded in depth, entries and bytes, never following links and reading only regular files, for credential-shaped names and for the secret shapes the egress tripwire detects in content, and SHALL print a loud warning naming each match through the terminal-escape sanitizer. A scan that reached a bound or could not read a file SHALL say so. The scan SHALL NOT refuse the launch and SHALL NOT alter a file.
+Before the agent starts, the launcher SHALL scan the notes directory, bounded in depth, entries and bytes, without following links and reading only regular files, for credential-shaped names and for the secret shapes the egress tripwire detects in content, and SHALL print a loud warning naming up to ten matches and the total, each through the terminal-escape sanitizer. A partial scan SHALL say so. The scan SHALL NOT refuse the launch and SHALL NOT alter a file.
 
 #### Scenario: Names that count as credential-shaped
 - **WHEN** the directory holds files whose name has a segment `token`, `credentials`, `secret` or `password`, is `.netrc`, `.npmrc` or `kubeconfig`, ends in `.pem`, `.key`, `.p12` or `.pfx`, or starts with `id_`
@@ -119,7 +131,11 @@ Before the agent starts, the launcher SHALL scan the notes directory, bounded in
 
 #### Scenario: Partial scan is not silent
 - **WHEN** the directory holds more entries than the bound, or a file that cannot be opened, or a FIFO
-- **THEN** the warning states that the scan was partial and why, and the FIFO is skipped without blocking the launch
+- **THEN** the warning states that the scan was partial and why, naming the skipped entry, and the FIFO is skipped without blocking the launch
+
+#### Scenario: Hostile file names cannot corrupt the report
+- **WHEN** a finding's name holds a tab, a newline or a terminal escape
+- **THEN** the report line stays one line and the name is rendered through the sanitizer
 
 ### Requirement: The notes directory's residuals are stated
 
