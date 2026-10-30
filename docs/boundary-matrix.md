@@ -4,7 +4,7 @@
      Regenerate: python3 python/gen_boundary_matrix.py
      Drift-checked by tests/doc_consistency.sh (`--check`). -->
 
-Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount`, `gitcheck` and `task-notes` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (539 checks total; 243 adversarial guarantees below, the rest functional/config checks the suites also run).
+Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount`, `gitcheck`, `task-notes` and `harness-launch` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (548 checks total; 248 adversarial guarantees below, the rest functional/config checks the suites also run).
 
 ## cage-network
 
@@ -148,11 +148,13 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | '..' as a task id is refused | `task notes: '..' as a task id is refused` | task-notes |
 | A 33-character id is refused | `task notes: a 33-character id is refused` | task-notes |
 | A FIFO does not block the scan | `task notes: a FIFO does not block the scan` | task-notes |
+| A coverage check whose helper dies with exit 1 refuses the launch | `task notes: a coverage check whose helper dies with exit 1 refuses the launch` | task-notes |
 | A directory covered by a --dir root is mounted with it, not again | `task notes: a directory covered by a --dir root is mounted with it, not again` | task-notes |
 | A dot-leading id is refused | `task notes: a dot-leading id is refused` | task-notes |
 | A dotted id is refused | `task notes: a dotted id is refused` | task-notes |
 | A malformed template leaves no directory | `task notes: a malformed template leaves no directory` | task-notes |
 | A notes root inside the workspace is the notes-root refusal (the code repo would be the notes repo) | `task notes: a notes root inside the workspace is the notes-root refusal (the code repo would be the notes repo)` | task-notes |
+| A notes-root check whose helper dies with exit 1 refuses the launch (exit 3 is the only "no") | `task notes: a notes-root check whose helper dies with exit 1 refuses the launch` | task-notes |
 | A relative template is refused | `task notes: a relative template is refused` | task-notes |
 | A sensitive template is refused by the --dir gate before anything is created | `task notes: a sensitive template is refused by the --dir gate before anything is created` | task-notes |
 | A symbolic link at the task directory is refused | `task notes: a symbolic link at the task directory is refused` | task-notes |
@@ -180,6 +182,9 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | The conflict names --dir-ro | `task notes: the conflict names --dir-ro` | task-notes |
 | The create=false refusal names task.create | `task notes: the create=false refusal names task.create` | task-notes |
 | The created directory is real | `task notes: the created directory is real` | task-notes |
+| The dead-helper coverage refusal says it cannot tell, not that the root is clear | `task notes: the dead-helper coverage refusal says it cannot tell, not that the root is clear` | task-notes |
+| The dead-helper refusal at resolution created no notes directory | `task notes: the dead-helper refusal at resolution created no notes directory` | task-notes |
+| The dead-helper refusal says it cannot tell, not that the workspace is clear | `task notes: the dead-helper refusal says it cannot tell, not that the workspace is clear` | task-notes |
 | The directory is created component by component below the root | `task notes: the directory is created component by component below the root` | task-notes |
 | The gate refusal created nothing | `task notes: the gate refusal created nothing` | task-notes |
 | The gate refusal left no session state dir | `task notes: the gate refusal left no session state dir` | task-notes |

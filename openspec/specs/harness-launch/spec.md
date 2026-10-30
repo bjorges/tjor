@@ -78,8 +78,8 @@ tjor SHALL NOT claim to know the harnesses' flag sets. Beyond the exact collisio
 - **THEN** the launch is refused naming both keys
 
 #### Scenario: One-word prompt refused
-- **WHEN** the template is `{task}` and the id is `mcp`
-- **THEN** the launch is refused: a bare word is not accepted as a prompt, because Claude Code reads a bare positional that names one of its subcommands as that subcommand, `--` notwithstanding, and the rule is the same for every harness; the README says so where the template is documented
+- **WHEN** the template is `{task}` and the id is `mcp`, or the template is `{task}\n` or ` {task} ` with the same id
+- **THEN** the launch is refused: a bare word is not accepted as a prompt, and surrounding whitespace does not make it one (the rule is judged on the prompt with leading and trailing whitespace removed), because Claude Code reads a bare positional that names one of its subcommands as that subcommand, `--` notwithstanding, and the rule is the same for every harness; the README says so where the template is documented
 
 #### Scenario: No task, no prompt
 - **WHEN** `[task] prompt` is set and `tjor run` is launched without `--task`
@@ -159,7 +159,7 @@ The record SHALL be read without following links: a link, a FIFO, a directory, a
 
 #### Scenario: Coverage is judged without creating anything
 - **WHEN** the session has no state directory yet (a fresh launch) and the check runs
-- **THEN** it compares the writable roots with the session root and the state directory's path by filesystem identity where the paths exist and by the missing final component where they do not, creates nothing, and refuses on any error instead of reading it as "not covered"; a root that differs only in case or composition from the session root on a filesystem that treats them as one directory is caught
+- **THEN** it compares the writable roots with the session root and the state directory's path by filesystem identity where the paths exist and by the missing final component where they do not, creates nothing, and refuses on any error instead of reading it as "not covered"; the missing-component comparison is conservative: a name that differs from the session id only in case or Unicode composition (its canonical caseless form is the same) is refused on every filesystem, including a case-sensitive one that would keep the two apart, because nothing exists yet to compare identities; the remedy is a notes template that does not spell the session root
 
 #### Scenario: Worktree common directories
 - **WHEN** a linked worktree's common git directory would be mounted alongside the workspace
@@ -191,7 +191,7 @@ The README SHALL state the limits in the scenarios below plainly, and the slide 
 
 #### Scenario: Limits of the owned command line
 - **WHEN** the README's harness-launch section is read
-- **THEN** it states that `args` are passed uninspected, so a flag that relaxes the harness's own permissions is the operator's choice; that an entry selecting a conversation, supplying a prompt or naming a subcommand changes the harness's mode without tjor noticing, clusters and abbreviations included, so `resume = "never"` and `--no-resume` suppress only what tjor adds; that a one-word prompt is refused; and that the prompt is visible in the container's command line (`docker inspect`, the process list inside the cage), which the launch line's redaction does not change
+- **THEN** it states that `args` are passed uninspected, so a flag that relaxes the harness's own permissions is the operator's choice; that an entry selecting a conversation, supplying a prompt or naming a subcommand changes the harness's mode without tjor noticing, clusters and abbreviations included, so `resume = "never"` and `--no-resume` suppress only what tjor adds; that a one-word prompt is refused, surrounding whitespace notwithstanding; that a notes directory whose last component differs from the session id only in case or composition is refused on every filesystem; and that the prompt is visible in the container's command line (`docker inspect`, the process list inside the cage), which the launch line's redaction does not change
 
 #### Scenario: Limits of the record
 - **WHEN** the same section is read

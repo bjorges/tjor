@@ -138,6 +138,32 @@ check "task notes: a workspace below the notes root is not an ancestor and launc
 rm -rf "${NOTES:?}/a"
 ln -s "${HOME}/scratch" "${HOME}/alias"
 check "task notes: another spelling of the notes repository (a link) is refused by identity" refused "${HOME}/alias" a
+# The helper answers "not contained" with exit 3, never 1: a helper that dies
+# before answering (an import failure, a crash outside its main) exits 1 with
+# Python's own code, and both callers — the notes-root check at resolution
+# and the coverage check in prepare — must read that as "cannot tell" and
+# refuse. A sabotaged tree answers everything for real except the one
+# `contains` call whose path SABOTAGE_ON names, where it dies.
+SABOTAGE="${WORK}/sabotage"; mkdir -p "${SABOTAGE}"
+for entry in "${ROOT}"/* "${ROOT}"/.[!.]*; do [[ -e "${entry}" && "$(basename "${entry}")" != python ]] && ln -s "${entry}" "${SABOTAGE}/"; done
+cp -R "${ROOT}/python" "${SABOTAGE}/python"
+cat > "${SABOTAGE}/python/tjor_task.py" <<PY
+import os, sys
+if sys.argv[1:2] == ["contains"] and sys.argv[3:4] == [os.environ.get("SABOTAGE_ON")]:
+    sys.exit(1)          # a crash before any answer: Python's own exit code, no message
+os.execv(sys.executable, [sys.executable, "${ROOT}/python/tjor_task.py", *sys.argv[1:]])
+PY
+REAL_ROOT="${TJOR_ROOT}"; TJOR_ROOT="${SABOTAGE}"
+export SABOTAGE_ON="${NOTES}"
+check "task notes: a notes-root check whose helper dies with exit 1 refuses the launch" refused "${HOME}/proj" a
+check "task notes: the dead-helper refusal says it cannot tell, not that the workspace is clear" out_has "cannot establish whether the workspace ${HOME}/proj contains the notes root"
+check "task notes: the dead-helper refusal at resolution created no notes directory" absent "${NOTES}/a"
+export SABOTAGE_ON="${NOTES}/a"
+check "task notes: a coverage check whose helper dies with exit 1 refuses the launch" prepare_refused "${HOME}/proj" a
+check "task notes: the dead-helper coverage refusal says it cannot tell, not that the root is clear" out_has "cannot establish whether ${HOME}/proj covers ${NOTES}/a"
+unset SABOTAGE_ON; TJOR_ROOT="${REAL_ROOT}"; rm -rf "${SABOTAGE:?}"
+check "task notes: with the real helper the same resolution passes" launch_from "${HOME}/proj" a
+rm -rf "${NOTES:?}/a"   # prepare creates the directory before its coverage check; the sections below expect none
 rm -f "${HOME:?}/alias"
 
 # === 3. Round trip: the derived name and what the resolver would misread ====

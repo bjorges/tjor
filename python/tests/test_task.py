@@ -262,8 +262,15 @@ class TestCli:
     def test_contains_exit_codes(self, home, capsys):
         (home / "scratch" / "tasks" / "a").mkdir()
         assert tt._main(["contains", str(home / "scratch"), str(home / "scratch" / "tasks" / "a")]) == 0
-        assert tt._main(["contains", str(home / "scratch" / "tasks" / "a"), str(home / "scratch")]) == 1
+        assert tt._main(["contains", str(home / "scratch" / "tasks" / "a"), str(home / "scratch")]) == 3   # "no" is 3, never 1
         assert tt._main(["contains", str(home / "nope"), str(home)]) == 2
+
+    def test_contains_turns_any_fault_into_a_refusal(self, home, monkeypatch, capsys):
+        def boom(*_a, **_k):
+            raise RuntimeError("boom")
+        monkeypatch.setattr(tt, "contains", boom)
+        assert tt._main(["contains", str(home), str(home)]) == 2
+        assert "internal error" in capsys.readouterr().err
 
     def test_create_and_probe_cli(self, home, capsys):
         assert tt._main(["create", "--prefix", str(home / "scratch" / "tasks"), "--relative", "a/notes"]) == 0

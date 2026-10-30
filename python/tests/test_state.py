@@ -494,6 +494,8 @@ def test_conversation_cli(tmp_path):
     assert r.returncode == 2
     r = _run("conversation-write", str(tmp_path), "--harness", "vim", "--task", "a")
     assert r.returncode == 2 and "not a harness" in r.stderr                    # the same class as a bad read
+    r = _run("conversation-write", str(tmp_path / "missing"), "--harness=opencode", "--task=a")
+    assert r.returncode == 2 and "missing" in r.stderr                          # an OSError from the write is exit 2 too, never 1
 
 
 def test_reset_sessions_dry_run_lists_the_record(tmp_path):

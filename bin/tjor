@@ -1327,10 +1327,12 @@ resolve_session() { # $1 = harness, $2 = task id (optional), $3 = session name (
             # spellings one directory), with no override — the remedy is to
             # launch from the code repository. An error is a refusal too.
             python3 "${TJOR_ROOT}/python/tjor_task.py" contains "${ws}" "${notes_prefix}" || rc=$?
+            # 0 contains, 3 does not; ANYTHING else (a fault, Python's own 1
+            # included) is a refusal — this check has no override.
             case "${rc}" in
                 0) die "refusing to launch: the workspace ${ws} is the notes root ${notes_prefix} or contains it — every task's notes would be mounted writable; launch from the code repository and let --task ${task_id} mount ${notes_path} beside it" ;;
-                1) ;;
-                *) die "task notes: cannot establish whether the workspace ${ws} contains the notes root ${notes_prefix}" ;;
+                3) ;;
+                *) die "task notes: cannot establish whether the workspace ${ws} contains the notes root ${notes_prefix} (see above) — refusing rather than guessing" ;;
             esac
             TJOR_TASK_DIR="${notes_path}"; TJOR_TASK_PREFIX="${notes_prefix}"; TJOR_TASK_REL="${notes_rel}"
         fi
@@ -1641,10 +1643,10 @@ task_notes_prepare() {
         [[ -n "${w_root}" ]] || continue
         rc=0
         python3 "${TJOR_ROOT}/python/tjor_task.py" contains "${w_root}" "${TJOR_TASK_DIR}" || rc=$?
-        case "${rc}" in
+        case "${rc}" in   # 0 covers, 3 does not, anything else is a refusal
             0) covered="${w_root}"; break ;;
-            1) ;;
-            *) die "task notes: cannot establish whether ${w_root} covers ${TJOR_TASK_DIR}" ;;
+            3) ;;
+            *) die "task notes: cannot establish whether ${w_root} covers ${TJOR_TASK_DIR} (see above) — refusing rather than guessing" ;;
         esac
     done
     for seen in "${TJOR_EXTRA_DIRS_RO[@]:-}"; do
@@ -2012,15 +2014,18 @@ build_agent_cmd() { # $1 = harness, $2 = "1" when --no-resume was given
         AGENT_CMD_NOTE="continuing the conversation recorded ${when} for task ${rec_task} (tjor's decision; what --continue finds is the harness's)"
     elif [[ -n "${want_prompt}" ]]; then
         # Rendered by the helper (two placeholders, brace escapes, bounds, the
-        # one-word rule); captured with a sentinel so trailing newlines and the
-        # helper's exit status both survive. Delivered in the one form each
-        # harness reads as data; the attached forms keep a dash-leading value a
-        # value, and `--` keeps a variadic option in args from swallowing
-        # Claude Code's positional.
+        # one-word rule); the template reaches it as JSON on stdin (printf is
+        # a builtin: no argv element, so the ASCII-escaped JSON form of a
+        # legal 64 KiB prompt cannot hit Linux's 128 KiB per-argument limit
+        # and fail in execve with no message); captured with a sentinel so
+        # trailing newlines and the helper's exit status both survive.
+        # Delivered in the one form each harness reads as data; the attached
+        # forms keep a dash-leading value a value, and `--` keeps a variadic
+        # option in args from swallowing Claude Code's positional.
         local -a tdir=()
         [[ -n "${TJOR_TASK_DIR:-}" ]] && tdir=(--task-dir="${TJOR_TASK_DIR}")
         local prompt bytes
-        prompt="$(python3 "${TJOR_ROOT}/python/tjor_launch.py" render --template-json="${prompt_json}" --task="${TJOR_TASK_ID}" ${tdir[@]+"${tdir[@]}"} && printf x)" \
+        prompt="$(printf '%s' "${prompt_json}" | python3 "${TJOR_ROOT}/python/tjor_launch.py" render --task="${TJOR_TASK_ID}" ${tdir[@]+"${tdir[@]}"} && printf x)" \
             || die "task.prompt cannot be rendered (see above)"
         prompt="${prompt%x}"
         bytes="$(printf %s "${prompt}" | wc -c | tr -d ' ')"

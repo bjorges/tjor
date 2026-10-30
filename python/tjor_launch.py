@@ -9,11 +9,14 @@ command line and before it writes anything.
         strings without NUL or newline, at most 65536 bytes, never `--`; with
         --adding, an entry equal to the flag tjor is adding in this launch
         refuses (exact spellings only; nothing else is inspected).
-  render --template-json=J --task=ID [--task-dir=DIR]
-        Render `[task] prompt` (J is the value as `tjor_cfg get --json`
-        prints it, so its type and every byte survive the shell): `{task}`
-        and `{task_dir}` by literal substitution, `{{`/`}}` for literal
-        braces, any other brace refuses;
+  render --task=ID [--task-dir=DIR]
+        Render `[task] prompt`, read from stdin as the JSON value `tjor_cfg
+        get --json` prints (so its type and every byte survive the shell;
+        stdin rather than an argument because the ASCII-escaped JSON form of
+        a legal prompt can exceed the 128 KiB Linux allows one argv element,
+        and `execve` would then fail before this helper could say why):
+        `{task}` and `{task_dir}` by literal substitution, `{{`/`}}` for
+        literal braces, any other brace refuses;
         no NUL, at most 65536 bytes, at least one whitespace and one other
         character (a bare word is refused: Claude Code reads a bare positional
         naming one of its subcommands as that subcommand). Prints the prompt
@@ -203,10 +206,17 @@ def _chain_is_real(path: str, what: str) -> None:
         cur = parent
 
 
+def _canonical_caseless(name: str) -> str:
+    """The Unicode canonical caseless form (TR 15, D145: normalise, casefold,
+    normalise again — casefolding can produce text that is not normalised)."""
+    return unicodedata.normalize("NFKC", unicodedata.normalize("NFKC", name).casefold())
+
+
 def _may_alias(a: str, b: str) -> bool:
     """Could a case-insensitive or Unicode-normalising filesystem treat the
-    two names as one directory? Conservative: NFKC then casefold."""
-    return unicodedata.normalize("NFKC", a).casefold() == unicodedata.normalize("NFKC", b).casefold()
+    two names as one directory? Conservative: equal canonical caseless forms
+    count as one, on every filesystem."""
+    return _canonical_caseless(a) == _canonical_caseless(b)
 
 
 def covers(root: str, state_root: str, session: str) -> bool:
@@ -232,15 +242,9 @@ def covers(root: str, state_root: str, session: str) -> bool:
         # its ancestors can contain it.
         target = state_dir if st_d is not None else state_root
         return _is_ancestor_or_self(key_p, target, "a directory above the state root")
-    if st_d is not None:
-        return False   # every ancestor of an existing directory exists; a missing root is none of them
-    # Both missing: the root would be created where the state directory will
-    # be only if its deepest existing ancestor IS the session root and the
-    # single missing component is the session id — or a spelling of it that
-    # a case-insensitive or normalising filesystem would fold onto it (a
-    # template such as `/root/PROJ-{task}` beside the session `proj-a`):
-    # nothing exists yet to compare identities, so the comparison is
-    # conservative and refuses what MIGHT become the same directory.
+    # The root is missing: walk up to its deepest existing ancestor, refusing
+    # a link anywhere on the way (the same rule as for an existing root,
+    # whether or not the state directory exists), before any answer.
     cur = os.path.abspath(root)
     missing: list[str] = []
     while True:
@@ -253,6 +257,18 @@ def covers(root: str, state_root: str, session: str) -> bool:
         missing.insert(0, os.path.basename(cur))
         cur = parent
     _chain_is_real(cur, "a directory above the writable root")   # the same rule above the deepest existing ancestor
+    if st_d is not None:
+        return False   # every ancestor of an existing directory exists; a missing root is none of them
+    # Both missing: the root would be created where the state directory will
+    # be only if its deepest existing ancestor IS the session root and the
+    # single missing component is the session id — or a spelling of it that
+    # a case-insensitive or normalising filesystem would fold onto it (a
+    # template such as `/root/PROJ-{task}` beside the session `proj-a`):
+    # nothing exists yet to compare identities, so the comparison is
+    # conservative and refuses what MIGHT become the same directory, on
+    # every filesystem (a case variant that a case-sensitive filesystem would
+    # keep apart is refused too; the remedy is a template that does not spell
+    # the session root).
     return (st.st_dev, st.st_ino) == key_r and len(missing) == 1 and _may_alias(missing[0], session)
 
 
@@ -271,8 +287,7 @@ def _main(argv: list[str]) -> int:
     sub = parser.add_subparsers(dest="cmd", required=True)
     p = sub.add_parser("args"); p.add_argument("--harness", required=True)
     p.add_argument("--adding", action="append", default=[], choices=("continue", "prompt"))
-    p = sub.add_parser("render"); p.add_argument("--template-json", required=True); p.add_argument("--task", required=True)
-    p.add_argument("--task-dir", default=None)
+    p = sub.add_parser("render"); p.add_argument("--task", required=True); p.add_argument("--task-dir", default=None)
     p = sub.add_parser("covers"); p.add_argument("--root", required=True); p.add_argument("--state-root", required=True)
     p.add_argument("--session", required=True)
     args = parser.parse_args(argv)
@@ -286,7 +301,7 @@ def _main(argv: list[str]) -> int:
                 print(entry)
         elif args.cmd == "render":
             try:
-                template = json.loads(args.template_json)
+                template = json.loads(sys.stdin.read() or "null")
             except ValueError as exc:
                 raise LaunchError(f"task.prompt is not valid JSON from the config reader: {exc}") from exc
             if not isinstance(template, str):

@@ -22,6 +22,7 @@ last launch. A directory that could not be fully read reports unknown — never
 """
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
@@ -282,7 +283,7 @@ def write_conversation(state_dir: str, *, harness: str, task: str, now: int | No
             json.dump(rec, f, sort_keys=True)
             f.write("\n")
             f.flush()
-            os.fsync(f.fileno())   # durable before the rename: a crash right after must not lose the record
+            _flush(f.fileno())      # the bytes before the rename, so a crash can leave the old record or the new, never a torn one
         os.chmod(tmp, 0o644)
         os.replace(tmp, os.path.join(state_dir, CONVERSATION_NAME))
     except BaseException:
@@ -291,7 +292,40 @@ def write_conversation(state_dir: str, *, harness: str, task: str, now: int | No
         except OSError:
             pass
         raise
+    _flush_dir(state_dir)           # the rename itself: best effort (see _flush)
     return rec
+
+
+def _flush(fd: int) -> None:
+    """Push a descriptor's data towards the disk. Durability is best effort:
+    `os.fsync` on macOS flushes to the drive, not through its cache
+    (F_FULLFSYNC does, and is used where the platform offers it and the
+    filesystem accepts it). The record decides a prompt and a continue flag,
+    not a security boundary; a crash in the window costs at most one stale
+    or missing record, which the README states."""
+    if hasattr(fcntl, "F_FULLFSYNC"):
+        try:
+            fcntl.fcntl(fd, fcntl.F_FULLFSYNC)
+            return
+        except OSError:
+            pass
+    os.fsync(fd)
+
+
+def _flush_dir(path: str) -> None:
+    """fsync the directory so the rename reaches the disk too. Some
+    filesystems refuse fsync on a directory descriptor; that is not an error
+    of the write."""
+    try:
+        dfd = os.open(path, os.O_RDONLY | getattr(os, "O_DIRECTORY", 0))
+    except OSError:
+        return
+    try:
+        _flush(dfd)
+    except OSError:
+        pass
+    finally:
+        os.close(dfd)
 
 
 def last_activity(path: str) -> int | None:
@@ -441,7 +475,7 @@ def main(argv: list[str]) -> int:
                 return 2
             try:
                 write_conversation(argv[2], harness=harness, task=task)
-            except StateError as e:   # the same failure class as a bad read: exit 2
+            except (OSError, StateError) as e:   # the same failure class as a bad read: exit 2 (an unwritable directory included)
                 print(f"tjor_state: {e}", file=sys.stderr)
                 return 2
             return 0

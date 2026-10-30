@@ -2,6 +2,7 @@
 rules and the exact collision set, prompt rendering with brace escapes and
 the one-word rule, and the read-only coverage check over a state directory
 that may not exist yet."""
+import io
 import json
 import os
 import subprocess
@@ -141,28 +142,48 @@ def test_render_surrogate_escaped_path_is_a_prompt_not_a_traceback():
 
 
 def test_render_cli_writes_the_prompt_only_and_accepts_attached_dash_values():
-    r = _run("render", f"--template-json={json.dumps('Task {task} starts.')}", "--task=-x")
+    r = _run("render", "--task=-x", stdin=json.dumps("Task {task} starts."))
     assert r.returncode == 0 and r.stdout == "Task -x starts." and r.stderr == ""
-    r = _run("render", f"--template-json={json.dumps('Task {task}' + chr(10))}", "--task=a")
+    r = _run("render", "--task=a", stdin=json.dumps("Task {task}" + chr(10)))
     assert r.stdout == "Task a\n"
-    r = _run("render", f"--template-json={json.dumps('{task}')}", "--task=mcp")
+    r = _run("render", "--task=mcp", stdin=json.dumps("{task}"))
     assert r.returncode == 2 and r.stdout == "" and "one-word" in r.stderr
 
 
 def test_render_cli_template_type_and_json_are_checked():
-    r = _run("render", '--template-json=["hello world"]', "--task=a")
+    r = _run("render", "--task=a", stdin='["hello world"]')
     assert r.returncode == 2 and "must be a string" in r.stderr
-    r = _run("render", "--template-json=not json", "--task=a")
+    r = _run("render", "--task=a", stdin="not json")
     assert r.returncode == 2 and "not valid JSON" in r.stderr
-    r = _run("render", f"--template-json={json.dumps('Task {task} x' + chr(0))}", "--task=a")   # an escaped NUL survives the shell
+    r = _run("render", "--task=a", stdin="")                                    # an empty stdin is not a template
+    assert r.returncode == 2 and "must be a string" in r.stderr
+    r = _run("render", "--task=a", stdin=json.dumps("Task {task} x" + chr(0)))  # an escaped NUL survives the shell
     assert r.returncode == 2 and "NUL" in r.stderr
 
 
+def test_render_cli_takes_the_template_on_stdin_not_argv():
+    # The template as `tjor_cfg get --json` prints it is ASCII-escaped: a
+    # legal prompt of 22,000 `é` is 44 KB of UTF-8 but 132 KB of JSON, over
+    # the 128 KiB Linux allows one argv element — so the template travels on
+    # stdin, and such a prompt renders rather than failing in execve.
+    body = "é" * 22000
+    template = json.dumps("Task {task} " + body)
+    rendered = f"Task a {body}"
+    assert len(template.encode("ascii")) > 131072 and len(rendered.encode("utf-8")) <= tl.MAX_ELEMENT
+    r = subprocess.run([sys.executable, "-I", str(HELPER), "render", "--task=a"], input=template.encode("ascii"), capture_output=True)
+    assert r.returncode == 0, r.stderr
+    assert r.stdout == rendered.encode("utf-8")
+
+
 def test_render_cli_is_utf8_under_a_c_locale():
+    # `-X utf8=0`: since Python 3.7 the C locale switches UTF-8 mode on by
+    # itself (PEP 540), which would make this pass with the stream
+    # reconfiguration deleted; with it off, the streams default to ASCII and
+    # only the helper's own reconfigure keeps a non-ASCII prompt intact.
     env = {**os.environ, "LC_ALL": "C", "LANG": "C", "LANGUAGE": ""}
-    env.pop("PYTHONIOENCODING", None)
-    r = subprocess.run([sys.executable, "-I", str(HELPER), "render", f"--template-json={json.dumps('Tásk {task} ü')}", "--task=a"],
-                       capture_output=True, env=env)
+    env.pop("PYTHONIOENCODING", None); env.pop("PYTHONUTF8", None)
+    r = subprocess.run([sys.executable, "-I", "-X", "utf8=0", str(HELPER), "render", "--task=a"],
+                       input=json.dumps("Tásk {task} ü").encode("ascii"), capture_output=True, env=env)
     assert r.returncode == 0, r.stderr
     assert r.stdout == "Tásk a ü".encode("utf-8")
 
@@ -173,7 +194,8 @@ def test_main_turns_any_exception_into_a_refusal(monkeypatch, tmp_path):
     monkeypatch.setattr(tl, "covers", boom)
     assert tl._main(["covers", f"--root={tmp_path}", f"--state-root={tmp_path}", "--session=x"]) == 2
     monkeypatch.setattr(tl, "render", boom)
-    assert tl._main(["render", '--template-json="Task {task} x"', "--task=a"]) == 2
+    monkeypatch.setattr(sys, "stdin", io.StringIO('"Task {task} x"'))
+    assert tl._main(["render", "--task=a"]) == 2
 
 
 # ---- covers ----------------------------------------------------------------------
@@ -241,6 +263,20 @@ def test_covers_identity_not_spelling(roots):
         tl.covers(str(linked_parent / "sessions"), str(sr), "sid")
     with pytest.raises(tl.LaunchError, match="symbolic link"):
         tl.covers(str(linked_parent / "sessions" / "sid"), str(sr), "sid")
+    # ... and when the state directory already exists while the root is
+    # missing (a relaunch with a notes directory not yet created): the
+    # answer would be "no", but the link in the chain is refused first.
+    (sr / "sid").mkdir()
+    with pytest.raises(tl.LaunchError, match="symbolic link"):
+        tl.covers(str(linked_parent / "notes" / "x"), str(sr), "sid")
+    assert tl.covers(str(tmp_path / "notes" / "x"), str(sr), "sid") is False   # the same shape without the link
+
+
+def test_canonical_caseless_form_is_the_comparison():
+    assert tl._may_alias("PROJ-A", "proj-a") and tl._may_alias("séance", "SÉANCE")
+    assert tl._may_alias("straße", "STRASSE")          # casefold, not lower: ß folds to ss
+    assert tl._may_alias("Ω", "ω")                 # OHM SIGN → GREEK OMEGA under NFKC, then folded
+    assert not tl._may_alias("proj-a", "proj-b")
 
 
 def test_covers_missing_component_that_a_folding_filesystem_would_alias(roots):

@@ -205,6 +205,17 @@ check "harness launch: the dash-leading id arrives inside the attached form" cmd
 write_cfg $'[task]\nprompt = "Task {task}\\nline two\\n"'
 check "harness launch: a multi-line prompt is one argv element" build_from opencode a ""
 check "harness launch: the newlines, trailing one included, survive" cmd_is opencode $'--prompt=Task a\nline two\n'
+# A legal prompt whose JSON form is too long for one argv element: 22,000 `é`
+# are 44 KB of UTF-8 (under the 64 KiB bound) but 132 KB of ASCII-escaped
+# JSON, over the 128 KiB Linux allows a single argument. The template reaches
+# the helper on stdin, so this renders instead of failing in execve.
+BIG="$(python3 -c 'print("é" * 22000, end="")')"
+write_cfg "[task]
+prompt = \"Task {task} ${BIG}\""
+check "harness launch: a prompt whose JSON form exceeds an argv element still renders" build_from opencode a ""
+check "harness launch: the large prompt arrives whole in the attached form" cmd_is opencode "--prompt=Task a ${BIG}"
+check "harness launch: the launch line shows the large prompt by its byte length" show_is "opencode --prompt=<prompt: 44007 bytes>"
+unset BIG
 write_cfg "${PROMPT_CFG}"
 check "harness launch: claude gets -- then the positional prompt" build_from claude a ""
 check "harness launch: the claude command" cmd_is claude -- "Task a begins."

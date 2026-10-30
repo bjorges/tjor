@@ -12,7 +12,10 @@ checked is what is used:
                                       missing component with mkdirat unless
                                       --no-create; print the directory's identity
   contains A B                        exit 0 when A is B or an ancestor of B by
-                                      (st_dev, st_ino), 1 when not, 2 on error
+                                      (st_dev, st_ino), 3 when not, 2 on error
+                                      (never 1, Python's own exit for a crash
+                                      before or outside _main, so a fault can
+                                      never read as "no")
   probe-create DIR / probe-remove DIR NAME
                                       an empty, unpredictable probe file for the
                                       VM-share correspondence check
@@ -46,6 +49,7 @@ import tjor_secrets  # noqa: E402
 # (it is the session's short name as-is, no truncation).
 TASK_ID = re.compile(r"[a-z0-9][a-z0-9_-]{0,31}")
 PLACEHOLDER = "{task}"
+NOT_CONTAINED = 3   # `contains`: a distinct, non-default exit code for "no"; 1 (Python's own) is never "no"
 PROBE_PREFIX = ".tjor-share-probe-"
 PROBE_NAME = re.compile(r"\.tjor-share-probe-[0-9a-f]{16}")
 
@@ -427,7 +431,7 @@ def _main(argv: list[str]) -> int:
             dev, ino = create(args.prefix, args.relative.split("/"), not args.no_create)
             print(f"{dev}:{ino}")
         elif args.cmd == "contains":
-            return 0 if contains(args.ancestor, args.path) else 1
+            return 0 if contains(args.ancestor, args.path) else NOT_CONTAINED
         elif args.cmd == "probe-create":
             print(probe_create(args.directory))
         elif args.cmd == "probe-remove":
@@ -442,7 +446,7 @@ def _main(argv: list[str]) -> int:
     except TaskError as exc:
         print(f"tjor_task: {exc}", file=sys.stderr)
         return 2 if args.cmd == "contains" else 1
-    except Exception as exc:  # noqa: BLE001 — fail closed: `contains` answers "no" with 1, so a fault must never exit 1
+    except Exception as exc:  # noqa: BLE001 — fail closed: an unexpected fault is a refusal, never an answer
         print(f"tjor_task: internal error, refusing ({type(exc).__name__}: {exc})", file=sys.stderr)
         return 2 if args.cmd == "contains" else 1
 

@@ -559,7 +559,7 @@ specs: [session-launch@45d44f04]
 ---
 layout: problem
 title: A task-aware start
-specs: [harness-launch@75d9d26d]
+specs: [harness-launch@e53ad955]
 adrs: ['0014']
 ---
 
@@ -579,8 +579,8 @@ resume = "auto"
 ```
 
 - **tjor owns the command line** when asked: `args` pass verbatim, before anything tjor adds; an explicit command after `tjor run` is passed as given, nothing added.
-- **The prompt is data on every harness**: opencode `--prompt=<text>`, Claude Code `-- <text>`, Copilot CLI `--interactive=<text>`; two placeholders, `{{ }}` for literal braces, a one-word prompt refused (`claude -- mcp` opens `mcp`).
-- **Resume from tjor's own record**, never from the harness's store: `conversation.json` where no container mounts, read as a bounded regular file, refused when a writable root would cover it; `--no-resume` forces fresh; `reset sessions` forgets it.
+- **The prompt is data on every harness**: opencode `--prompt=<text>`, Claude Code `-- <text>`, Copilot CLI `--interactive=<text>`; two placeholders, `{{ }}` for literal braces, a one-word prompt refused whatever the whitespace around it (`claude -- mcp` opens `mcp`).
+- **Resume from tjor's own record**, never from the harness's store: `conversation.json` where no container mounts, read as a bounded regular file, refused when a writable root would cover it, by identity where it exists and by a conservative name match where it does not; `--no-resume` forces fresh; `reset sessions` forgets it.
 - Built before the notes directory, the first write, the mint and the sidecars: **a refusal creates nothing**. The launch line shows the prompt by its length and tjor's decision.
 
 <Plainly>

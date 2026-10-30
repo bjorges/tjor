@@ -525,6 +525,18 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
         (TASK_NOTES, 'task-notes', 'A workspace below the notes root is not an ancestor and launches', False),
     'task notes: another spelling of the notes repository (a link) is refused by identity':
         (TASK_NOTES, 'task-notes', 'Another spelling of the notes repository (a link) is refused by identity', True),
+    'task notes: a notes-root check whose helper dies with exit 1 refuses the launch':
+        (TASK_NOTES, 'task-notes', 'A notes-root check whose helper dies with exit 1 refuses the launch (exit 3 is the only "no")', True),
+    'task notes: the dead-helper refusal says it cannot tell, not that the workspace is clear':
+        (TASK_NOTES, 'task-notes', 'The dead-helper refusal says it cannot tell, not that the workspace is clear', True),
+    'task notes: the dead-helper refusal at resolution created no notes directory':
+        (TASK_NOTES, 'task-notes', 'The dead-helper refusal at resolution created no notes directory', True),
+    'task notes: a coverage check whose helper dies with exit 1 refuses the launch':
+        (TASK_NOTES, 'task-notes', 'A coverage check whose helper dies with exit 1 refuses the launch', True),
+    'task notes: the dead-helper coverage refusal says it cannot tell, not that the root is clear':
+        (TASK_NOTES, 'task-notes', 'The dead-helper coverage refusal says it cannot tell, not that the root is clear', True),
+    'task notes: with the real helper the same resolution passes':
+        (TASK_NOTES, 'task-notes', 'With the real helper the same resolution passes', False),
     'task notes: --task <base id> is refused (it reads as the default session)':
         (TASK_NOTES, 'session-launch', '--task <base id> is refused (it reads as the default session)', True),
     'task notes: --task <base id>-x is refused (it reads as a qualified id)':
@@ -838,6 +850,12 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
         (HARNESS_LAUNCH, 'harness-launch', 'A multi-line prompt is one argv element', False),
     'harness launch: the newlines, trailing one included, survive':
         (HARNESS_LAUNCH, 'harness-launch', 'The newlines, trailing one included, survive', False),
+    'harness launch: a prompt whose JSON form exceeds an argv element still renders':
+        (HARNESS_LAUNCH, 'harness-launch', 'A prompt whose JSON form exceeds an argv element still renders (the template travels on stdin)', False),
+    'harness launch: the large prompt arrives whole in the attached form':
+        (HARNESS_LAUNCH, 'harness-launch', 'The large prompt arrives whole in the attached form', False),
+    'harness launch: the launch line shows the large prompt by its byte length':
+        (HARNESS_LAUNCH, 'harness-launch', 'The launch line shows the large prompt by its byte length', False),
     'harness launch: claude gets -- then the positional prompt':
         (HARNESS_LAUNCH, 'harness-launch', 'Claude gets -- then the positional prompt', False),
     'harness launch: the claude command':
@@ -1066,7 +1084,7 @@ def render(names: list[str]) -> str:
         f"CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "
         f"\"listed here\" means \"proven green in CI\". The `conformance` and "
         f"`landlock` suites probe the cage from inside; the `workspace-gate`, "
-        f"`self-mount`, `gitcheck` and `task-notes` suites are launcher-side (host guarantees the cage cannot "
+        f"`self-mount`, `gitcheck`, `task-notes` and `harness-launch` suites are launcher-side (host guarantees the cage cannot "
         f"re-check: what `tjor run` refuses before any container exists). Generated from the suite "
         f"sources ({len(names)} checks total; {n_boundary} adversarial guarantees "
         f"below, the rest functional/config checks the suites also run).",

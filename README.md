@@ -183,7 +183,9 @@ starts, in the one form each harness reads as data: opencode
 **A one-word prompt is refused**: Claude Code reads a bare positional that
 names one of its subcommands as that subcommand (`claude -- mcp` opens `mcp`,
 `--` notwithstanding), so `prompt = "{task}"` with the id `mcp` would do
-that; the rule is the same for every harness, so write a sentence. With
+that, and so would `"{task}\n"` (the rule is judged with surrounding
+whitespace removed); the rule is the same for every harness, so write a
+sentence. With
 `resume = "auto"`, tjor adds the harness's `--continue` and sends no prompt
 when **its own launch record** (`conversation.json` at the session's state
 root, written once the agent container exists) says tjor already started a
@@ -194,7 +196,12 @@ mounts, and a launch that relies on it is refused when a writable root (the
 workspace or a `--dir` under `--unsafe-dir`, or the notes directory) would
 cover the state directory; the record is read without following links, as a
 regular file of bounded size, and anything else refuses rather than reading
-as "no conversation". The whole command is built before the notes directory
+as "no conversation". Where the notes directory does not exist yet, that
+coverage is judged by name, conservatively: a last component that differs
+from the session id only in case or Unicode composition is refused on every
+filesystem, a case-sensitive one included, because nothing exists yet to
+compare identities (use a notes template that does not spell the session
+root). The whole command is built before the notes directory
 is created, before the first write into the state directory, before any
 credential is minted and before any sidecar exists, so a refusal by any of
 these rules creates nothing. The launch line prints the command with the
