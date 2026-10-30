@@ -25,6 +25,10 @@ Make egress denials legible and the allowlist easy to grow, so the most likely f
 - **WHEN** `tjor policy https://api.example.test/ws --json` runs and the host is restricted to GET
 - **THEN** the output is a single JSON object carrying `"header_guards": true` and no prose line
 
+#### Scenario: The launcher forwards the options
+- **WHEN** `tjor policy --json https://api.example.test/x` runs, or `tjor policy https://api.example.test/x --method ""`, or a second URL or an unknown option is given
+- **THEN** the first yields the JSON object whatever the option's position, and each of the others is a usage error, never a silent GET or a silently dropped argument
+
 ### Requirement: Add a host to the active policy
 
 `tjor policy add <host>` SHALL append the host to the allow list of the active policy file (the repo policy when trusted and in effect, else the user policy, creating the user policy if absent), and the change SHALL take effect on the next launch. The insertion SHALL land in the `[hosts]` table's `allow` list only, never in the `allow` list of a `[[methods.restrict]]` rule, and SHALL create that list when the table has none.
@@ -60,6 +64,10 @@ The proxy SHALL record each denied egress decision (host, deciding rule, timesta
 #### Scenario: A refused header is visible
 - **WHEN** the agent's WebSocket handshake to a read-only host was denied and `tjor denials` is run
 - **THEN** the line shows `header-block:upgrade` and the output says the host must be left unrestricted to admit it, not that an exception would
+
+#### Scenario: One classifier for the hints
+- **WHEN** `tjor denials` and the teardown recap classify a denial log's rules
+- **THEN** both use the policy module's one classifier and hint table, so a rule reads the same kind, with the same bound on a standard method token, in both outputs
 
 ### Requirement: Teardown surfaces a denial recap
 

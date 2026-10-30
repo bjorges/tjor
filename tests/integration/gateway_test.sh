@@ -78,20 +78,27 @@ chk "https://api.anthropic.com/v1/messages" ALLOW && ok "base policy allow still
 # --- launcher path (#66, llm-gateway spec): an invalid base policy fails
 # ensure_topology before anything starts and leaves no session policy behind,
 # in a fresh session dir of its own (this test writes policy.toml into the
-# shared one above); a reused dir's stale session policy is removed.
-LDIR="$(mktemp -d)"
+# shared one above); a reused dir's stale session policy is removed. The dir
+# lives under WORK (cleaned by the EXIT trap) and every variable the topology
+# step reads is set explicitly on the call, not inherited from above.
+LDIR="${WORK}/launcher-session"; mkdir -p "${LDIR}"
 printf '%s\n' 'mode = "strict-allow"' '[hosts]' 'allow = ["github.com"]' \
     '[[methods.restrict]]' 'host = "github.com"' 'allows = ["GET"]' > "${WORK}/bad-policy.toml"
+topology_with_bad_base() {
+    ( export TJOR_SESSION_DIR="${LDIR}" TJOR_PROJECT="tjor-gw-test" TJOR_POLICY_OVERRIDE="${WORK}/bad-policy.toml" \
+             TJOR_GATEWAY_ENABLED=1 TJOR_GATEWAY_HOST="tjor-gateway"
+      ensure_topology )
+}
 lrc=0
-lerr="$( (TJOR_SESSION_DIR="${LDIR}" TJOR_PROJECT="tjor-gw-test" TJOR_POLICY_OVERRIDE="${WORK}/bad-policy.toml" ensure_topology) 2>&1 >/dev/null )" || lrc=$?
+lerr="$(topology_with_bad_base 2>&1 >/dev/null)" || lrc=$?
 [[ "${lrc}" -ne 0 ]] && ok "ensure_topology refuses an invalid base policy (exit ${lrc})" || bad "ensure_topology accepted an invalid base policy"
 grep -q "methods.restrict" <<<"${lerr}" && ok "the parser's error reaches stderr" || bad "parser error missing from stderr: ${lerr}"
 [[ ! -e "${LDIR}/policy.toml" ]] && ok "no session policy written from an invalid base" || bad "a session policy was written from an invalid base"
+[[ -z "$(ls -A "${LDIR}")" ]] && ok "no temp file left in the session dir" || bad "leftovers in the session dir: $(ls -A "${LDIR}")"
 printf 'mode = "strict-allow"\n' > "${LDIR}/policy.toml"     # a stale session policy from an earlier launch
-lerr="$( (TJOR_SESSION_DIR="${LDIR}" TJOR_PROJECT="tjor-gw-test" TJOR_POLICY_OVERRIDE="${WORK}/bad-policy.toml" ensure_topology) 2>&1 >/dev/null )" || true
+lerr="$(topology_with_bad_base 2>&1 >/dev/null)" || true
 [[ ! -e "${LDIR}/policy.toml" ]] && ok "stale session policy removed on a refused relaunch" || bad "stale session policy kept"
 grep -q "tjor down" <<<"${lerr}" && ok "running-sidecar consequence named" || bad "sidecar note missing: ${lerr}"
-rm -rf "${LDIR}"
 
 # --- gateway.host must be a simple label (a dotted domain would collide) ------
 cat >"${USERCFG}/tjor/config.toml" <<'TOML'

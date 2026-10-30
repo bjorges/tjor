@@ -246,8 +246,12 @@ How it decides, plainly:
   `header-block:*`. No rule lifts these: a host that needs WebSockets or
   override headers is simply left unrestricted. `tjor policy <url> --explain`
   notes when a host is restricted, because the preview cannot see headers.
+  The verdict and the guards are judged on one reading of the policy, and a
+  `101` on what was recorded for its request, so a policy edit while a
+  request is in flight cannot let a header through.
 - Preview a write with `tjor policy https://api.example.test/x --method POST
-  --explain`. In `tjor denials`, a `method-block:POST` line is widened by an
+  --explain` (`--json` gives the verdict as one object, with a
+  `header_guards` field). In `tjor denials`, a `method-block:POST` line is widened by an
   exception or the restriction's `allow` list, not by `tjor policy add`; a
   `method-block:get` line means a client sent a non-standard token, so fix the
   client; a `header-block:` line has no exception.
@@ -472,9 +476,12 @@ When enabled, a LiteLLM sidecar runs on the **egress** network and the harness's
 - **Your policy survives the augmentation.** The session policy is generated
   from your base policy as parsed by the one policy parser: every section is
   re-emitted, `[[methods.restrict]]` and `[[methods.except]]` included, and the
-  gateway's `POST` inference paths get a `POST` exception of their own, so a
-  read-only rule written for other hosts (even `host = "*"`) cannot take
-  inference down. A base policy that does not parse fails the launch, loudly,
+  gateway's inference paths get exceptions for the methods they use (`POST`
+  for completions, embeddings and messages, `GET` for model listing and
+  health), so a read-only rule written for other hosts (even `host = "*"`
+  with `allow = []`) cannot take inference down. The generated policy is
+  parsed again and compared with what was meant before it is written. A base
+  policy that does not parse fails the launch, loudly,
   before anything starts; a relaunch into the same session directory removes
   the stale session policy an earlier launch left (sidecars still running from
   it keep the policy they loaded until `tjor down`).

@@ -166,16 +166,55 @@ class TestAugmentPolicy:
         assert tjor_policy.evaluate(pol, "https://github.com/org/repo/git-upload-pack", "POST").allowed
         assert tjor_policy.evaluate(pol, "http://tjor-gateway:4000/v1/chat/completions", "POST").allowed
 
-    def test_wildcard_restriction_does_not_break_inference(self):
-        base = BASE_POLICY + '[[methods.restrict]]\nhost = "*"\nallow = ["GET"]\n'
+    @pytest.mark.parametrize("allow", ['["GET"]', '[]', '["POST"]'])
+    def test_wildcard_restriction_does_not_break_inference(self, allow):
+        # Every inference path stays reachable with the method it uses — POST
+        # for completions, embeddings and messages, GET for model listing and
+        # health — whatever a `host = "*"` restriction allows, `allow = []`
+        # included. The host block is never lifted.
+        base = BASE_POLICY + f'[[methods.restrict]]\nhost = "*"\nallow = {allow}\n'
         pol = tjor_policy.parse_policy(tjor_gateway.augment_policy(base, "tjor-gateway"))
         assert pol.valid, pol.errors
-        for p in tjor_gateway.POST_INFERENCE_PATHS:
-            v = tjor_policy.evaluate(pol, f"http://tjor-gateway:4000{p}", "POST")
-            assert v.allowed, (p, v)
-        v = tjor_policy.evaluate(pol, "http://tjor-gateway:4000/key/generate", "POST")
-        assert not v.allowed and v.rule == "host-block"                 # the host block is never lifted
-        assert tjor_policy.evaluate(pol, "https://github.com/x", "POST").rule == "method-block:POST"
+        for p in tjor_gateway.INFERENCE_PATHS:
+            method = "POST" if p in tjor_gateway.POST_INFERENCE_PATHS else "GET"
+            v = tjor_policy.evaluate(pol, f"http://tjor-gateway:4000{p}", method)
+            assert v.allowed, (allow, p, method, v)
+        for p, method in (("/key/generate", "POST"), ("/key/generate", "GET"), ("/models/x", "GET")):
+            v = tjor_policy.evaluate(pol, f"http://tjor-gateway:4000{p}", method)
+            assert not v.allowed and v.rule == "host-block", (allow, p, method, v)
+        github = tjor_policy.evaluate(pol, "https://github.com/x", "POST")
+        assert github.rule == ("host-allow" if allow == '["POST"]' else "method-block:POST")
+
+    def test_the_two_method_tables_cover_every_inference_path(self):
+        post, get = set(tjor_gateway.POST_INFERENCE_PATHS), set(tjor_gateway.GET_INFERENCE_PATHS)
+        assert post | get == set(tjor_gateway.INFERENCE_PATHS) and not post & get
+
+    def test_control_characters_in_base_rules_round_trip(self):
+        # `_toml_str` must emit a TOML basic string for ANY string the parser
+        # accepted: a quote, a backslash, a tab, a newline, a control byte and
+        # a non-ASCII character in a path or host pattern all come back as the
+        # same rule, instead of a generated file that fails to parse.
+        base = BASE_POLICY + (
+            '[[paths.block]]\nhost = "q\\"uote\\\\.test"\npath = "/odd\\u0001\\n\\tpath\\u00e9"\n'
+        )
+        pol = tjor_policy.parse_policy(tjor_gateway.augment_policy(base, "tjor-gateway"))
+        assert pol.valid, pol.errors
+        assert ('q"uote\\.test', "/odd\x01\n\tpath\u00e9") in pol.path_block
+        assert tjor_gateway._toml_str("a\x00b") == '"a\\u0000b"'
+
+    def test_a_result_that_does_not_round_trip_raises(self, monkeypatch):
+        # The check exists: a serialiser that drops something is caught at the
+        # augmentation, with a message that says so, not downstream as an
+        # "invalid policy" with no hint of why.
+        monkeypatch.setattr(tjor_gateway, "_toml_str", lambda s: '"' + str(s) + '"')
+        with pytest.raises(ValueError, match="does not (parse|round-trip)"):
+            tjor_gateway.augment_policy(BASE_POLICY + '[[paths.block]]\nhost = "a.test"\npath = "/x\\ny"\n',
+                                        "tjor-gateway")
+        import json
+        monkeypatch.setattr(tjor_gateway, "_toml_str",          # valid TOML, but every path altered
+                            lambda s: json.dumps(str(s) + "x" if str(s).startswith("/") else str(s)))
+        with pytest.raises(ValueError, match="round-trip"):
+            tjor_gateway.augment_policy(BASE_POLICY, "tjor-gateway")
 
     def test_idempotent_with_method_rules(self):
         base = BASE_POLICY + '[[methods.restrict]]\nhost = "*"\nallow = ["GET"]\n'

@@ -64,6 +64,20 @@ check "policy add makes a host allowed" bash -c \
     "cd '${REPO}' && '${T}' policy https://added.test/ 2>/dev/null | grep -q ALLOW"
 check "policy --explain names the active policy" bash -c \
     "cd '${REPO}' && '${T}' policy https://added.test/ --explain 2>&1 | grep -q 'active policy'"
+# The launcher forwards the preview's options (#66 review): --json reaches the
+# matcher in either argument order and yields one JSON object on stdout; an
+# empty --method value is a usage error, never a silent GET; a second URL or
+# an unknown option is a usage error.
+check "policy --json yields a JSON verdict" bash -c \
+    "cd '${REPO}' && '${T}' policy https://added.test/ --json 2>/dev/null | python3 -c 'import json,sys; v=json.load(sys.stdin); assert v[\"allowed\"] is True and v[\"rule\"]==\"host-allow\" and v[\"header_guards\"] is False'"
+check "policy --json before the URL is the same" bash -c \
+    "cd '${REPO}' && '${T}' policy --json https://added.test/ 2>/dev/null | python3 -c 'import json,sys; assert json.load(sys.stdin)[\"allowed\"] is True'"
+check "policy --method with an empty value is refused" bash -c \
+    "cd '${REPO}' && ! '${T}' policy https://added.test/ --method '' >/dev/null 2>&1 && ! '${T}' policy https://added.test/ --method= >/dev/null 2>&1"
+check "policy --method POST is forwarded as typed" bash -c \
+    "cd '${REPO}' && '${T}' policy https://added.test/ --method POST --json 2>/dev/null | python3 -c 'import json,sys; assert json.load(sys.stdin)[\"allowed\"] is True'"
+check "policy refuses a second URL and an unknown option" bash -c \
+    "cd '${REPO}' && ! '${T}' policy https://a.test/ https://b.test/ >/dev/null 2>&1 && ! '${T}' policy https://a.test/ --bogus >/dev/null 2>&1"
 
 echo "== denial log"
 ( cd "${REPO}" && "${T}" run --detach sleep 200 >/dev/null 2>&1 )

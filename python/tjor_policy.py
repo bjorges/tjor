@@ -320,11 +320,58 @@ def load_policy(path: str) -> Policy:
 
 def method_restricted(policy: Policy, host: str) -> bool:
     """True when any ``[[methods.restrict]]`` rule matches the host — the
-    proxy's header guards and the CLI's note key on this, not on a verdict."""
+    proxy's header guards and the CLI's note key on this, not on a verdict.
+    An invalid policy restricts every host: it denies everything, and a guard
+    that read it as unrestricted would be the one fail-open path."""
     if not policy.valid:
-        return False
+        return True
     canon = _canon_host(host)
     return any(host_matches(hpat, canon) for hpat, _ in policy.method_restrict)
+
+
+# Denial-log hints (#66): the one classifier and the one hint table for
+# `tjor denials` and the teardown recap. A standard method-block token is
+# lifted by a policy rule; a non-standard one (`get`, `upgrade`) can be named
+# by no rule, so the client is what to fix; a header guard has no exception.
+DENIAL_HINTS = {
+    "method": ("refused by the method gate (a write to a read-only host): widen with a "
+               "[[methods.except]] rule for that path or the restriction's allow list, "
+               "not with 'tjor policy add'"),
+    "nonstd": ("refused for a non-standard method token (e.g. 'get') that no policy rule "
+               "can name: fix the client"),
+    "header": ("refused by a header guard (a protocol switch or method-override header on a "
+               "read-only host): no rule lifts these; leave the host unrestricted if it needs them"),
+}
+
+
+def denial_kind(rule: str) -> "str | None":
+    """``"method"``, ``"nonstd"`` or ``"header"`` for a denial-log rule the
+    hints speak to, else None."""
+    if rule.startswith("method-block:"):
+        return "method" if _METHOD_NAME.fullmatch(rule[len("method-block:"):]) else "nonstd"
+    if rule.startswith("header-block:"):
+        return "header"
+    return None
+
+
+def denial_kind_counts(path: str) -> dict[str, int]:
+    """Count the hinted kinds in a denial log (``host<TAB>rule<TAB>time`` lines;
+    anything else, the cap notice included, is skipped)."""
+    counts = {kind: 0 for kind in DENIAL_HINTS}
+    with open(path, "rb") as fh:
+        for raw in fh.read().decode("utf-8", "surrogateescape").splitlines():
+            parts = raw.split("\t")
+            if len(parts) < 2:
+                continue
+            kind = denial_kind(parts[1])
+            if kind is not None:
+                counts[kind] += 1
+    return counts
+
+
+def denial_hints(counts: dict[str, int]) -> list[str]:
+    """One ``tjor: <n> <hint>`` line per kind present, in table order."""
+    return [f"tjor: {counts[kind]} {hint}" for kind, hint in DENIAL_HINTS.items() if counts.get(kind)]
 
 
 def evaluate(policy: Policy, url: str, method: str) -> Verdict:
@@ -459,7 +506,18 @@ def _main(argv: list[str]) -> int:
     p_check.add_argument("url")
     p_val = sub.add_parser("validate", help="validate a policy file")
     p_val.add_argument("--policy", required=True)
+    p_hint = sub.add_parser("denial-hints", help="print the per-kind hints for a session denial log")
+    p_hint.add_argument("log")
     args = parser.parse_args(argv)
+
+    if args.cmd == "denial-hints":
+        try:
+            counts = denial_kind_counts(args.log)
+        except OSError:
+            return 0                       # no log, no hints: the callers treat this as advisory
+        for line in denial_hints(counts):
+            print(line)
+        return 0
 
     if args.cmd == "validate":
         policy = load_policy(args.policy)
@@ -473,8 +531,10 @@ def _main(argv: list[str]) -> int:
     # The header guards (Upgrade / method-override, and a 101 from the host)
     # live in the proxy, not the matcher, so a preview cannot see them; say
     # so on a method-restricted host — a field under --json, prose otherwise.
+    # An invalid policy already reads DENY on its own line: no note for it.
     try:
-        guarded = method_restricted(policy, urlsplit(args.url if "//" in args.url else "//" + args.url).netloc)
+        guarded = policy.valid and method_restricted(
+            policy, urlsplit(args.url if "//" in args.url else "//" + args.url).netloc)
     except ValueError:
         guarded = False
     if args.json:

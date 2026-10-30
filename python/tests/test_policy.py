@@ -256,7 +256,7 @@ methods = ["POST"]
 """
 
 
-def verdict(policy, url, method):
+def judge(policy, url, method):
     return tp.evaluate(policy, url, method)
 
 
@@ -269,25 +269,40 @@ class TestMethodsParsing:
         assert policy.method_except == [("good.test", "/rest/api/2/search", frozenset({"POST"}))]
 
     def test_absent_section_leaves_verdicts_unchanged(self):
+        # Two different facts. (1) Without a `methods` section the method
+        # token cannot influence a verdict: every well-formed token yields the
+        # same verdict as GET on every URL, including the denied ones. (2) The
+        # gated policy agrees with the plain one, method for method, on every
+        # host no restrict rule matches — the section only ever touches the
+        # hosts it names.
         plain, gated = make(BASE), make(GATED)
-        for url in ("https://good.test/x", "https://bad.test/docs/x", "https://unknown.test/"):
-            for m in ("GET", "POST"):
-                assert verdict(plain, url, m) == verdict(plain, url, "GET")
-        assert verdict(gated, "https://good.test/x", "GET") == verdict(plain, "https://good.test/x", "GET")
+        assert plain.method_restrict == [] and plain.method_except == []
+        urls = ("https://good.test/x", "https://good.test/v1/telemetry/x", "https://bad.test/docs/x",
+                "https://bad.test/secret", "https://unknown.test/", "https://good.test/rest/api/2/search")
+        methods = ("GET", "HEAD", "POST", "PUT", "DELETE", "get", "VERSION-CONTROL", "M" * 32)
+        for url in urls:
+            baseline = judge(plain, url, "GET")
+            for m in methods:
+                assert judge(plain, url, m) == baseline, (url, m)
+                if not tp.method_restricted(gated, url.split("/")[2]):
+                    assert judge(gated, url, m) == baseline, (url, m)
+        assert judge(gated, "https://good.test/x", "POST") != judge(plain, "https://good.test/x", "POST")
 
     def test_method_restricted_helper(self):
         policy = make(GATED)
         assert tp.method_restricted(policy, "good.test") and tp.method_restricted(policy, "GOOD.test:443")
         assert not tp.method_restricted(policy, "bad.test")
-        assert not tp.method_restricted(tp.parse_policy("mode = [broken"), "good.test")
+        # An invalid policy denies everything; read as "restricted", never as
+        # "unrestricted" (the proxy's guards fail closed on it).
+        assert tp.method_restricted(tp.parse_policy("mode = [broken"), "good.test")
 
 
 class TestMethodGate:
     def test_post_to_read_only_host_denied_get_allowed(self):
         policy = make(GATED)
-        v = verdict(policy, "https://good.test/anything", "POST")
+        v = judge(policy, "https://good.test/anything", "POST")
         assert not v.allowed and v.rule == "method-block:POST" and v.pattern == "good.test"
-        v = verdict(policy, "https://good.test/anything", "GET")
+        v = judge(policy, "https://good.test/anything", "GET")
         assert v.allowed and v.rule == "host-allow"            # same stage and rule as without the restriction
 
     def test_restrictions_intersect(self):
@@ -299,42 +314,42 @@ allow = ["GET"]
 host = "good.test"
 allow = ["GET", "POST"]
 """)
-        v = verdict(policy, "https://good.test/x", "POST")
+        v = judge(policy, "https://good.test/x", "POST")
         assert not v.allowed and v.rule == "method-block:POST" and v.pattern == "*.test"
-        assert verdict(policy, "https://good.test/x", "GET").allowed
+        assert judge(policy, "https://good.test/x", "GET").allowed
 
     def test_path_block_wins_over_the_gate(self):
         policy = make(GATED)
-        v = verdict(policy, "https://good.test/v1/telemetry/x", "GET")
+        v = judge(policy, "https://good.test/v1/telemetry/x", "GET")
         assert not v.allowed and v.rule == "path-block"
 
     def test_empty_allow_list_denies_every_method(self):
         policy = make(BASE + '[[methods.restrict]]\nhost = "good.test"\nallow = []\n'
                       '[[methods.except]]\nhost = "good.test"\npath = "/ping"\nmethods = ["GET"]\n')
         for m in ("GET", "HEAD", "POST", "OPTIONS"):
-            assert verdict(policy, "https://good.test/x", m).rule == f"method-block:{m}"
-        assert verdict(policy, "https://good.test/ping", "GET").allowed
+            assert judge(policy, "https://good.test/x", m).rule == f"method-block:{m}"
+        assert judge(policy, "https://good.test/ping", "GET").allowed
 
     def test_no_method_implies_another(self):
         policy = make(BASE + '[[methods.restrict]]\nhost = "good.test"\nallow = ["GET"]\n')
-        assert verdict(policy, "https://good.test/x", "HEAD").rule == "method-block:HEAD"
-        assert verdict(policy, "https://good.test/x", "OPTIONS").rule == "method-block:OPTIONS"
+        assert judge(policy, "https://good.test/x", "HEAD").rule == "method-block:HEAD"
+        assert judge(policy, "https://good.test/x", "OPTIONS").rule == "method-block:OPTIONS"
 
     def test_exception_admits_the_listed_method_on_its_path(self):
         policy = make(GATED)
-        v = verdict(policy, "https://good.test/rest/api/2/search?jql=x", "POST")
+        v = judge(policy, "https://good.test/rest/api/2/search?jql=x", "POST")
         assert v.allowed and v.rule == "host-allow"
-        assert verdict(policy, "https://good.test/rest/api/2/issue", "POST").rule == "method-block:POST"
+        assert judge(policy, "https://good.test/rest/api/2/issue", "POST").rule == "method-block:POST"
 
     def test_encoding_cannot_widen_an_exception(self):
         policy = make(GATED)
         for url in ("https://good.test/rest/api/2/%73earch", "https://good.test/rest/api/2/search/../issue"):
-            v = verdict(policy, url, "POST")
+            v = judge(policy, url, "POST")
             assert not v.allowed and v.rule == "method-block:POST", url
 
     def test_exception_does_not_bypass_default_deny(self):
         policy = make(BASE + '[[methods.except]]\nhost = "unknown.test"\npath = "/x"\nmethods = ["POST"]\n')
-        assert verdict(policy, "https://unknown.test/x", "POST").rule == "default-deny"
+        assert judge(policy, "https://unknown.test/x", "POST").rule == "default-deny"
 
     def test_exception_is_as_wide_as_its_host_pattern(self):
         policy = make("""
@@ -352,56 +367,179 @@ host = "*.internal.test"
 path = "/webhook"
 methods = ["POST"]
 """)
-        assert verdict(policy, "https://vault.internal.test/webhook", "POST").allowed
-        assert verdict(policy, "https://vault.internal.test/other", "GET").rule == "method-block:GET"
+        assert judge(policy, "https://vault.internal.test/webhook", "POST").allowed
+        assert judge(policy, "https://vault.internal.test/other", "GET").rule == "method-block:GET"
 
     def test_carved_out_path_is_still_gated(self):
         policy = make(BASE + '[[methods.restrict]]\nhost = "bad.test"\nallow = ["GET"]\n')
-        assert verdict(policy, "https://bad.test/docs/x", "GET").rule == "path-allow-carveout"
-        assert verdict(policy, "https://bad.test/docs/x", "POST").rule == "method-block:POST"
+        assert judge(policy, "https://bad.test/docs/x", "GET").rule == "path-allow-carveout"
+        assert judge(policy, "https://bad.test/docs/x", "POST").rule == "method-block:POST"
 
     def test_earlier_denial_is_reported_as_such(self):
         policy = make(BASE + '[[methods.restrict]]\nhost = "unknown.test"\nallow = ["GET"]\n')
-        assert verdict(policy, "https://unknown.test/x", "POST").rule == "default-deny"
+        assert judge(policy, "https://unknown.test/x", "POST").rule == "default-deny"
 
-    def test_deny_only_property_over_the_corpus(self):
+
+def _oracle(policy, url, method):
+    """An independent statement of the gate, written set-wise rather than as
+    the matcher's loop, for the property test below: the expected verdict for
+    (policy, url, method) given the verdict of the same policy WITHOUT its
+    methods section. Admitted = listed by every matching restriction, or
+    lifted by an exception whose host matches and whose path matches EVERY
+    form of the request path."""
+    import dataclasses
+    stripped = dataclasses.replace(policy, method_restrict=[], method_except=[])
+    base = tp.evaluate(stripped, url, method)
+    if not base.allowed:
+        return base
+    from urllib.parse import urlsplit
+    split = urlsplit(url)
+    host = tp._canon_host(split.netloc)
+    forms, _ = tp.path_forms(split.path or "/")
+    matching = [(h, a) for h, a in policy.method_restrict if tp.host_matches(h, host)]
+    if not matching:
+        return base
+    denying = [h for h, a in matching if method not in a]
+    if not denying:
+        return base
+    lifted = any(method in ms and tp.host_matches(h, host) and all(tp.path_matches(p, f) for f in forms)
+                 for h, p, ms in policy.method_except)
+    return base if lifted else tp.Verdict(False, f"method-block:{method}", denying[0])
+
+
+class TestMethodGateProperties:
+    """Seeded random policies × requests against an independent oracle: the
+    gate's exact verdict is predicted, so a gate that wrongly DENIES (an
+    exception ignored, the wrong restriction consulted, a stage order slip)
+    fails here as surely as one that wrongly allows."""
+
+    HOSTS = ["api.test", "git.test", "sub.api.test", "deep.sub.api.test", "other.test", "vault.api.test"]
+    HOST_PATTERNS = ["api.test", "*.api.test", "*.test", "*", "git.test", "vault.api.test", "other.test"]
+    PATHS = ["/", "/search", "/search/x", "/rest/api/2/search", "/rest/api/2/issue", "/%73earch",
+             "/search/../issue", "/org/repo/git-upload-pack", "/org/repo/git-receive-pack", "/docs/x",
+             "/v1/telemetry/x", "/a?b=c"]
+    PATH_PATTERNS = ["/search", "/search*", "/rest/api/2/search", "/*/git-upload-pack", "/docs/*", "*", "/"]
+    METHODS = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "get", "VERSION-CONTROL"]
+    NAMES = ["GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS", "VERSION-CONTROL"]
+
+    def _policy(self, rng):
+        mode = rng.choice(["strict-allow", "default-allow"])
+        allow = rng.sample(self.HOST_PATTERNS, rng.randint(0, 3))
+        block = rng.sample(self.HOST_PATTERNS, rng.randint(0, 2))
+        text = [f'mode = "{mode}"', "[hosts]",
+                "allow = [" + ", ".join(f'"{h}"' for h in allow) + "]",
+                "block = [" + ", ".join(f'"{h}"' for h in block) + "]"]
+        for _ in range(rng.randint(0, 2)):
+            text += ["[[paths.allow]]", f'host = "{rng.choice(self.HOST_PATTERNS)}"',
+                     f'path = "{rng.choice(self.PATH_PATTERNS)}"']
+        for _ in range(rng.randint(0, 2)):
+            text += ["[[paths.block]]", f'host = "{rng.choice(self.HOST_PATTERNS)}"',
+                     f'path = "{rng.choice(self.PATH_PATTERNS)}"']
+        for _ in range(rng.randint(0, 3)):
+            names = rng.sample(self.NAMES, rng.randint(0, 3))
+            text += ["[[methods.restrict]]", f'host = "{rng.choice(self.HOST_PATTERNS)}"',
+                     "allow = [" + ", ".join(f'"{n}"' for n in names) + "]"]
+        for _ in range(rng.randint(0, 3)):
+            names = rng.sample(self.NAMES, rng.randint(1, 2))
+            text += ["[[methods.except]]", f'host = "{rng.choice(self.HOST_PATTERNS)}"',
+                     f'path = "{rng.choice(self.PATH_PATTERNS)}"',
+                     "methods = [" + ", ".join(f'"{n}"' for n in names) + "]"]
+        policy = tp.parse_policy("\n".join(text) + "\n")
+        assert policy.valid, policy.errors
+        return policy
+
+    def test_gate_matches_the_oracle(self):
+        import random
+        rng = random.Random(66)
+        gated_denials = 0
+        for _ in range(400):
+            policy = self._policy(rng)
+            for _ in range(12):
+                url = f"https://{rng.choice(self.HOSTS)}{rng.choice(self.PATHS)}"
+                method = rng.choice(self.METHODS)
+                got, want = judge(policy, url, method), _oracle(policy, url, method)
+                assert got == want, (policy, url, method, got, want)
+                gated_denials += got.rule.startswith("method-block:")
+        assert gated_denials > 200            # the generator reaches the gate, not only the earlier stages
+
+    def test_deny_only_over_the_corpus(self):
+        # The one-directional statement, kept: with its methods section
+        # removed, a policy allows a superset of what it allows with it, and
+        # every difference is a method-block on an otherwise allowed request.
         import dataclasses, json
         corpus = json.loads((FIXTURES / "corpus.json").read_text())
         gated = tp.load_policy(str(FIXTURES / corpus["policy"]))
         stripped = dataclasses.replace(gated, method_restrict=[], method_except=[])
         for case in corpus["cases"]:
             for m in ("GET", "HEAD", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"):
-                with_gate = verdict(gated, case["url"], m)
-                without = verdict(stripped, case["url"], m)
+                with_gate, without = judge(gated, case["url"], m), judge(stripped, case["url"], m)
+                assert with_gate == _oracle(gated, case["url"], m)
                 assert with_gate == without or (
                     without.allowed and not with_gate.allowed and with_gate.rule.startswith("method-block:")
                 ), (case["url"], m, with_gate, without)
 
 
+class TestDenialHints:
+    """One classifier and one hint table for `tjor denials` and the recap."""
+
+    def test_kinds(self):
+        assert tp.denial_kind("method-block:POST") == "method"
+        assert tp.denial_kind("method-block:VERSION-CONTROL") == "method"
+        assert tp.denial_kind("method-block:get") == "nonstd"
+        assert tp.denial_kind("method-block:upgrade") == "nonstd"
+        assert tp.denial_kind("method-block:" + "M" * 33) == "nonstd"
+        assert tp.denial_kind("header-block:upgrade") == "header"
+        assert tp.denial_kind("header-block:upgrade-response") == "header"
+        for other in ("host-block", "default-deny", "fail-closed:bad-method", "ip-guard:x", ""):
+            assert tp.denial_kind(other) is None
+
+    def test_counts_and_lines(self, tmp_path):
+        log = tmp_path / "denials.log"
+        log.write_bytes(b"a.test\tmethod-block:POST\t1\nb.test\tmethod-block:get\t2\n"
+                        b"a.test\theader-block:upgrade\t3\na.test\tmethod-block:POST\t4\n"
+                        b"c.test\tdefault-deny\t5\ndenial log capped\n\xff\tmethod-block:PUT\t6\n")
+        counts = tp.denial_kind_counts(str(log))
+        assert counts == {"method": 3, "nonstd": 1, "header": 1}
+        lines = tp.denial_hints(counts)
+        assert len(lines) == 3 and all(line.startswith("tjor: ") for line in lines)
+        assert "[[methods.except]]" in lines[0] and "tjor policy add" in lines[0] and lines[0].startswith("tjor: 3 ")
+        assert "fix the client" in lines[1] and lines[1].startswith("tjor: 1 ")
+        assert "no rule lifts" in lines[2] and "unrestricted" in lines[2]
+        assert tp.denial_hints({"method": 0, "nonstd": 0, "header": 0}) == []
+
+    def test_cli(self, tmp_path, capsys):
+        log = tmp_path / "denials.log"
+        log.write_text("a.test\theader-block:method-override\t1\n")
+        assert tp._main(["denial-hints", str(log)]) == 0
+        out = capsys.readouterr().out.splitlines()
+        assert len(out) == 1 and out[0].startswith("tjor: 1 refused by a header guard")
+        assert tp._main(["denial-hints", str(tmp_path / "missing.log")]) == 0 and capsys.readouterr().out == ""
+
+
 class TestMethodToken:
     def test_case_is_not_folded(self):
         policy = make(GATED)
-        assert verdict(policy, "https://good.test/x", "post").rule == "method-block:post"
-        assert verdict(policy, "https://good.test/x", "get").rule == "method-block:get"
+        assert judge(policy, "https://good.test/x", "post").rule == "method-block:post"
+        assert judge(policy, "https://good.test/x", "get").rule == "method-block:get"
 
     @pytest.mark.parametrize("bad", ["bad method", "GET\t", "", "G\u00c9T", "\u017fET", "M" * 33, "GET/"])
     def test_malformed_method_denied_everywhere(self, bad):
         for text in (BASE, GATED):
             policy = make(text)
             for url in ("https://good.test/x", "https://unknown.test/x", "https://bad.test/docs/x"):
-                assert verdict(policy, url, bad).rule == "fail-closed:bad-method", (bad, url)
+                assert judge(policy, url, bad).rule == "fail-closed:bad-method", (bad, url)
 
     def test_length_bound(self):
         policy = make(GATED)
-        assert verdict(policy, "https://good.test/x", "M" * 32).rule == "method-block:" + "M" * 32
+        assert judge(policy, "https://good.test/x", "M" * 32).rule == "method-block:" + "M" * 32
         plain = make(BASE)
-        assert verdict(plain, "https://good.test/x", "M" * 32).rule == "host-allow"
-        assert verdict(plain, "https://good.test/x", "M" * 33).rule == "fail-closed:bad-method"
+        assert judge(plain, "https://good.test/x", "M" * 32).rule == "host-allow"
+        assert judge(plain, "https://good.test/x", "M" * 33).rule == "fail-closed:bad-method"
 
     def test_uncommon_tokens_unaffected(self):
         plain = make(BASE)
-        assert verdict(plain, "https://good.test/x", "VERSION-CONTROL").rule == "host-allow"
-        assert verdict(plain, "https://good.test/x", "UPDATEREDIRECTREF").rule == "host-allow"
+        assert judge(plain, "https://good.test/x", "VERSION-CONTROL").rule == "host-allow"
+        assert judge(plain, "https://good.test/x", "UPDATEREDIRECTREF").rule == "host-allow"
 
     def test_method_is_required(self):
         with pytest.raises(TypeError):

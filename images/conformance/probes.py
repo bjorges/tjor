@@ -25,6 +25,8 @@ import socket
 import ssl
 import sys
 import time
+import urllib.error
+import urllib.request
 
 PROXY_IP = os.environ.get("TJOR_PROXY_IP", "")
 DNS_IP = os.environ.get("TJOR_DNS_IP", "")
@@ -634,14 +636,36 @@ def p_mg_encoding_cannot_widen():
     expect_denial(RO, "method-block:POST")
 
 
+class _MethodPreservingRedirect(urllib.request.HTTPRedirectHandler):
+    """A 307/308 keeps the method and body (RFC 9110 §15.4.8), as curl and
+    browsers do; urllib's default would refuse to follow a POST."""
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        if code in (307, 308):
+            return urllib.request.Request(newurl, data=req.data, headers=dict(req.header_items()),
+                                          method=req.get_method())
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 @probe("method gate: a redirect does not carry a method past the gate")
 def p_mg_redirect_is_a_new_request():
-    first = via_proxy(f"http://{RO}:8080/redirect", method="POST", body=b"{}")
-    assert first.status == 307 and first.getheader("Location") == "/items", _rule(first)
-    first.read()
-    follow = via_proxy(f"http://{RO}:8080/items", method="POST", body=b"{}")   # what a client does with a 307
-    assert follow.status == 403 and follow.getheader("x-tjor-rule") == "method-block:POST", _rule(follow)
+    # A redirect-following client POSTs to the excepted /redirect, is sent to
+    # /items with a 307 and re-POSTs there on its own. The proxy judges that
+    # second request like any other: denied, and the fixture's record shows
+    # the upstream saw exactly one POST — the first.
+    before = seen()
+    opener = urllib.request.build_opener(
+        urllib.request.ProxyHandler({"http": f"http://{PROXY_IP}:{PROXY_PORT}"}), _MethodPreservingRedirect())
+    try:
+        resp = opener.open(urllib.request.Request(f"http://{RO}:8080/redirect", data=b"{}", method="POST"),
+                           timeout=15)
+        raise AssertionError(f"the followed POST was served: {resp.status}")
+    except urllib.error.HTTPError as err:
+        assert err.code == 403 and err.headers.get("x-tjor-rule") == "method-block:POST", f"{err.code} {err.headers}"
+        assert err.geturl().endswith("/items"), err.geturl()
     expect_denial(RO, "method-block:POST")
+    new = seen()["requests"][len(before["requests"]):]
+    assert [(r["method"], r["path"], r["complete"]) for r in new] == [("POST", "/redirect", True)], new
 
 
 @probe("method gate: a write inside a tunnel is judged on the tunnel target")
@@ -687,11 +711,17 @@ def p_hg_override():
 @probe("header guard: a 101 from the upstream of a read-only host is refused")
 def p_hg_upgrade_response():
     # The request carries no switch marker; the fixture answers 101 anyway. On
-    # the read-only host the proxy refuses it before it reaches the client.
+    # the read-only host the proxy refuses it before it reaches the client:
+    # the client sees the connection closed with no bytes of a response, and
+    # the fixture's record shows the request DID reach the upstream (so the
+    # close is the proxy's refusal of the 101, not a request that never left).
+    before = seen()
     with socket.create_connection((PROXY_IP, PROXY_PORT), timeout=15) as sock:
         sock.sendall(f"GET http://{RO}:8080/switch HTTP/1.1\r\nHost: {RO}:8080\r\n\r\n".encode())
         closed_at_once(sock)
     expect_denial(RO, "header-block:upgrade-response")
+    new = seen()["requests"][len(before["requests"]):]
+    assert [(r["method"], r["path"]) for r in new] == [("GET", "/switch")], new
     # Baseline on an unrestricted host: the 101 reaches the client as today.
     with socket.create_connection((PROXY_IP, PROXY_PORT), timeout=15) as sock:
         sock.sendall(f"GET http://{ECHO}:8080/switch HTTP/1.1\r\nHost: {ECHO}:8080\r\n\r\n".encode())

@@ -116,7 +116,7 @@ What the agent can talk to. The network boundary is the cage's primary guarantee
 ---
 layout: problem
 title: The agent can reach any host
-specs: [cage-network@b36c84fa, egress-policy@bbf2f492]
+specs: [cage-network@b36c84fa, egress-policy@b752140c]
 adrs: ['0004']
 ---
 
@@ -149,7 +149,7 @@ specs: [cage-network@b36c84fa]
 ---
 layout: problem
 title: Policy has to see the request, not just the host
-specs: [cage-network@b36c84fa, egress-policy@bbf2f492]
+specs: [cage-network@b36c84fa, egress-policy@b752140c]
 adrs: ['0007', '0012']
 ---
 
@@ -195,7 +195,7 @@ specs: [cage-network@b36c84fa]
 ---
 layout: problem
 title: A policy that can be bent
-specs: [egress-policy@bbf2f492]
+specs: [egress-policy@b752140c]
 ---
 
 ::problem::
@@ -210,7 +210,7 @@ specs: [egress-policy@bbf2f492]
 - **Fails closed**: a missing, unparseable or invalid policy denies all egress, loudly.
 - **One matcher, everywhere**: proxy addon, `tjor policy` and the launcher share one implementation, and a parity corpus in CI asserts identical verdicts, method included.
 - **Encoding-aware, asymmetric matching**: encoding can never widen an allow, a block or a method exception; dot-segments cannot escape a carve-out.
-- **Read-only hosts**: `[[methods.restrict]]` narrows a host to listed methods, `[[methods.except]]` admits one method on one exact path; the gate runs last and can only deny; protocol switches and override headers are refused on such a host.
+- **Read-only hosts**: `[[methods.restrict]]` narrows a host to listed methods, `[[methods.except]]` admits one method on one exact path; the gate runs last and can only deny; protocol switches and override headers are refused on such a host, judged on the same reading of the policy as the verdict.
 - Harness vendor endpoints get path-level treatment, not a blanket host allow.
 
 <Plainly>
@@ -220,7 +220,7 @@ specs: [egress-policy@bbf2f492]
 ---
 layout: problem
 title: Blocked, and no idea why
-specs: [policy-ergonomics@c7016dac]
+specs: [policy-ergonomics@46a94f79]
 ---
 
 ::problem::
@@ -298,7 +298,7 @@ specs: [credential-broker@036bd52a]
 ---
 layout: problem
 title: One LLM endpoint, no admin hole
-specs: [llm-gateway@fb5869e4]
+specs: [llm-gateway@37adb449]
 adrs: ['0009']
 ---
 
@@ -313,7 +313,7 @@ adrs: ['0009']
 - An optional **LiteLLM sidecar on the egress network**, never on the agent network. The egress policy gains **exactly one host**.
 - The proxy allows **only inference paths** toward it; the gateway host is default-denied with those paths carved back in, so the entire management API, including routes LiteLLM adds later, is unreachable by construction.
 - A per-install **master key is injected by the proxy** and never enters the agent; provider keys reach the gateway sidecar only. `tjor gateway rotate-key` rotates it.
-- The session policy is generated from your base policy by the one parser: every section survives, the gateway's `POST` inference paths get their own exception, and a base policy that does not parse fails the launch before anything starts.
+- The session policy is generated from your base policy by the one parser: every section survives, the inference paths get exceptions for the methods they use, the result is parsed again before it is written, and a base policy that does not parse fails the launch before anything starts.
 
 <Plainly>
 <p>Keys reach the gateway and proxy sidecars as container env, visible to <code>docker inspect</code>, inside the docker-socket-trusted threat model (ADR 0009). The gateway host is exempt from the resolved-address guard. A live provider round-trip is a manual check; CI has no keys.</p>

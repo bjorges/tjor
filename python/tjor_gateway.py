@@ -22,7 +22,6 @@ import os
 import pathlib
 import secrets
 import sys
-import tomllib
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import tjor_policy  # noqa: E402 — the one policy parser (charter L4)
@@ -52,6 +51,14 @@ POST_INFERENCE_PATHS = (
     "/completions", "/v1/completions",
     "/embeddings", "/v1/embeddings",
     "/messages", "/v1/messages",
+)
+# The inference paths that are GET: model listing and health. They get a GET
+# exception for the same reason, so a restriction with `allow = []` (or one
+# that lists only POST) cannot take them down either. Together the two tuples
+# cover every inference path (a test holds that).
+GET_INFERENCE_PATHS = (
+    "/models", "/v1/models",
+    "/health/liveliness", "/health/readiness",
 )
 
 
@@ -125,12 +132,16 @@ def render_config(models):
 
 
 def _toml_str(s):
-    """Quote a value as a TOML basic string."""
-    return '"' + str(s).replace("\\", "\\\\").replace('"', '\\"') + '"'
+    """Quote a value as a TOML basic string. A JSON string literal is one:
+    the escapes JSON emits (`\\"`, `\\\\`, `\\n`, `\\t`, `\\uXXXX` for the other
+    control characters and, with ensure_ascii, for everything non-ASCII) are
+    all TOML basic-string escapes, so a path or host pattern holding a
+    control character round-trips instead of breaking the generated file."""
+    return json.dumps(str(s), ensure_ascii=True)
 
 
 def augment_policy(base_toml, gateway_host, inference_paths=INFERENCE_PATHS,
-                   post_paths=POST_INFERENCE_PATHS):
+                   post_paths=POST_INFERENCE_PATHS, get_paths=GET_INFERENCE_PATHS):
     """Return a policy TOML that makes `gateway_host` an inference-ONLY host on
     top of the base policy: the host joins `hosts.block` (so it is denied for
     every path) and each inference path is added as a `paths.allow` carve-out
@@ -141,9 +152,13 @@ def augment_policy(base_toml, gateway_host, inference_paths=INFERENCE_PATHS,
     the launch loudly, never be re-emitted without the part that failed), and
     the result is serialised from the parsed Policy, so nothing the parser
     accepted can be dropped and nothing it rejected can be healed. The POST
-    inference paths get a `[[methods.except]]` POST rule on the gateway host.
-    Comments are not kept (this is a generated session policy); the result is
-    re-validated by the policy parser downstream.
+    inference paths get a `[[methods.except]]` POST rule on the gateway host,
+    the GET ones (model listing, health) a GET rule. Comments are not kept
+    (this is a generated session policy). Before it is returned the result is
+    parsed by the same parser and compared, rule for rule, with what was meant
+    to be written: a serialisation that does not round-trip raises here, with
+    a message that says so, instead of failing closed later as "invalid
+    policy" with no hint of why.
     """
     base = tjor_policy.parse_policy(base_toml, source="base policy")
     if not base.valid:
@@ -159,9 +174,10 @@ def augment_policy(base_toml, gateway_host, inference_paths=INFERENCE_PATHS,
     p_block = list(base.path_block)
     m_restrict = list(base.method_restrict)
     m_except = list(base.method_except)
-    for pth in post_paths:
-        if (gateway_host, pth, frozenset({"POST"})) not in m_except:
-            m_except.append((gateway_host, pth, frozenset({"POST"})))
+    for paths, method in ((post_paths, "POST"), (get_paths, "GET")):
+        for pth in paths:
+            if (gateway_host, pth, frozenset({method})) not in m_except:
+                m_except.append((gateway_host, pth, frozenset({method})))
 
     def _list(values):
         return "[" + ", ".join(_toml_str(v) for v in values) + "]"
@@ -177,7 +193,17 @@ def augment_policy(base_toml, gateway_host, inference_paths=INFERENCE_PATHS,
     for h, p, methods in m_except:
         out += ["[[methods.except]]", f"host = {_toml_str(h)}", f"path = {_toml_str(p)}",
                 f"methods = {_list(sorted(methods))}", ""]
-    return "\n".join(out) + "\n"
+    text = "\n".join(out) + "\n"
+
+    check = tjor_policy.parse_policy(text, source="augmented policy")
+    if not check.valid:
+        raise ValueError("the augmented policy does not parse: " + "; ".join(check.errors))
+    meant = (base.mode, allow, block, p_allow, p_block, m_restrict, m_except)
+    got = (check.mode, check.host_allow, check.host_block, check.path_allow, check.path_block,
+           check.method_restrict, check.method_except)
+    if got != meant:
+        raise ValueError("the augmented policy does not round-trip through the policy parser")
+    return text
 
 
 def _main(argv):

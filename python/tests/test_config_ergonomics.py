@@ -113,6 +113,43 @@ class TestPolicyEdit:
         assert pol.valid and set(pol.host_allow) == {"a.test", "b.test"}
         assert pol.method_restrict == [("a.test", frozenset({"GET"}))]
 
+    def test_crlf_file_keeps_one_hosts_table(self, tmp_path):
+        # Windows line endings: `[hosts]\r` must still be recognised as the
+        # table (else a second one is appended, a TOML error) and the file
+        # keeps its own line endings.
+        p = tmp_path / "policy.toml"
+        p.write_bytes(b'mode = "strict-allow"\r\n\r\n[hosts]  # the table\r\nallow = [\r\n  "a.test",\r\n]\r\n')
+        tjor_policy_edit.add_hosts(str(p), ["b.test"])
+        raw = p.read_bytes()
+        assert raw.count(b"[hosts]") == 1 and b"\n" not in raw.replace(b"\r\n", b"")
+        pol = tjor_policy.load_policy(str(p))
+        assert pol.valid and set(pol.host_allow) == {"a.test", "b.test"}
+        q = tmp_path / "bare.toml"
+        q.write_bytes(b'mode = "strict-allow"\r\n[hosts]\r\nblock = ["x.test"]\r\n')
+        tjor_policy_edit.add_hosts(str(q), ["c.test"])
+        pol = tjor_policy.load_policy(str(q))
+        assert pol.valid and pol.host_allow == ["c.test"] and q.read_bytes().count(b"[hosts]") == 1
+
+    def test_indented_next_table_ends_the_hosts_body(self, tmp_path):
+        # TOML allows an indented table header; the body of [hosts] ends there
+        # too, so the restrict rule's `allow` is never the insertion point.
+        p = tmp_path / "policy.toml"
+        p.write_text(
+            'mode = "strict-allow"\n[hosts]\nblock = ["bad.test"]\n\n'
+            '  [[methods.restrict]]\n  host = "api.test"\n  allow = ["GET"]\n'
+        )
+        tjor_policy_edit.add_hosts(str(p), ["that.host"])
+        pol = tjor_policy.load_policy(str(p))
+        assert pol.valid, pol.errors
+        assert pol.host_allow == ["that.host"] and pol.method_restrict == [("api.test", frozenset({"GET"}))]
+
+    def test_table_header_must_be_a_whole_line(self):
+        # The next-table search is anchored on a whole header line: an array
+        # continuation line or a key cannot end the [hosts] body early.
+        nt = tjor_policy_edit._NEXT_TABLE
+        assert nt.search("\n[paths]\n") and nt.search("\n  [[methods.restrict]]  # c\n") and nt.search("\n[hosts]\r\n")
+        assert not nt.search('\n["a.test"],\n') and not nt.search("\n[x = 1\n") and not nt.search("\nallow = [\n")
+
     def test_refuses_to_write_invalid(self, tmp_path):
         p = tmp_path / "policy.toml"
         p.write_text("mode = [broken\n")                          # unparseable

@@ -7,6 +7,7 @@ import json
 import subprocess
 import sys
 from pathlib import Path
+from urllib.parse import urlsplit
 
 import pytest
 
@@ -46,7 +47,13 @@ def cli_verdict(url: str, method: str) -> dict:
     )
     verdict = json.loads(proc.stdout)
     assert (proc.returncode == 0) == verdict["allowed"], "CLI exit code disagrees with verdict"
-    verdict.pop("header_guards")        # the CLI's note field, not part of the verdict
+    # The CLI's JSON is the verdict plus ONE declared field: whether the host
+    # is method-restricted (the proxy's header guards, unseen by a preview).
+    # Checked against the module API here, not discarded, so the schema cannot
+    # drift silently; the verdict keys themselves are compared below.
+    host = urlsplit(url if "//" in url else "//" + url).netloc
+    assert verdict.pop("header_guards") == tp.method_restricted(tp.load_policy(POLICY_FILE), host), url
+    assert set(verdict) == {"allowed", "rule", "pattern"}, verdict
     return verdict
 
 

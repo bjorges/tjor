@@ -249,6 +249,22 @@ On a host matched by a restrict rule, the proxy SHALL deny a request that asks f
 - **WHEN** the agent sends a request whose method is literally `upgrade` to a host restricted to `GET`
 - **THEN** it is denied with `method-block:upgrade`, which the denial log and its hints treat as a non-standard method token
 
+### Requirement: The guards judge the policy the verdict used
+
+For one request the proxy SHALL read the policy once and judge the verdict, the header guards and the host's restricted status on that one reading; it SHALL record the judged host and that status on the flow, and refuse a `101` on what was recorded, never on a fresh reading. An invalid policy SHALL read as restricted, and a flow without a recorded judgement SHALL have its `101` refused.
+
+#### Scenario: A policy reload between the verdict and the guards
+- **WHEN** the policy file becomes invalid, or loses its restrict rule, between a request's verdict and its header guards
+- **THEN** a GET with `Upgrade` to the formerly restricted host is still denied with `header-block:upgrade`, because the guards judged the reading the verdict used
+
+#### Scenario: A policy reload between a request and its 101
+- **WHEN** a request to a restricted host was judged and the policy file then becomes invalid or loses its restrict rule before the upstream answers `101`
+- **THEN** the `101` is refused on the restriction recorded for that request, with `header-block:upgrade-response` logged on the judged host
+
+#### Scenario: The raw method or nothing
+- **WHEN** a flow reaches the proxy without the raw method bytes
+- **THEN** it is denied with `fail-closed:bad-method`; the proxy never falls back to mitmproxy's upper-cased method, which would judge a raw `get` as `GET`
+
 ### Requirement: The method gate's limits are stated
 
 The README, this specification and the overview slide SHALL state what the gate does not do, as listed in the scenario below.
