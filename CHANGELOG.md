@@ -5,6 +5,8 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
 ## [Unreleased]
 
+## [0.22.0] — 2026-10-31 — Task-aware launch, task notes, egress method gate
+
 ### Added
 - **Task-aware harness launch** (#73). tjor owns the harness command line when
   the user config asks it to: `[harness.<name>] args` (opencode, claude,
