@@ -27,7 +27,7 @@ class TestParsers:
             '    bad "not a check"\n'
         )
         names = gbm.parse_landlock(text)
-        # literals with `$` (the plumbing) and non-check/ok lines are skipped
+        # the ok()/check() plumbing lines and non-check/ok lines are not statements
         assert names == [
             "outside-tree read is kernel-denied",
             "masked .env cannot be unlinked in-cage",
@@ -37,6 +37,27 @@ class TestParsers:
     def test_parse_landlock_dedupes(self):
         text = 'check "same label"\ncheck "same label"\n'
         assert gbm.parse_landlock(text) == ["same label"]
+
+    @pytest.mark.parametrize("line,needle", [
+        ('check "${label}: error names the conflict" test x', "literal name"),
+        ('    ok "$1 aborts"', "literal name"),
+        ("check 'single-quoted name' test x", "single quotes"),
+        ("  ok 'also single'", "single quotes"),
+    ])
+    def test_parse_landlock_refuses_names_it_cannot_register(self, line, needle):
+        # A check the matrix cannot list is an error, never a silent skip
+        # (PR #89 review): the generator and `--check` go red naming the line.
+        text = 'check "fine" true\n' + line + '\n'
+        with pytest.raises(gbm.SuiteParseError, match=needle) as exc:
+            gbm.parse_landlock(text, "tests/integration/some_test.sh")
+        assert "some_test.sh:2" in str(exc.value)
+
+    def test_main_reports_an_unregistrable_check_and_fails(self, monkeypatch, capsys):
+        def boom():
+            raise gbm.SuiteParseError("tests/integration/x_test.sh:7: check name holds `$`")
+        monkeypatch.setattr(gbm, "parsed_names", boom)
+        assert gbm.main(["gen", "--check"]) == 1
+        assert "x_test.sh:7" in capsys.readouterr().err
 
 
 class TestCrossCheck:
