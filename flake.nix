@@ -36,9 +36,13 @@
             runHook preInstall
             mkdir -p "$out/libexec/tjor" "$out/bin"
             cp -R . "$out/libexec/tjor"
-            # The wrapper execs the real script, so the launcher resolves its own
-            # tree (TJOR_ROOT) from bin/tjor's physical path under libexec.
-            makeWrapper "$out/libexec/tjor/bin/tjor" "$out/bin/tjor" \
+            # The wrapper runs the pinned bash with the real script as its
+            # argument: the script's shebang stays as written (it is not
+            # consulted, so the check below works inside nix's build sandbox,
+            # which has no /usr/bin/env), and the launcher still resolves its
+            # own tree (TJOR_ROOT) from the script's physical path under libexec.
+            makeWrapper "${pkgs.bash}/bin/bash" "$out/bin/tjor" \
+              --add-flags "$out/libexec/tjor/bin/tjor" \
               --prefix PATH : ${pkgs.lib.makeBinPath [ pkgs.bash pkgs.python3 pkgs.git pkgs.openssl ]}
             runHook postInstall
           '';
