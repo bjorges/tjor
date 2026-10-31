@@ -65,7 +65,12 @@ $ git tag vX.Y.Z && git push origin vX.Y.Z
 ```
 
 The tag triggers `publish-images.yml`: multi-arch agent and proxy images to GHCR and the GitHub
-Release with that CHANGELOG section as its notes. Tagging is the only manual release step.
+Release with that CHANGELOG section as its notes. The Homebrew tap
+([bjorges/homebrew-tap](https://github.com/bjorges/homebrew-tap)) follows on its own: its hourly
+workflow sees the new release, rewrites the formula's url and checksum, installs and tests it with
+Homebrew, and commits the bump, so `brew install bjorges/tap/tjor` serves the new version within
+the hour (a failed check leaves the tap on the previous version and that run red). Tagging is the
+only manual release step.
 
 ## Dependencies
 
