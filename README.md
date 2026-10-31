@@ -12,10 +12,22 @@ tjor runs AI coding agents (Claude Code, opencode, GitHub Copilot CLI) inside a 
 $ brew install bjorges/tap/tjor
 ```
 
+or, with nix (flakes), run it without installing or install it into your profile:
+
+```console
+$ nix run github:bjorges/tjor -- doctor
+$ nix profile install github:bjorges/tjor
+```
+
 Requires a Docker engine with compose v2 — **Colima**, Docker Desktop, or a
 native Linux engine — plus bash ≥ 4.4, python3 ≥ 3.11, git, and openssl (all
-but Docker are usually already present). `tjor doctor` checks them and names
-anything missing. (No brew? Clone the repo and run `./bin/tjor`.)
+but Docker are usually already present; the nix package brings its own
+pinned bash, python, git and openssl). `tjor doctor` checks them and names
+anything missing. (Neither? Clone the repo and run `./bin/tjor`.) Both
+package managers install a **release**: the launcher pulls the prebuilt
+images for its version instead of building them (see Prebuilt images below),
+and so does `nix run .` from a checkout, because a nix store copy carries no
+`.git`; to build the images from source, run `./bin/tjor` from the checkout.
 
 ## Quickstart
 

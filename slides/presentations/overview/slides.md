@@ -509,7 +509,7 @@ specs: [agent-profiles@7ab80e54]
 ---
 layout: problem
 title: An image you didn't build
-specs: [image-distribution@c9dbc811, cage-image@b791d30d]
+specs: [image-distribution@36f9144e, cage-image@b791d30d]
 adrs: ['0008']
 ---
 
@@ -520,7 +520,7 @@ adrs: ['0008']
 
 ::solution::
 
-- A **git checkout always builds locally** and never pulls. Installed copies pull the release's image, **by digest** when pinned; a bare-tag pull prints an integrity notice.
+- A **git checkout always builds locally** and never pulls. Installed copies (Homebrew, the nix package, `nix run` too) pull the release's image, **by digest** when pinned; a bare-tag pull prints an integrity notice.
 - Every tool download is **SHA256-gated**; CI proves a tampered checksum fails the build. The build context is **deny-by-default**: only listed `COPY` sources enter it, so a state dir or credential beside the Dockerfile stays out unless someone allowlists it.
 - Images are **uid-agnostic and multi-arch**; the agent is **non-root** with its uid aligned to yours at start.
 - Harness **self-update is disabled**; instructions are **image cargo**, re-deployed on every start in each harness's dialect.
@@ -676,7 +676,7 @@ title: The boundary, not the prompt, is the policy.
 ---
 
 ```console
-$ brew install bjorges/tap/tjor
+$ brew install bjorges/tap/tjor      # or: nix profile install github:bjorges/tjor
 $ tjor doctor && tjor conformance
 $ cd ~/your/project && tjor run
 ```

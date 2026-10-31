@@ -24,6 +24,13 @@ section to tune or require it.
 $ brew install bjorges/tap/tjor
 ```
 
+Or with nix (flakes enabled): `nix run github:bjorges/tjor -- doctor` runs it
+without installing anything, `nix profile install github:bjorges/tjor`
+installs it into your profile. The package wraps the launcher with its own
+pinned bash, python, git and openssl; Docker stays a host requirement. A
+store copy is an installed release (no `.git`), so it pulls the prebuilt
+images for its version, and so does `nix run .` from a checkout.
+
 Or run from a checkout (always builds images locally from source):
 
 ```console
