@@ -256,6 +256,27 @@ jobs:
       - name: run uid-agnostic image test
         run: tests/integration/uid_test.sh
 
+  nix:
+    name: nix flake (build, help, check)
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+      # --no-update-lock-file: a flake.lock that no longer matches flake.nix
+      # fails here instead of being rewritten (the lock is the pin).
+      - name: build the package from the committed lock
+        run: nix build .#tjor --no-update-lock-file --print-build-logs
+      - name: the wrapped launcher starts and prints its usage
+        run: ./result/bin/tjor help | grep -q "fail-closed container cage"
+      - name: shebangs are as written (the entrypoints are copied into images)
+        run: |
+          for f in bin/tjor images/agent/entrypoint.sh proxy/entrypoint.sh; do
+            [ "$(head -1 "result/libexec/tjor/$f")" = "$(head -1 "$f")" ] || { echo "::error::$f shebang was rewritten in the store copy"; exit 1; }
+          done
+      - name: nix flake check
+        run: nix flake check --no-update-lock-file --print-build-logs
+
   multiarch-build:
     name: agent image builds multi-arch (amd64+arm64, no push)
     runs-on: ubuntu-latest

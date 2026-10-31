@@ -5,6 +5,19 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Added
+- **Nix flake** (#25): `nix run github:bjorges/tjor` and `nix profile install
+  github:bjorges/tjor` as the second package manager after Homebrew. The
+  package installs the tree under `libexec` and wraps `bin/tjor` with pinned
+  bash, python, git and openssl (nixpkgs pinned by `flake.lock`); Docker with
+  compose v2 stays a host requirement. Shebangs are left as written, so the
+  entrypoint scripts copied into locally built images keep working. A store
+  copy is an installed release to the launcher (no `.git`, no source marker):
+  it pulls the prebuilt images for its version, and so does `nix run .` from
+  a checkout; `./bin/tjor` from the checkout still builds from source. CI
+  builds the package, runs `tjor help` through the wrapper, checks the
+  shebangs and runs `nix flake check`.
+
 ## [0.22.0] — 2026-10-31 — Task-aware launch, task notes, egress method gate
 
 ### Added

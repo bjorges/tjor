@@ -37,6 +37,10 @@ With a published registry configured (the default), `tjor run` from an **install
 - **WHEN** `tjor run` is invoked from a git checkout or a self-installed tree
 - **THEN** the image is built locally from that tree and no registry pull is attempted
 
+#### Scenario: A package manager's copy is an installed release
+- **WHEN** `tjor run` is invoked from a Homebrew install or a nix store copy (`nix profile install`, `nix run`, including `nix run .` from a checkout, whose store copy carries no `.git` and no marker)
+- **THEN** it is an installed release: the published image for its version is pulled when reachable, and the README says so beside the install commands, naming `./bin/tjor` from a checkout as the way to build from source
+
 ### Requirement: Published images stay reproducible from pins
 
 A published image SHALL be built from the same pinned tool versions and checksums in `config/tjor.toml` that a local build uses; the registry is a cache of that build, not an independent source of truth.
