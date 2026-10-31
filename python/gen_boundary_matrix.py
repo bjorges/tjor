@@ -1038,32 +1038,46 @@ def parse_probes(text: str) -> list[str]:
     return re.findall(r'@probe\("([^"]+)"\)', text)
 
 
-def parse_landlock(text: str) -> list[str]:
-    """`check "<literal>"` / `ok "<literal>"` at statement start; skip literals
-    with `$` (the ok()/check() plumbing and variable-bearing messages)."""
+class SuiteParseError(ValueError):
+    """A check name the matrix cannot register: the generator refuses rather
+    than skips it, so a guarantee never goes unlisted in silence."""
+
+
+def parse_landlock(text: str, where: str = "suite") -> list[str]:
+    """`check "<literal>"` / `ok "<literal>"` at statement start. The names
+    feed REGISTRY, so each must be one double-quoted literal: a name holding
+    `$` (a variable-bearing message) or written in single quotes is a
+    SuiteParseError, never a silent skip (PR #89 review: a skipped check is a
+    guarantee the matrix does not list). The ok()/check() plumbing lines
+    (`ok()  { … }`, `check() { … }`) are not statements and are not matched."""
     names: list[str] = []
     seen: set[str] = set()
-    for line in text.splitlines():
+    for lineno, line in enumerate(text.splitlines(), 1):
+        if re.match(r"\s*(?:check|ok)\s+'", line):
+            raise SuiteParseError(f"{where}:{lineno}: check name in single quotes; the matrix needs one double-quoted literal")
         m = re.match(r'\s*(?:check|ok)\s+"([^"]*)"', line)
         if not m:
             continue
         name = m.group(1)
-        if "$" in name or name in seen:
+        if "$" in name:
+            raise SuiteParseError(f"{where}:{lineno}: check name holds `$` ({name!r}); the matrix needs a literal name — "
+                                  "put the variable in the command, not the name")
+        if name in seen:
             continue
         seen.add(name)
         names.append(name)
     return names
 
 
+SUITE_FILES = (LANDLOCK_FILE, WORKSPACE_GATE_FILE, SELF_MOUNT_FILE, GITCHECK_FILE,
+               WORKTREE_FILE, TASK_NOTES_FILE, HARNESS_LAUNCH_FILE)
+
+
 def parsed_names() -> list[str]:
-    return (parse_probes(PROBES_FILE.read_text())
-            + parse_landlock(LANDLOCK_FILE.read_text())
-            + parse_landlock(WORKSPACE_GATE_FILE.read_text())
-            + parse_landlock(SELF_MOUNT_FILE.read_text())
-            + parse_landlock(GITCHECK_FILE.read_text())
-            + parse_landlock(WORKTREE_FILE.read_text())
-            + parse_landlock(TASK_NOTES_FILE.read_text())
-            + parse_landlock(HARNESS_LAUNCH_FILE.read_text()))
+    names = parse_probes(PROBES_FILE.read_text())
+    for f in SUITE_FILES:
+        names += parse_landlock(f.read_text(), _rel(f))
+    return names
 
 
 def cross_check(names: list[str]) -> list[str]:
@@ -1123,7 +1137,11 @@ def _rel(p: Path) -> Path | str:
 
 def main(argv: list[str]) -> int:
     check = "--check" in argv[1:]
-    names = parsed_names()
+    try:
+        names = parsed_names()
+    except SuiteParseError as exc:
+        print(f"boundary-matrix: a suite has a check the matrix cannot register: {exc}", file=sys.stderr)
+        return 1
     errors = cross_check(names)
     if errors:
         print("boundary-matrix: REGISTRY is out of sync with the suites:", file=sys.stderr)
