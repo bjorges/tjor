@@ -1,7 +1,14 @@
 {
   "$schema": "https://docs.renovatebot.com/renovate-schema.json",
-  "extends": ["config:recommended", "group:allNonMajor", "schedule:weekly"],
+  "extends": [
+    "config:recommended",
+    "group:allNonMajor",
+    "schedule:weekly"
+  ],
   "timezone": "Europe/Oslo",
   "automerge": false,
-  "prConcurrentLimit": 3
+  "prConcurrentLimit": 3,
+  "nix": {
+    "enabled": true
+  }
 }

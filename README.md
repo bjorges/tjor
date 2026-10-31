@@ -12,22 +12,25 @@ tjor runs AI coding agents (Claude Code, opencode, GitHub Copilot CLI) inside a 
 $ brew install bjorges/tap/tjor
 ```
 
-or, with nix (flakes), run it without installing or install it into your profile:
+or, with nix (flakes), pinned to a release tag, run it without installing or
+install it into your profile:
 
 ```console
-$ nix run github:bjorges/tjor -- doctor
-$ nix profile install github:bjorges/tjor
+$ nix run github:bjorges/tjor/v0.22.0 -- doctor
+$ nix profile install github:bjorges/tjor/v0.22.0
 ```
 
 Requires a Docker engine with compose v2 — **Colima**, Docker Desktop, or a
 native Linux engine — plus bash ≥ 4.4, python3 ≥ 3.11, git, and openssl (all
 but Docker are usually already present; the nix package brings its own
-pinned bash, python, git and openssl). `tjor doctor` checks them and names
-anything missing. (Neither? Clone the repo and run `./bin/tjor`.) Both
-package managers install a **release**: the launcher pulls the prebuilt
-images for its version instead of building them (see Prebuilt images below),
-and so does `nix run .` from a checkout, because a nix store copy carries no
-`.git`; to build the images from source, run `./bin/tjor` from the checkout.
+pinned bash, python, git, openssl and text tools). `tjor doctor` checks them
+and names anything missing. (Neither? Clone the repo and run `./bin/tjor`.)
+Both package managers install a **release**: the launcher pulls the prebuilt
+images for its version instead of building them, by tag unless you pin a
+digest (see Prebuilt images below), and so does `nix run .` from a checkout,
+because a nix store copy carries no `.git`; to build the images from source,
+run `./bin/tjor` from the checkout. The nix package is built and checked in
+CI on x86_64-linux only.
 
 ## Quickstart
 
@@ -457,8 +460,9 @@ it builds locally as before. `tjor build` always builds locally.
 
 **Trust note:** pulling a tag trusts the registry and the publish pipeline,
 where a local build trusts only the audited Dockerfile and its checksummed
-downloads. A git checkout therefore *always* builds locally, and a tag pull
-prints an integrity notice. For a verified pull, pin the image by digest
+downloads. `./bin/tjor` from a git checkout therefore *always* builds locally
+(a nix store copy, `nix run .` included, is an installed copy and pulls),
+and a tag pull prints an integrity notice. For a verified pull, pin the image by digest
 (`[images.digests]`); to always build from source, set `[images] publish =
 false`. See [ADR 0008](docs/decisions/0008-prebuilt-image-trust.md) and
 [INSTALL.md](INSTALL.md).

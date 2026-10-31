@@ -81,5 +81,9 @@ Tagging is the only manual release step.
 ## Dependencies
 
 Renovate opens one grouped pull request per week for non-major updates (actions digests, images,
-the slides' npm packages). Review it like any other change: a digest bump pulls new upstream code
-into CI. Major updates arrive as their own PRs.
+the slides' npm packages, and `flake.lock`, whose `nix` manager is enabled in `renovate.json`).
+Review it like any other change: a digest bump pulls new upstream code into CI. Major updates
+arrive as their own PRs. Two pins move by hand: the nixpkgs release branch in `flake.nix`
+(`nixos-YY.05` / `nixos-YY.11`, bumped when a NixOS release goes end of life, about a month after
+the next one ships, then `nix flake lock`), and the nix installer in `ci.yml` (a new version and
+the SHA256 of its release asset together).

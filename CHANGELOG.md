@@ -6,17 +6,33 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 ## [Unreleased]
 
 ### Added
-- **Nix flake** (#25): `nix run github:bjorges/tjor` and `nix profile install
-  github:bjorges/tjor` as the second package manager after Homebrew. The
-  package installs the tree under `libexec` and wraps `bin/tjor` with pinned
-  bash, python, git and openssl (nixpkgs pinned by `flake.lock`); Docker with
-  compose v2 stays a host requirement. Shebangs are left as written, so the
-  entrypoint scripts copied into locally built images keep working. A store
-  copy is an installed release to the launcher (no `.git`, no source marker):
-  it pulls the prebuilt images for its version, and so does `nix run .` from
-  a checkout; `./bin/tjor` from the checkout still builds from source. CI
-  builds the package, runs `tjor help` through the wrapper, checks the
-  shebangs and runs `nix flake check`.
+- **Nix flake** (#25): `nix run github:bjorges/tjor/v<X.Y.Z>` and `nix profile
+  install github:bjorges/tjor/v<X.Y.Z>` as the second package manager after
+  Homebrew (charter L11, L23). The package installs the tree under `libexec`
+  and wraps `bin/tjor` so the pinned bash runs it, with pinned python, git,
+  openssl, coreutils, findutils, grep, sed, awk, diff and tar first on PATH
+  (nixpkgs `nixos-26.05`, locked to a commit and hash by `flake.lock`; Renovate
+  moves the lock); Docker with compose v2 stays a host requirement. Shebangs
+  are left as written, so the entrypoint scripts copied into locally built
+  images keep working. A store copy is an installed release to the launcher
+  (no `.git`, no source marker): it pulls the prebuilt images for its version
+  by tag, as Homebrew does, and so does `nix run .` from a checkout;
+  `./bin/tjor` from the checkout still builds from source. CI (x86_64-linux
+  only) installs nix with a SHA256-gated installer, builds the package, runs
+  `tjor help` and `tjor doctor` through the wrapper (the store copy must
+  report itself as an installed release), checks the shebangs and runs
+  `nix flake check`.
+
+### Changed
+- **Mask discovery fails closed** (nix flake review). The `find` runs that
+  discover `.env` files and masked directories used to run with their
+  status and errors discarded, so a missing or crashing `find` meant "no
+  masks" in silence. A `find` that cannot run, or fails for any reason other
+  than an unreadable entry, now refuses the launch as a boundary failure
+  (exit 90); unreadable entries are reported loudly and are not a weakened
+  boundary, because the agent runs as the same uid and cannot read them
+  either. Preflight now also requires `find`, `grep`, `sed`, `awk`, `sort`,
+  `cut`, `tr`, `mktemp` and `readlink`.
 
 ## [0.22.0] — 2026-10-31 — Task-aware launch, task notes, egress method gate
 

@@ -4,7 +4,7 @@
      Regenerate: python3 python/gen_boundary_matrix.py
      Drift-checked by tests/doc_consistency.sh (`--check`). -->
 
-Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount`, `gitcheck`, `task-notes` and `harness-launch` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (552 checks total; 251 adversarial guarantees below, the rest functional/config checks the suites also run).
+Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount`, `gitcheck`, `task-notes` and `harness-launch` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (560 checks total; 255 adversarial guarantees below, the rest functional/config checks the suites also run).
 
 ## cage-network
 
@@ -97,6 +97,10 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | The secret is absent from the masked dotenv | `secret string is absent from the masked file` | landlock |
 | Workspace dotenv is masked (reads empty) | `workspace .env reads empty (masked)` | landlock |
 | auto mode degrades to INACTIVE (fail-safe) when Landlock is unavailable | `auto+unavailable degrades to INACTIVE` | landlock |
+| mask discovery: a failing find refuses the launch (exit 90), never reads as no masks | `mask discovery: any other find failure refuses the launch as a boundary failure` | workspace-gate |
+| mask discovery: a find that cannot run refuses the launch (exit 90) | `mask discovery: a find that cannot run refuses the launch` | workspace-gate |
+| mask discovery: hits found before an unreadable entry are kept | `mask discovery: the hits find did produce are kept` | workspace-gate |
+| mask discovery: unreadable entries warn loudly (the agent, as the same uid, cannot read them either) | `mask discovery: unreadable entries only warn, the launch goes on` | workspace-gate |
 | require mode aborts (exit 90) when Landlock is unavailable | `require+unavailable aborts with the boundary exit code 90` | landlock |
 | require mode never runs the harness when Landlock is unavailable | `require+unavailable did NOT run the harness` | landlock |
 

@@ -260,15 +260,40 @@ jobs:
     name: nix flake (build, help, check)
     runs-on: ubuntu-latest
     timeout-minutes: 15
+    permissions:
+      contents: read
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
-      - uses: DeterminateSystems/nix-installer-action@3138316df39ed29be04236d7ffc686fa525866aa # v23
+        with:
+          persist-credentials: false
+      # The installer binary comes from its pinned release and is SHA256-gated
+      # before it runs (charter L23: a download is pinned by checksum, not by
+      # URL). Stated residual: it still runs as root to create /nix and the
+      # daemon, as every nix install on a runner does. Bumping it means a new
+      # version AND a new checksum, computed from the release asset.
+      - name: install nix (pinned installer, SHA256-gated)
+        env:
+          NIX_INSTALLER_VERSION: v3.24.1
+          NIX_INSTALLER_SHA256_X86_64_LINUX: c3866cc8ed9cf64546e77b5791160a87ec628467b17cd2746d3b2ed258262df6
+        run: |
+          set -euo pipefail
+          curl -fsSL --retry 3 -o nix-installer \
+            "https://github.com/DeterminateSystems/nix-installer/releases/download/${NIX_INSTALLER_VERSION}/nix-installer-x86_64-linux"
+          echo "${NIX_INSTALLER_SHA256_X86_64_LINUX}  nix-installer" | sha256sum -c -
+          chmod +x nix-installer
+          sudo ./nix-installer install linux --no-confirm
+          echo "/nix/var/nix/profiles/default/bin" >> "$GITHUB_PATH"
       # --no-update-lock-file: a flake.lock that no longer matches flake.nix
       # fails here instead of being rewritten (the lock is the pin).
       - name: build the package from the committed lock
         run: nix build .#tjor --no-update-lock-file --print-build-logs
-      - name: the wrapped launcher starts and prints its usage
-        run: ./result/bin/tjor help | grep -q "fail-closed container cage"
+      - name: the wrapped launcher starts, resolves its tree and is an installed release
+        run: |
+          set -euo pipefail
+          ./result/bin/tjor help | grep -q "fail-closed container cage"
+          out="$(./result/bin/tjor doctor 2>&1 || true)"
+          grep -qE "^tjor root: +/nix/store/[^ ]+/libexec/tjor \(installed release $(cat VERSION)\)" <<<"${out}" \
+            || { printf '%s\n' "${out}" | head -20; echo "::error::doctor did not report the store copy as an installed release"; exit 1; }
       - name: shebangs are as written (the entrypoints are copied into images)
         run: |
           for f in bin/tjor images/agent/entrypoint.sh proxy/entrypoint.sh; do

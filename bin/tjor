@@ -47,6 +47,13 @@ preflight() {
     else missing+=("docker compose v2 (plugin or docker-compose binary) — brew install docker-compose"); fi
     command -v shasum >/dev/null || command -v sha256sum >/dev/null || missing+=("shasum or sha256sum")
     command -v openssl >/dev/null || missing+=("openssl — required to generate the constrained (pathlen:0) session CA")
+    # The text tools the launcher's own checks and mask discovery run (nix
+    # flake review, #25): a PATH without `find` once meant "no masks found",
+    # silently. Refused here, before anything is judged.
+    local tool
+    for tool in find grep sed awk sort cut tr mktemp readlink; do
+        command -v "${tool}" >/dev/null || missing+=("${tool} (coreutils/findutils) — the launcher's checks and mask discovery need it")
+    done
     if ((${#missing[@]})); then
         echo "tjor: missing host dependencies:" >&2
         printf '  - %s\n' "${missing[@]}" >&2
@@ -2060,6 +2067,31 @@ agent_cmd_print() { printf '%s\0' "${AGENT_CMD[@]}"; }
 # already masked, or one below a masked directory — structurally empty in-cage
 # already, and a mount there would fail on the read-only empty mountpoint.
 # Reads run_agent's masked/dirmasked through bash's dynamic scoping.
+# Mask discovery with its status kept (nix flake review, #25): `find` used to
+# run in a process substitution with stderr dropped, so a find that was
+# missing, killed or failing read as "no masks found", silently. Now a find
+# that could not run, or failed for any reason but an unreadable entry,
+# refuses the launch as a boundary failure; entries it could not read are
+# reported loudly and are no weakened boundary, because the agent runs as
+# the same uid and cannot read them either.
+discover_masks() { # $1 = out file (NUL-separated hits), $2 = root, $3.. = find expression; -print0 is appended
+    local out="$1"; shift
+    local root="$1" err rc=0
+    err="$(mktemp)" || die_boundary "mask discovery: cannot create a temp file"
+    find "$@" -print0 > "${out}" 2> "${err}" || rc=$?
+    if (( rc != 0 )); then
+        if (( rc < 126 )) && [[ -s "${err}" ]] && ! grep -qv "Permission denied" "${err}"; then
+            loud "mask discovery under $(safeprint "${root}") could not read some entries (the agent, as the same uid, cannot read them either):"
+            head -20 "${err}" | while IFS= read -r line; do echo "  $(safeprint "${line}")" >&2; done
+        else
+            local detail; detail="$(head -c 300 "${err}" | tr '\n' ' ')"
+            rm -f "${err}"
+            die_boundary "mask discovery under $(safeprint "${root}") failed (find exit ${rc}): $(safeprint "${detail}")"
+        fi
+    fi
+    rm -f "${err}"
+}
+
 mask_covered() { # $1 = host path → 0 when a mask already covers it
     local p="$1" prev
     [[ -n "${masked[${p}]:-}" ]] && return 0
@@ -2231,9 +2263,10 @@ run_agent() { # $1 = detach flag, $2.. = command
     # Works on every runtime, even where Landlock is unavailable; a mount
     # target cannot be unlinked or replaced from inside the container.
     # Residual (documented): a dotenv file created mid-session is not masked.
-    local mp deny_list entry mask_list empty_src
+    local mp deny_list entry mask_list empty_src hits
     declare -A masked=()
     local -A dirmasked=()
+    hits="$(mktemp)" || die_boundary "mask discovery: cannot create a temp file"
     # Directory masks ([landlock].mask_dirs, #43): extend the /dev/null-style
     # file masking to DIRECTORIES — a read-only EMPTY host dir bound over
     # each target makes it structurally empty in-cage on every runtime. This
@@ -2282,12 +2315,13 @@ for e in json.load(sys.stdin):
             else
                 for dir in "${safe[@]:-}"; do
                     [[ -n "${dir}" ]] || continue
+                    discover_masks "${hits}" "${dir}" -name .git -prune -o -type d -name "${entry}"
                     while IFS= read -r -d '' mp; do
                         mask_covered "${mp}" && continue
                         masked["${mp}"]=1; dirmasked["${mp}"]=1
                         mounts+=(--volume "${empty_src}:${mp}:ro")
                         echo "tjor: + dir mask $(safeprint "${mp}")" >&2
-                    done < <(find "${dir}" -name .git -prune -o -type d -name "${entry}" -print0 2>/dev/null)
+                    done < "${hits}"
                 done
             fi
         done <<<"${mask_list}"
@@ -2298,6 +2332,9 @@ for e in json.load(sys.stdin):
             [[ -n "${dir}" ]] || continue
             # NUL-delimited: a filename may contain anything but NUL. Skip
             # non-secret templates and .git internals.
+            discover_masks "${hits}" "${dir}" -name .git -prune -o -type f \
+                \( -name '.env' -o -name '.env.*' \) \
+                ! -name '*.example' ! -name '*.sample' ! -name '*.template'
             while IFS= read -r -d '' mp; do
                 mask_covered "${mp}" && continue
                 masked["${mp}"]=1
@@ -2306,12 +2343,10 @@ for e in json.load(sys.stdin):
                 # status line is what tells the operator a secret WAS masked,
                 # so it must not be spoofable by escape bytes in the name.
                 echo "tjor: + dotenv mask $(safeprint "${mp}")" >&2
-            done < <(find "${dir}" -name .git -prune -o -type f \
-                        \( -name '.env' -o -name '.env.*' \) \
-                        ! -name '*.example' ! -name '*.sample' ! -name '*.template' \
-                        -print0 2>/dev/null)
+            done < "${hits}"
         done
     fi
+    rm -f "${hits}"
     # Operator-configured extra mask paths ([landlock].deny_paths) — applied
     # INDEPENDENTLY of mask_dotenv (#48): the toggle above governs only the
     # automatic .env discovery; an explicitly configured deny path must never
