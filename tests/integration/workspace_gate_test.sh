@@ -195,7 +195,34 @@ git -C "${HOME}/wt" worktree add -q "${HOME}/wt-linked" >/dev/null 2>&1
 check "core.worktree: a linked worktree launches (containment holds)" launch_from "${HOME}/wt-linked"
 check "core.worktree: a subdirectory launch is unchanged" launch_from "${HOME}/wt/sub"
 
-# === 7. Help text names the workspace ======================================
+# === 7. Mask discovery keeps find's status (nix flake review, #25) ==========
+# discover_masks is the one place the launcher runs `find` for masks. A find
+# that cannot run or fails must refuse the launch (exit 90, the boundary
+# code); one that only could not read some entries must warn and keep the
+# hits it did produce (the agent, as the same uid, cannot read them either).
+MD="${WORK}/md"; mkdir -p "${MD}/tree/sub"; printf 'x' > "${MD}/tree/.env"; printf 'x' > "${MD}/tree/sub/.env.local"
+md_run() { ( discover_masks "${MD}/hits" "${MD}/tree" -type f -name '.env*' ) >/dev/null 2>"${MD}/out"; }
+check "mask discovery: a working find lists every hit" md_run
+check "mask discovery: both dotenv files are in the hits" bash -c "tr '\\0' '\\n' < '${MD}/hits' | grep -c '' | grep -qx 2"
+FAKEBIN="${MD}/bin"; mkdir -p "${FAKEBIN}"
+md_run_shim() { local rc=0; ( PATH="${FAKEBIN}:${PATH}" discover_masks "${MD}/hits" "${MD}/tree" -type f ) >/dev/null 2>"${MD}/out" || rc=$?; echo "${rc}" > "${MD}/rc"; }
+md_rc_is() { [[ "$(cat "${MD}/rc")" == "$1" ]]; }
+md_out_has() { grep -qF -- "$1" "${MD}/out"; }
+printf '#!/usr/bin/env bash\necho "find: /x: Permission denied" >&2; printf "%%s\\0" "$1/.env"; exit 1\n' > "${FAKEBIN}/find"; chmod +x "${FAKEBIN}/find"
+md_run_shim
+check "mask discovery: unreadable entries only warn, the launch goes on" md_rc_is 0
+check "mask discovery: the warning names the unreadable entry" md_out_has "Permission denied"
+check "mask discovery: the hits find did produce are kept" bash -c "tr '\\0' '\\n' < '${MD}/hits' | grep -qx '${MD}/tree/.env'"
+printf '#!/usr/bin/env bash\necho "find: something else went wrong" >&2; exit 1\n' > "${FAKEBIN}/find"
+md_run_shim
+check "mask discovery: any other find failure refuses the launch as a boundary failure" md_rc_is 90
+check "mask discovery: the refusal names find's exit status and message" md_out_has "find exit 1"
+printf '#!/usr/bin/env bash\nexit 127\n' > "${FAKEBIN}/find"
+md_run_shim
+check "mask discovery: a find that cannot run refuses the launch" md_rc_is 90
+rm -rf "${MD:?}"
+
+# === 8. Help text names the workspace ======================================
 check "help text names the workspace gate" bash -c "'${ROOT}/bin/tjor' help | grep -qF 'sensitive paths refused as the workspace or as --dir/--dir-ro unless --unsafe-dir'"
 
 echo

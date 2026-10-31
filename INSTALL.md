@@ -24,14 +24,26 @@ section to tune or require it.
 $ brew install bjorges/tap/tjor
 ```
 
-Or with nix (flakes enabled): `nix run github:bjorges/tjor -- doctor` runs it
-without installing anything, `nix profile install github:bjorges/tjor`
-installs it into your profile. The package wraps the launcher with its own
-pinned bash, python, git and openssl; Docker stays a host requirement. A
-store copy is an installed release (no `.git`), so it pulls the prebuilt
-images for its version, and so does `nix run .` from a checkout.
+Or with nix (flakes enabled), pinned to a release tag:
 
-Or run from a checkout (always builds images locally from source):
+```console
+$ nix run github:bjorges/tjor/v0.22.0 -- doctor        # run without installing
+$ nix profile install github:bjorges/tjor/v0.22.0      # or install into your profile
+```
+
+(`github:bjorges/tjor` without the tag follows the `main` branch, not a
+release.) The package wraps the launcher so the pinned bash runs it, with
+pinned python, git, openssl and the coreutils, findutils, grep, sed, awk,
+diff and tar it calls first on PATH; Docker stays a host requirement. Stated
+plainly: a store copy is an installed release (no `.git`), so it pulls the
+prebuilt agent images for its version **by tag**, with the integrity notice
+below, exactly as a Homebrew install does; the hash-pinned nix build covers
+the launcher, not the images. `nix run .` from a checkout is a store copy
+too, and pulls. CI builds and checks the package on x86_64-linux only; the
+other three systems are declared and built by whoever installs there.
+
+Or run `./bin/tjor` from a checkout (always builds images locally from
+source):
 
 ```console
 $ git clone https://github.com/bjorges/tjor && ./tjor/bin/tjor doctor
@@ -46,9 +58,10 @@ $ cd ~/your/project
 $ tjor run             # caged session in this repo
 ```
 
-An **installed** copy pulls a prebuilt agent image for its version on first
-run (fast); a **git checkout** always builds locally. Either way the first
-run may take a minute.
+An **installed** copy (Homebrew, nix, `nix run .` included) pulls a prebuilt
+agent image for its version on first run (fast); **`./bin/tjor` from a git
+checkout** always builds locally. Either way the first run may take a
+minute.
 
 ## Prebuilt images and trust
 

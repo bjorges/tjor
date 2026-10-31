@@ -286,6 +286,15 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
     "extra-dir gate: --unsafe-dir warns on an actually-overridden --dir": (WORKSPACE_GATE, "session-launch", "override: loud warning on --dir", False),
     "extra-dir gate: no override warning for an ordinary --dir": (WORKSPACE_GATE, "session-launch", "override: no spurious --dir warning", False),
     "help text names the workspace gate": (WORKSPACE_GATE, "session-launch", "launch-UX: help text", False),
+    # mask discovery keeps find's status (nix flake review, #25): never "no masks" in silence
+    "mask discovery: a working find lists every hit": (WORKSPACE_GATE, "kernel-sandbox", "mask discovery: a working find lists every hit", False),
+    "mask discovery: both dotenv files are in the hits": (WORKSPACE_GATE, "kernel-sandbox", "mask discovery: nested dotenv files are found", False),
+    "mask discovery: unreadable entries only warn, the launch goes on": (WORKSPACE_GATE, "kernel-sandbox", "mask discovery: unreadable entries warn loudly (the agent, as the same uid, cannot read them either)", True),
+    "mask discovery: the warning names the unreadable entry": (WORKSPACE_GATE, "kernel-sandbox", "mask discovery: the warning names the unreadable entry", False),
+    "mask discovery: the hits find did produce are kept": (WORKSPACE_GATE, "kernel-sandbox", "mask discovery: hits found before an unreadable entry are kept", True),
+    "mask discovery: any other find failure refuses the launch as a boundary failure": (WORKSPACE_GATE, "kernel-sandbox", "mask discovery: a failing find refuses the launch (exit 90), never reads as no masks", True),
+    "mask discovery: the refusal names find's exit status and message": (WORKSPACE_GATE, "kernel-sandbox", "mask discovery: the refusal names find's exit status and message", False),
+    "mask discovery: a find that cannot run refuses the launch": (WORKSPACE_GATE, "kernel-sandbox", "mask discovery: a find that cannot run refuses the launch (exit 90)", True),
     # core.worktree redirect (#76): the reported toplevel must contain the launch dir
     "core.worktree: redirect toward a harmless directory is refused":
         (WORKSPACE_GATE, "session-launch", "A core.worktree redirect of the workspace is refused", True),

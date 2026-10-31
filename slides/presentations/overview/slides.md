@@ -520,7 +520,7 @@ adrs: ['0008']
 
 ::solution::
 
-- A **git checkout always builds locally** and never pulls. Installed copies (Homebrew, the nix package, `nix run` too) pull the release's image, **by digest** when pinned; a bare-tag pull prints an integrity notice.
+- **`./bin/tjor` from a git checkout always builds locally** and never pulls. Installed copies (Homebrew, the nix package, `nix run .` too) pull the release's image, **by digest** when pinned; a bare-tag pull prints an integrity notice.
 - Every tool download is **SHA256-gated**; CI proves a tampered checksum fails the build. The build context is **deny-by-default**: only listed `COPY` sources enter it, so a state dir or credential beside the Dockerfile stays out unless someone allowlists it.
 - Images are **uid-agnostic and multi-arch**; the agent is **non-root** with its uid aligned to yours at start.
 - Harness **self-update is disabled**; instructions are **image cargo**, re-deployed on every start in each harness's dialect.
