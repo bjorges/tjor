@@ -421,11 +421,20 @@ build_agent() { # $1 = harness list (comma separated)
     # No AGENT_UID build-arg: the image is uid-agnostic (default uid baked;
     # the entrypoint aligns to TJOR_AGENT_UID at start), so a local build is
     # portable and matches the published image.
-    # The legacy builder (no buildx) leaves TARGETARCH empty, so the
-    # Dockerfile would fall back to amd64; pass the daemon arch explicitly.
-    # With buildx/BuildKit the platform-provided value must not be overridden.
+    # The legacy builder leaves TARGETARCH empty: the gh, kubectl and cplt
+    # steps would fall back to amd64 while the opencode step falls back to the
+    # machine architecture; pass the daemon arch explicitly. BuildKit is used
+    # when DOCKER_BUILDKIT is truthy (Docker boolean parsing), or when unset or
+    # unparseable and buildx is installed; its platform-provided value must
+    # not be overridden.
     local -a arch_arg=()
-    if [[ "${DOCKER_BUILDKIT:-}" != "1" ]] && ! docker buildx version >/dev/null 2>&1; then
+    local use_buildkit=0
+    case "${DOCKER_BUILDKIT:-}" in
+        0|false|f|FALSE|False) use_buildkit=0 ;;
+        1|true|t|TRUE|True) use_buildkit=1 ;;
+        *) docker buildx version >/dev/null 2>&1 && use_buildkit=1 ;;
+    esac
+    if [[ "${use_buildkit}" == 0 ]]; then
         case "$(docker info --format '{{.Architecture}}' 2>/dev/null || uname -m)" in
             aarch64|arm64) arch_arg=(--build-arg TARGETARCH=arm64) ;;
             x86_64|amd64) arch_arg=(--build-arg TARGETARCH=amd64) ;;
