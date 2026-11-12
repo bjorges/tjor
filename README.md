@@ -185,7 +185,7 @@ exactly as given and nothing is added:
 
 ```toml
 [harness.opencode]
-args = ["--agent", "bob"]              # likewise [harness.claude], [harness.copilot]
+args = ["--standalone"]            # likewise [harness.claude], [harness.copilot]
 [task]
 prompt = "Task {task}. Notes: {task_dir}."   # first message of a fresh conversation
 resume = "auto"                         # "never" (default) | "auto"

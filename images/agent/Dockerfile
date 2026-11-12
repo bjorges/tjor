@@ -117,10 +117,14 @@ ARG OPENCODE_SHA256_ARM64
 ARG OPENCODE_SHA256_X64
 RUN set -eu; \
     case ",${HARNESS}," in *,opencode,*) \
-        case "${TARGETARCH}" in \
+        arch="${TARGETARCH:-}"; \
+        if [ -z "${arch}" ]; then \
+            case "$(uname -m)" in aarch64|arm64) arch=arm64 ;; x86_64|amd64) arch=amd64 ;; esac; \
+        fi; \
+        case "${arch}" in \
             arm64) asset="opencode-linux-arm64.tar.gz"; sha="${OPENCODE_SHA256_ARM64}" ;; \
             amd64) asset="opencode-linux-x64.tar.gz"; sha="${OPENCODE_SHA256_X64}" ;; \
-            *) echo "unsupported TARGETARCH: ${TARGETARCH}" >&2; exit 1 ;; \
+            *) echo "unsupported architecture: ${arch:-unknown}" >&2; exit 1 ;; \
         esac; \
         [ -n "${OPENCODE_VERSION}" ] && [ -n "${sha}" ] || { echo "missing opencode version/sha build args" >&2; exit 1; }; \
         curl -fsSLo /tmp/opencode.tgz \
@@ -166,7 +170,7 @@ RUN set -eu; \
         if [ "$rc" -ne 0 ]; then echo "tjor image: $cli --help exited $rc (the flag check needs its help text; first lines follow)" >&2; printf '%s\n' "$out" | head -n 8 >&2; exit 1; fi; \
         for f in "$@"; do printf '%s\n' "$out" | grep -qE -- "$f" \
             || { echo "tjor image: $cli --help no longer lists a flag matching '$f' — the launcher relies on it (#73, harness-launch)" >&2; exit 1; }; done; }; \
-    case ",${HARNESS}," in *,opencode,*) chk opencode '(^|[[:space:],])--prompt([[:space:]=]|$)' '(^|[[:space:],])--continue([[:space:]=]|$)' ;; esac; \
+    case ",${HARNESS}," in *,opencode,*) chk opencode '(^|[[:space:],])--prompt([[:space:],=]|$)' '(^|[[:space:],])--continue([[:space:],=]|$)' ;; esac; \
     case ",${HARNESS}," in *,claude,*)   chk claude '\[prompt\]' '(^|[[:space:],])--continue([[:space:]=]|$)' ;; esac; \
     case ",${HARNESS}," in *,copilot,*)  chk copilot '(^|[[:space:],])--interactive([[:space:]=]|$)' '(^|[[:space:],])--continue([[:space:]=]|$)' ;; esac
 
