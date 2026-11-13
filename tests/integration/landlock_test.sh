@@ -285,8 +285,8 @@ PROBE
     check "secret string is absent from the masked file" bash -c "! grep -q '${SECRET}' '${R}'"
     check_has ".env.example (template) is NOT masked" "$(field template)" "TEMPLATE"
     check_is "masked .env cannot be unlinked in-cage" "$(field unlink)" "refused"
-    check "secret nowhere in the agent env" bash -c \
-        "! docker exec '${CTR}' sh -c env | grep -q '${SECRET}'"
+    AGENT_ENV="$(tmo 60 docker exec "${CTR}" sh -c env 2>/dev/null || true)"
+    check_lacks "secret nowhere in the agent env" "${AGENT_ENV}" "${SECRET}"
 
     # Kernel tier (in the wrapped tree): outside-tree denied, workspace usable.
     check_is "outside-tree read is kernel-denied" "$(dn outside_read)" EACCES
@@ -640,27 +640,27 @@ rm -rf "${WTWS}" "${WTMAIN}"
 
 # ---- B. handoff branches on the image, Landlock forced unavailable -----------
 # auto + unavailable: LOUD degradation, still runs.
-out="$(docker run --rm --security-opt seccomp="${DENY}" -e TJOR_LANDLOCK=auto \
-        "${IMAGE}" sh -c 'echo HARNESS-RAN' 2>&1)"
+out="$(tmo 120 docker run --rm --security-opt seccomp="${DENY}" -e TJOR_LANDLOCK=auto \
+        "${IMAGE}" sh -c 'echo HARNESS-RAN' 2>&1 || true)"
 check_has "auto+unavailable degrades to INACTIVE" "${out}" "kernel-sandbox: INACTIVE"
 check_has "auto+unavailable still runs the harness" "${out}" "HARNESS-RAN"
 
 # require + unavailable: abort BEFORE the harness, with the documented
 # boundary exit code (#40, TJOR_EXIT_BOUNDARY=90), not a generic failure.
 req_code=0
-docker run --rm --security-opt seccomp="${DENY}" -e TJOR_LANDLOCK=require \
+tmo 120 docker run --rm --security-opt seccomp="${DENY}" -e TJOR_LANDLOCK=require \
         "${IMAGE}" sh -c 'echo SHOULD-NOT-RUN' > "${SCRATCH}/req.out" 2>&1 || req_code=$?
 check "require+unavailable aborts with the boundary exit code 90" test "${req_code}" -eq 90
 check "require+unavailable did NOT run the harness" bash -c "! grep -q 'SHOULD-NOT-RUN' '${SCRATCH}/req.out'"
 check "require+unavailable states FATAL with the reason" grep -q "FATAL: kernel-sandbox required" "${SCRATCH}/req.out"
 
 # off: unwrapped, disabled statement.
-out="$(docker run --rm -e TJOR_LANDLOCK=off "${IMAGE}" sh -c 'echo HARNESS-RAN' 2>&1)"
+out="$(tmo 120 docker run --rm -e TJOR_LANDLOCK=off "${IMAGE}" sh -c 'echo HARNESS-RAN' 2>&1 || true)"
 check_has "off states disabled-by-config" "${out}" "kernel-sandbox: disabled by config"
 check_has "off runs the harness unwrapped" "${out}" "HARNESS-RAN"
 
 # invalid mode: FATAL, nonzero.
-if docker run --rm -e TJOR_LANDLOCK=always "${IMAGE}" sh -c 'echo SHOULD-NOT-RUN' > "${SCRATCH}/inv.out" 2>&1; then
+if tmo 120 docker run --rm -e TJOR_LANDLOCK=always "${IMAGE}" sh -c 'echo SHOULD-NOT-RUN' > "${SCRATCH}/inv.out" 2>&1; then
     bad "invalid mode aborts (exit nonzero)"
 else
     ok "invalid mode aborts (exit nonzero)"
