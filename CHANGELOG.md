@@ -5,6 +5,11 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
 ## [Unreleased]
 
+## [0.23.0] — 2026-11-13 — OpenCode v2
+
+Breaking by design (pre-1.0 minor bump): opencode v2 replaces v1 in the image;
+launcher args and profile permission frontmatter must be migrated.
+
 ### Added
 - **Nix flake** (#25): `nix run github:bjorges/tjor/v<X.Y.Z>` and `nix profile
   install github:bjorges/tjor/v<X.Y.Z>` as the second package manager after
@@ -33,6 +38,21 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
   boundary, because the agent runs as the same uid and cannot read them
   either. Preflight now also requires `find`, `grep`, `sed`, `awk`, `sort`,
   `cut`, `tr`, `mktemp` and `readlink`.
+- **Bundled opencode upgraded from 1.18.28 to 2.2.7** (BREAKING). The image
+  installs the v2 release assets, pinned by per-architecture sha256. The v2
+  CLI has no `--pure` and no top-level `--agent`: launcher args must use
+  `--standalone`, and the default agent is set with `default_agent` in a
+  managed config. Profiles must use native v2 agent permission frontmatter;
+  v1 `permission:` is ignored by v2. The image build accepts v2's help
+  output, and on legacy (non-BuildKit) builders now selects the correct
+  architecture for gh, kubectl, cplt and opencode, including the
+  `DOCKER_BUILDKIT` boolean spellings.
+
+### Known issues
+- opencode v2 stores credentials in the `credential` table of `opencode.db`.
+  `reset creds` and `prune --creds-only` do not remove them and
+  `reset sessions` deletes them. Until fixed (#100), delete `opencode.db`,
+  `opencode.db-wal` and `opencode.db-shm` manually.
 
 ## [0.22.0] — 2026-10-31 — Task-aware launch, task notes, egress method gate
 
