@@ -152,6 +152,32 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
         (LANDLOCK, "kernel-sandbox", "Outside-tree read is kernel-denied", True),
     "outside-tree write is kernel-denied":
         (LANDLOCK, "kernel-sandbox", "Outside-tree write is kernel-denied", True),
+    "a denied path stays denied through /proc/self/root":
+        (LANDLOCK, "kernel-sandbox", "Denied paths stay denied through /proc links (self root)", True),
+    "a denied path stays denied through a /proc/self/cwd traversal":
+        (LANDLOCK, "kernel-sandbox", "Denied paths stay denied through /proc links (self cwd)", True),
+    "PID 1's environ is unreadable from the wrap":
+        (LANDLOCK, "kernel-sandbox", "Processes outside the sandbox keep their environment private (PID 1 environ)", True),
+    "PID 1's root link is unreadable from the wrap":
+        (LANDLOCK, "kernel-sandbox", "Processes outside the sandbox keep their environment private (PID 1 root)", True),
+    "PID 1's cwd link is unreadable from the wrap":
+        (LANDLOCK, "kernel-sandbox", "Processes outside the sandbox keep their environment private (PID 1 cwd)", True),
+    "an unsandboxed same-uid process's open fds are unreadable from the wrap whatever they point at":
+        (LANDLOCK, "kernel-sandbox", "Processes outside the sandbox keep their private entries (fd targets, granted and denied)", True),
+    "no host process is visible from the wrap (PID 1 is cplt, the pid namespace is the container's)":
+        (LANDLOCK, "kernel-sandbox", "The pid namespace is the container's (no host process)", True),
+    "a process in the sandbox cannot open the harness's memory when Yama ptrace_scope is 1 or higher":
+        (LANDLOCK, "kernel-sandbox", "Peer memory is closed to non-ancestors under Yama ptrace_scope >= 1", True),
+    "an unsandboxed same-uid process's environ is unreadable from the wrap":
+        (LANDLOCK, "kernel-sandbox", "Processes outside the sandbox keep their environment private (docker exec)", True),
+    "/proc is not writable under the wrap":
+        (LANDLOCK, "kernel-sandbox", "/proc grant is read-only (own comm write refused)", True),
+    "PID 1's exe and fd targets are unreadable from the wrap":
+        (LANDLOCK, "kernel-sandbox", "Processes outside the sandbox keep their private entries (PID 1 exe, fd targets)", True),
+    "a same-sandbox process's root link keeps the target's path rules":
+        (LANDLOCK, "kernel-sandbox", "The tree's own /proc links keep the target's path rules (same-sandbox root)", True),
+    "the managed opencode config is loaded under the wrap":
+        (LANDLOCK, "agent-profiles", "Managed opencode config applies under the kernel tier", True),
     "workspace .env reads empty (masked)":
         (LANDLOCK, "kernel-sandbox", "Workspace dotenv is masked (reads empty)", True),
     "nested sub/.env reads empty (masked)":
@@ -217,6 +243,33 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
     "config pin: host config file unchanged": (LANDLOCK, "kernel-sandbox", "functional: host config unchanged", False),
     ".env.example (template) is NOT masked": (LANDLOCK, "kernel-sandbox", "masking precision (template not masked)", False),
     "workspace is writable under the wrap": (LANDLOCK, "kernel-sandbox", "functional: workspace writable", False),
+    "outside-tree read denial is Landlock's (the file is readable outside the wrap)": (LANDLOCK, "kernel-sandbox", "control: the denied file is DAC-readable", False),
+    "a forked child reads its own /proc/self under the wrap (#103)": (LANDLOCK, "kernel-sandbox", "functional: spawned processes read their own /proc/self", False),
+    "an allowed path resolves through /proc/self/root (the link is live)": (LANDLOCK, "kernel-sandbox", "control: the /proc link resolves for a granted path", False),
+    "a /proc/self/comm write succeeds outside the wrap (control)": (LANDLOCK, "kernel-sandbox", "control: the refused write is one the agent may do unwrapped", False),
+    "PID 1's private entries are readable outside the wrap (control: the refusal is Landlock's ptrace rule)": (LANDLOCK, "kernel-sandbox", "control: PID 1's entries are DAC-readable (the refusal is Landlock's)", False),
+    "the unsandboxed process's fd and environ are readable outside the wrap (control: the refusal is Landlock's ptrace rule)": (LANDLOCK, "kernel-sandbox", "control: the holder's entries are DAC-readable (the refusal is Landlock's)", False),
+    "Docker's /proc/sys mount is read-only even for container root (control)": (LANDLOCK, "kernel-sandbox", "control: Docker's read-only /proc/sys (not the grant)", False),
+    "the tree's own exe, cwd and fd links resolve (self and same-sandbox)": (LANDLOCK, "kernel-sandbox", "functional: the tree's own /proc links resolve", False),
+    "a same-sandbox peer's pipe and open file are readable through its fd links (stated residual)": (LANDLOCK, "kernel-sandbox", "residual as stated: same-sandbox fd links reopen pipes and files", False),
+    "a process in the sandbox can open the harness's memory when Yama ptrace_scope is 0 or absent (stated residual)": (LANDLOCK, "kernel-sandbox", "residual as stated: peer memory open with Yama off", False),
+    "the entrypoint states the Yama peer-memory residual exactly when it applies": (LANDLOCK, "kernel-sandbox", "launch-UX: Yama residual stated when it applies", False),
+    "the in-wrap probe finished within the wait": (LANDLOCK, "kernel-sandbox", "control: the probe ran to completion", False),
+    "Docker's read-only /proc/sys holds under the wrap": (LANDLOCK, "kernel-sandbox", "control: Docker's read-only /proc/sys (not the grant)", False),
+    "PID 1's status is readable from the wrap (stated residual)": (LANDLOCK, "kernel-sandbox", "residual as stated: status readable", False),
+    "the engine-side inspection sees the session's service before down (control)": (LANDLOCK, "kernel-sandbox", "control: survivor inspection sees the live service", False),
+    "PID 1's command line is readable from the wrap (stated residual)": (LANDLOCK, "kernel-sandbox", "residual as stated: command lines readable", False),
+    "kernel-wide /proc status files are readable under the wrap (stated residual)": (LANDLOCK, "kernel-sandbox", "residual as stated: kernel status files readable", False),
+    "a sibling in the same sandbox exposes its environ (stated residual)": (LANDLOCK, "kernel-sandbox", "residual as stated: same-sandbox environ readable", False),
+    "an unsandboxed same-uid process's command line is readable from the wrap (stated residual)": (LANDLOCK, "kernel-sandbox", "residual as stated: command lines readable", False),
+    "opencode v2 standalone starts under the wrap (#103)": (LANDLOCK, "kernel-sandbox", "functional: opencode v2 --standalone starts under the wrap", False),
+    "opencode v2 default mode starts under the wrap (#103)": (LANDLOCK, "kernel-sandbox", "functional: opencode v2 service mode starts under the wrap", False),
+    "the opencode v2 service registration names a live in-container service": (LANDLOCK, "kernel-sandbox", "functional: service runs inside the container", False),
+    "the opencode v2 service answers on its registered loopback URL": (LANDLOCK, "kernel-sandbox", "functional: client reaches the in-container service", False),
+    "a second opencode v2 invocation reuses the in-container service": (LANDLOCK, "kernel-sandbox", "functional: service reuse", False),
+    "no opencode service outlives the container": (LANDLOCK, "kernel-sandbox", "functional: service dies with the container", False),
+    "session state kept the service registration across down (precondition)": (LANDLOCK, "kernel-sandbox", "functional: relaunch precondition", False),
+    "a relaunch with a stale registration starts a fresh in-container service": (LANDLOCK, "kernel-sandbox", "functional: stale registration handled", False),
     "HTTP_PROXY survives the wrap": (LANDLOCK, "kernel-sandbox", "functional: proxy env survives", False),
     "lowercase http_proxy survives the wrap": (LANDLOCK, "kernel-sandbox", "functional: proxy env survives", False),
     "an allowed host egresses through the proxy": (LANDLOCK, "kernel-sandbox", "functional: allowed egress works", False),
@@ -1053,7 +1106,8 @@ class SuiteParseError(ValueError):
 
 
 def parse_landlock(text: str, where: str = "suite") -> list[str]:
-    """`check "<literal>"` / `ok "<literal>"` at statement start. The names
+    """`check "<literal>"` / `check_is|check_has|check_lacks "<literal>"` /
+    `ok "<literal>"` at statement start. The names
     feed REGISTRY, so each must be one double-quoted literal: a name holding
     `$` (a variable-bearing message) or written in single quotes is a
     SuiteParseError, never a silent skip (PR #89 review: a skipped check is a
@@ -1062,9 +1116,9 @@ def parse_landlock(text: str, where: str = "suite") -> list[str]:
     names: list[str] = []
     seen: set[str] = set()
     for lineno, line in enumerate(text.splitlines(), 1):
-        if re.match(r"\s*(?:check|ok)\s+'", line):
+        if re.match(r"\s*(?:check(?:_is|_has|_lacks)?|ok)\s+'", line):
             raise SuiteParseError(f"{where}:{lineno}: check name in single quotes; the matrix needs one double-quoted literal")
-        m = re.match(r'\s*(?:check|ok)\s+"([^"]*)"', line)
+        m = re.match(r'\s*(?:check(?:_is|_has|_lacks)?|ok)\s+"([^"]*)"', line)
         if not m:
             continue
         name = m.group(1)
