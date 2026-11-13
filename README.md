@@ -679,12 +679,25 @@ What it does, in two independent mechanisms:
   container's `/proc` read-only. Without it only the *first* sandboxed process
   can read its own `/proc/self`; every process it spawns gets `EACCES`, and a
   Bun-compiled runtime aborts at startup when it cannot read its own
-  `/proc/self/maps` (opencode v2's server child, Claude Code, Bun or Node MCP
-  servers). Residual, stated plainly: the agent can list the cage's own
-  processes and read their command lines (cplt's wrap flags, no secret). The
-  container's pid namespace bounds that view to the cage's own processes; no
-  host process is visible, and a path Landlock denies stays denied when reached
-  through a `/proc/<pid>/root` link (ADR 0015).
+  `/proc/self/maps` (measured: opencode v2's server child and a forked
+  `claude --version`; Bun or Node MCP servers are the same class). What the
+  grant exposes, measured on the pinned cplt: kernel-wide status files as the
+  container's kernel reports them (memory, CPU, the kernel command line, the
+  container's network and mount tables), the command lines of the cage's
+  other processes, and the environment and open files of processes inside
+  the harness's own sandbox. What bounds it: the container's pid namespace
+  shows no host process; Landlock's ptrace rule keeps the environment,
+  memory maps and `root`/`cwd`/`fd` targets of processes *outside* the
+  sandbox (cplt, an operator's `docker exec`) unreadable; a path Landlock
+  denies stays denied through a `/proc/<pid>/root` link; `/proc` is not
+  writable. The harness's own permission prompts and its loopback service
+  are harness-level controls shared by every process of the tree (one uid,
+  one sandbox), not a tjor boundary (ADR 0015).
+- **The managed opencode config is granted under the tier.** `/etc/opencode`
+  (hardened profiles, below) is root-owned cargo outside cplt's system grants;
+  it is granted read-only when it exists, so a managed policy applies under
+  the wrap instead of silently not loading (found while proving #103; the
+  Landlock suite checks it).
 - **Dotenv masking (mounts, every runtime).** At launch, each `.env` / `.env.*`
   in the mounted repos (templates like `.env.example` excluded) is masked with a
   read-only empty bind mount, so its contents are unreadable in-cage even where

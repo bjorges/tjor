@@ -4,7 +4,7 @@
      Regenerate: python3 python/gen_boundary_matrix.py
      Drift-checked by tests/doc_consistency.sh (`--check`). -->
 
-Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount`, `gitcheck`, `task-notes` and `harness-launch` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (563 checks total; 256 adversarial guarantees below, the rest functional/config checks the suites also run).
+Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount`, `gitcheck`, `task-notes` and `harness-launch` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (584 checks total; 264 adversarial guarantees below, the rest functional/config checks the suites also run).
 
 ## cage-network
 
@@ -71,6 +71,7 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 
 | Guarantee | Probe | Suite |
 |---|---|---|
+| /proc grant is read-only | `/proc is not writable under the wrap` | landlock |
 | A file in a masked dir is unreadable | `plugin file unreadable at its path` | landlock |
 | A host-installed git hook does not fire on an in-cage commit | `git hooks: a host-installed pre-commit hook does not fire in-cage` | landlock |
 | A linked worktree's common hooks directory is masked | `git hooks: worktree common-dir hooks list empty in-cage` | landlock |
@@ -87,12 +88,18 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | A symlinked git config is refused at launch regardless of the pin setting | `git hooks: a symlinked config is refused even with the pin off` | gitcheck |
 | A symlinked git hooks directory is refused at launch, never masked through | `git hooks: a symlinked hooks dir refuses the launch instead of masking through the link` | gitcheck |
 | A write into a masked dir is refused | `write into the masked dir refused` | landlock |
-| Denied paths stay denied through /proc links | `a denied path stays denied through /proc/self/root` | landlock |
+| Denied paths stay denied through /proc links (another process's fd) | `an unsandboxed same-uid process's open fd to a denied file is unreadable from the wrap` | landlock |
+| Denied paths stay denied through /proc links (self cwd) | `a denied path stays denied through a /proc/self/cwd traversal` | landlock |
+| Denied paths stay denied through /proc links (self root) | `a denied path stays denied through /proc/self/root` | landlock |
 | Git hooks directory is masked (lists empty) in a writable mount | `git hooks: workspace hooks dir lists empty in-cage` | landlock |
 | Masked-dir content is absent from results | `plugin content nowhere in the probe result` | landlock |
 | Nested dotenv is masked (reads empty) | `nested sub/.env reads empty (masked)` | landlock |
 | Outside-tree read is kernel-denied | `outside-tree read is kernel-denied` | landlock |
 | Outside-tree write is kernel-denied | `outside-tree write is kernel-denied` | landlock |
+| Processes outside the sandbox keep their environment private (PID 1 cwd) | `PID 1's cwd link is unreadable from the wrap` | landlock |
+| Processes outside the sandbox keep their environment private (PID 1 environ) | `PID 1's environ is unreadable from the wrap` | landlock |
+| Processes outside the sandbox keep their environment private (PID 1 root) | `PID 1's root link is unreadable from the wrap` | landlock |
+| Processes outside the sandbox keep their environment private (docker exec) | `an unsandboxed same-uid process's environ is unreadable from the wrap` | landlock |
 | The dotenv secret is absent from the agent environment | `secret nowhere in the agent env` | landlock |
 | The main repository's host hook does not fire on an in-cage worktree commit | `worktree: the main repository's pre-commit hook did not fire` | landlock |
 | The secret is absent from the masked dotenv | `secret string is absent from the masked file` | landlock |

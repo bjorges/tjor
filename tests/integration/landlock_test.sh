@@ -17,6 +17,10 @@ REPO="${HOME}/.tjor/tmp/landlock-repo"
 SCRATCH="$(mktemp -d "${TMPDIR:-/tmp}/tjor-landlock.XXXXXX")"
 SECRET="landlock-secret-$$-do-not-leak"
 PASS=0; FAIL=0
+# CI runs strict (TJOR_LANDLOCK_TEST_STRICT=1): an engine without Landlock or an
+# image without opencode FAILS the suite instead of skipping the live half, so
+# a runner that cannot prove the fix never reports green (#103 review).
+STRICT="${TJOR_LANDLOCK_TEST_STRICT:-0}"
 
 ok()  { echo "ok   $1"; PASS=$((PASS + 1)); }
 bad() { echo "FAIL $1" >&2; FAIL=$((FAIL + 1)); }
@@ -94,39 +98,97 @@ if [[ ${LANDLOCK_HERE} == 1 ]]; then
     echo hi > "${REPO}/README.md"
 
     # Probe runs inside the wrapped tree, writes key=value findings to R, sleeps
-    # so the container stays up for log inspection. Absolute paths only (cplt
-    # cd's to the project dir but we are explicit).
+    # so the container stays up for log inspection. Written from a quoted
+    # heredoc with __REPO__ substituted, so nothing but the path expands on the
+    # host. Every opencode call is bounded by `timeout` and its stderr lands in
+    # the workspace, printed by the checks below when one fails.
     R="${REPO}/probe-result.txt"
-    cat > "${REPO}/probe.sh" <<PROBE
+    sed "s|__REPO__|${REPO}|g" > "${REPO}/probe.sh" <<'PROBE'
 #!/bin/sh
+REPO="__REPO__"
 R="${REPO}/probe-result.txt"
-: > "\$R"
-echo "env_dotenv=[\$(cat ${REPO}/.env 2>/dev/null)]" >> "\$R"
-echo "env_nested=[\$(cat ${REPO}/sub/.env 2>/dev/null)]" >> "\$R"
-echo "template=[\$(cat ${REPO}/.env.example 2>/dev/null)]" >> "\$R"
-(rm -f ${REPO}/.env 2>/dev/null && echo "unlink=REMOVED" || echo "unlink=refused") >> "\$R"
-(cat /etc/shadow >/dev/null 2>&1 && echo "outside_read=OK" || echo "outside_read=denied") >> "\$R"
-(touch /opt/tjor/evil 2>/dev/null && echo "outside_write=OK" || echo "outside_write=denied") >> "\$R"
-(echo w > ${REPO}/wprobe 2>/dev/null && echo "workspace_write=OK" || echo "workspace_write=denied") >> "\$R"
-(sh -c 'cat /proc/self/maps >/dev/null' 2>/dev/null && echo "child_proc_self=OK" || echo "child_proc_self=denied") >> "\$R"
-(cat /proc/self/root/etc/hostname >/dev/null 2>&1 && echo "proc_root=OK" || echo "proc_root=denied") >> "\$R"
-if command -v opencode >/dev/null 2>&1; then
-    (OPENCODE_DISABLE_PROJECT_CONFIG=1 opencode --standalone session list >/dev/null 2>&1 && echo "opencode_standalone=OK" || echo "opencode_standalone=failed") >> "\$R"
+: > "$R"
+say() { echo "$1" >> "$R"; }
+try() { # name cmd... -> name=OK | name=denied
+    label="$1"; shift
+    if sh -c "$*" >/dev/null 2>&1; then say "${label}=OK"; else say "${label}=denied"; fi
+}
+say "env_dotenv=[$(cat "${REPO}/.env" 2>/dev/null)]"
+say "env_nested=[$(cat "${REPO}/sub/.env" 2>/dev/null)]"
+say "template=[$(cat "${REPO}/.env.example" 2>/dev/null)]"
+(rm -f "${REPO}/.env" 2>/dev/null && say "unlink=REMOVED" || say "unlink=refused")
+# /etc/hostname is world-readable in the image and outside cplt's system
+# grants: a denial here is Landlock's (the docker-exec control proves the
+# file-permission half).
+try outside_read "cat /etc/hostname"
+(touch /opt/tjor/evil 2>/dev/null && say "outside_write=OK" || say "outside_write=denied")
+(echo w > "${REPO}/wprobe" 2>/dev/null && say "workspace_write=OK" || say "workspace_write=denied")
+# /proc inside the tier (#103): each direct read paired with its /proc link.
+try child_proc_self "sh -c 'cat /proc/self/maps >/dev/null'"
+try self_root_allowed "cat /proc/self/root/etc/os-release"
+try proc_root "cat /proc/self/root/etc/hostname"
+try proc_cwd_escape "cat /proc/self/cwd/../../../../../../../../../../../../etc/hostname"
+try pid1_cmdline "head -c1 /proc/1/cmdline"
+try pid1_environ "head -c1 /proc/1/environ"
+try pid1_root "head -c1 /proc/1/root/etc/os-release"
+try pid1_cwd "ls /proc/1/cwd"
+try proc_meminfo "head -c1 /proc/meminfo"
+(echo 0 > /proc/sys/kernel/randomize_va_space 2>/dev/null && say "proc_write=OK" || say "proc_write=refused")
+sleep 30 & SIB=$!
+try sibling_environ "head -c1 /proc/${SIB}/environ"
+kill "${SIB}" 2>/dev/null
+# A same-uid process started OUTSIDE the wrap (the test runs it with docker
+# exec -u agent) holding a denied file open on fd 3: wait for its pid.
+i=0; while [ "$i" -lt 90 ] && [ ! -s "${REPO}/holder.pid" ]; do i=$((i + 1)); sleep 1; done
+HP="$(cat "${REPO}/holder.pid" 2>/dev/null)"
+if [ -n "${HP}" ] && [ -d "/proc/${HP}" ]; then
+    try holder_fd "head -c1 /proc/${HP}/fd/3"
+    try holder_environ "head -c1 /proc/${HP}/environ"
+    try holder_cmdline "head -c1 /proc/${HP}/cmdline"
 else
-    echo "opencode_standalone=absent" >> "\$R"
+    say "holder_fd=absent"; say "holder_environ=absent"; say "holder_cmdline=absent"
 fi
-echo "http_proxy=[\$HTTP_PROXY]" >> "\$R"
-echo "http_proxy_lc=[\$http_proxy]" >> "\$R"
-echo "egress=[\$(curl -fsS -o /dev/null -w %{http_code} https://github.com 2>/dev/null)]" >> "\$R"
-echo "DONE" >> "\$R"
+# opencode v2 (#103): --standalone, the managed config (#46), and the shipped
+# default service mode: fresh state, registration, loopback URL, reuse.
+if command -v opencode >/dev/null 2>&1; then
+    (timeout 90 opencode --standalone session list >/dev/null 2>"${REPO}/probe-standalone.err" && say "opencode_standalone=OK" || say "opencode_standalone=failed")
+    (timeout 90 opencode --standalone debug config 2>"${REPO}/probe-config.err" | grep -q "tjor-managed-sentinel" && say "managed_config=OK" || say "managed_config=missing")
+    (timeout 90 opencode session list >/dev/null 2>"${REPO}/probe-service.err" && say "opencode_service=OK" || say "opencode_service=failed")
+    SJ="${HOME}/.local/state/opencode/service.json"
+    SP="$(jq -r '.pid // empty' "${SJ}" 2>/dev/null)"; SU="$(jq -r '.url // empty' "${SJ}" 2>/dev/null)"
+    say "service_id=$(jq -r '.id // empty' "${SJ}" 2>/dev/null)"
+    say "service_pid=${SP:-none}"
+    say "service_cmd=[$(tr '\0' ' ' < "/proc/${SP:-0}/cmdline" 2>/dev/null)]"
+    say "service_url=${SU:-none}"
+    say "service_http=$(curl --noproxy '*' -s -o /dev/null -m 10 -w '%{http_code}' "${SU:-http://127.0.0.1:0}/" 2>/dev/null)"
+    (timeout 90 opencode session list >/dev/null 2>"${REPO}/probe-service2.err" && say "opencode_service2=OK" || say "opencode_service2=failed")
+    say "service_id_after=$(jq -r '.id // empty' "${SJ}" 2>/dev/null)"
+else
+    for k in opencode_standalone managed_config opencode_service opencode_service2; do say "${k}=absent"; done
+fi
+say "http_proxy=[${HTTP_PROXY}]"
+say "http_proxy_lc=[${http_proxy}]"
+say "egress=[$(curl -fsS -o /dev/null -w %{http_code} https://github.com 2>/dev/null)]"
+say "DONE"
 sleep 600
 PROBE
     chmod +x "${REPO}/probe.sh"
 
+    # A hardened profile carrying only a managed file: the entrypoint deploys
+    # it root-owned to /etc/opencode, and the probe must see its key under the
+    # wrap (the directory is outside cplt's system grants; #103 review).
+    PROFILE="${SCRATCH}/profile"
+    mkdir -p "${PROFILE}/managed"
+    printf '{"$schema":"https://opencode.ai/config.json","username":"tjor-managed-sentinel"}\n' > "${PROFILE}/managed/opencode.json"
+
     SID="landlock-repo-$(hash8 "${REPO}")-ll"
-    "${T}" run --detach --session ll -- sh "${REPO}/probe.sh" > "${SCRATCH}/run.out" 2>&1
+    "${T}" run --detach --session ll --profile-dir "${PROFILE}" -- sh "${REPO}/probe.sh" > "${SCRATCH}/run.out" 2>&1
     CTR="$(wait_for_agent "${SID}")" || { echo "FATAL: session never started"; cat "${SCRATCH}/run.out"; exit 1; }
-    for _ in $(seq 1 60); do grep -q DONE "${R}" 2>/dev/null && break; sleep 1; done
+    # The unsandboxed same-uid process: an operator's docker exec, outside the
+    # harness tree, keeping a Landlock-denied file open on fd 3.
+    docker exec -d -u agent "${CTR}" sh -c "exec 3</etc/hostname; echo \$\$ > '${REPO}/holder.pid'; sleep 600"
+    DAC_READ="$(docker exec -u agent "${CTR}" cat /etc/hostname 2>/dev/null | wc -c | tr -d ' ')"
+    for _ in $(seq 1 240); do grep -q DONE "${R}" 2>/dev/null && break; sleep 1; done
 
     field() { grep "^$1=" "${R}" 2>/dev/null | head -1 | cut -d= -f2-; }
 
@@ -146,21 +208,53 @@ PROBE
 
     # Kernel tier (in the wrapped tree): outside-tree denied, workspace usable.
     check "outside-tree read is kernel-denied" test "$(field outside_read)" = "denied"
+    check "outside-tree read denial is Landlock's (the file is readable outside the wrap)" test "${DAC_READ}" != "0"
     check "outside-tree write is kernel-denied" test "$(field outside_write)" = "denied"
     check "workspace is writable under the wrap" test "$(field workspace_write)" = "OK"
 
     # /proc inside the tier (#103): cplt's own /proc/self rule covers the first
     # pid only, so without the wrap's /proc grant a forked child cannot read
     # its own maps and every Bun-compiled child (opencode v2's server) aborts.
-    # The grant is read-only and subtracts nothing: a denied path stays denied
-    # through the process's own /proc/self/root link (/etc/hostname is
-    # world-readable in the image and outside cplt's system grants).
+    # The grant is read-only and subtracts nothing: each direct denial is
+    # paired with its /proc link, and the stated residuals are recorded so a
+    # change in either direction is visible.
     check "a forked child reads its own /proc/self under the wrap (#103)" test "$(field child_proc_self)" = "OK"
+    check "an allowed path resolves through /proc/self/root (the link is live)" test "$(field self_root_allowed)" = "OK"
     check "a denied path stays denied through /proc/self/root" test "$(field proc_root)" = "denied"
+    check "a denied path stays denied through a /proc/self/cwd traversal" test "$(field proc_cwd_escape)" = "denied"
+    check "PID 1's command line is readable from the wrap (stated residual)" test "$(field pid1_cmdline)" = "OK"
+    check "PID 1's environ is unreadable from the wrap" test "$(field pid1_environ)" = "denied"
+    check "PID 1's root link is unreadable from the wrap" test "$(field pid1_root)" = "denied"
+    check "PID 1's cwd link is unreadable from the wrap" test "$(field pid1_cwd)" = "denied"
+    check "kernel-wide /proc status files are readable under the wrap (stated residual)" test "$(field proc_meminfo)" = "OK"
+    check "/proc is not writable under the wrap" test "$(field proc_write)" = "refused"
+    check "a sibling in the same sandbox exposes its environ (stated residual)" test "$(field sibling_environ)" = "OK"
+    check "an unsandboxed same-uid process's open fd to a denied file is unreadable from the wrap" test "$(field holder_fd)" = "denied"
+    check "an unsandboxed same-uid process's environ is unreadable from the wrap" test "$(field holder_environ)" = "denied"
+    check "an unsandboxed same-uid process's command line is readable from the wrap (stated residual)" test "$(field holder_cmdline)" = "OK"
+
+    # opencode v2 under the real wrap (#103), offline: --standalone, the
+    # managed config (#46) and the shipped default service mode. A failing
+    # call prints the stderr the probe captured.
+    show_err() { local f; for f in "$@"; do [[ -s "${f}" ]] && { echo "---- $(basename "${f}")" >&2; head -c 2000 "${f}" >&2; echo >&2; }; done; return 0; }
+    SVC_ID="$(field service_id)"
     if [[ "$(field opencode_standalone)" == "absent" ]]; then
-        echo "ok   opencode v2 standalone starts under the wrap (#103) (skipped: image has no opencode)"; PASS=$((PASS + 1))
+        if [[ ${STRICT} == 1 ]]; then
+            echo "strict mode: the image has no opencode, the #103 launch cannot be proven" >&2
+            check "opencode v2 standalone starts under the wrap (#103)" false
+        else
+            echo "ok   (skipped opencode checks: image has no opencode)"
+        fi
     else
         check "opencode v2 standalone starts under the wrap (#103)" test "$(field opencode_standalone)" = "OK"
+        check "the managed opencode config is loaded under the wrap" test "$(field managed_config)" = "OK"
+        check "opencode v2 default mode starts under the wrap (#103)" test "$(field opencode_service)" = "OK"
+        check "the opencode v2 service registration names a live in-container service" bash -c "grep -q 'opencode serve --service' <<<'$(field service_cmd)'"
+        check "the opencode v2 service answers on its registered loopback URL" bash -c "[[ '$(field service_http)' =~ ^[1-5][0-9][0-9]$ ]]"
+        check "a second opencode v2 invocation reuses the in-container service" bash -c "[[ -n '${SVC_ID}' && '${SVC_ID}' == '$(field service_id_after)' && '$(field opencode_service2)' == OK ]]"
+        for k in opencode_standalone managed_config opencode_service opencode_service2; do
+            [[ "$(field "${k}")" == "OK" ]] || { show_err "${REPO}"/probe-*.err; break; }
+        done
     fi
 
     # Strictly additive: proxy env survives the wrap; harness reaches the proxy.
@@ -170,8 +264,57 @@ PROBE
         "field() { grep '^egress=' '${R}' | cut -d= -f2-; }; field | grep -Eq '\[(200|301|302)\]'"
 
     ( cd "${REPO}" && "${T}" down --session ll >/dev/null 2>&1 )
+
+    # The service dies with the container: on a Linux engine host the
+    # container's processes are visible to pgrep; through Colima, inside the
+    # VM. The bracket keeps the pattern from matching its own shell.
+    survivor="unknown"
+    if [[ "$(uname -s)" == "Linux" ]]; then
+        if pgrep -f 'opencode serve --servic[e]' >/dev/null 2>&1; then survivor=yes; else survivor=no; fi
+    elif command -v colima >/dev/null 2>&1; then
+        if colima ssh -- pgrep -f 'opencode serve --servic[e]' >/dev/null 2>&1; then survivor=yes; else survivor=no; fi
+    fi
+    if [[ -z "${SVC_ID}" ]]; then
+        echo "ok   (skipped: no opencode service outlives the container — no service ran)"
+    elif [[ "${survivor}" == "unknown" ]]; then
+        echo "ok   (skipped: no opencode service outlives the container — engine host not inspectable from here)"
+    else
+        check "no opencode service outlives the container" test "${survivor}" = "no"
+    fi
+
+    # Relaunch with the stale registration: the session home persists across
+    # down, so service.json still names the dead service; the client must
+    # register a fresh one (a new id) inside the new container.
+    if [[ -n "${SVC_ID}" ]]; then
+        R2="${REPO}/probe2-result.txt"
+        sed "s|__REPO__|${REPO}|g" > "${REPO}/probe2.sh" <<'PROBE2'
+#!/bin/sh
+REPO="__REPO__"
+R="${REPO}/probe2-result.txt"
+: > "$R"
+SJ="${HOME}/.local/state/opencode/service.json"
+echo "stale_id=$(jq -r '.id // empty' "${SJ}" 2>/dev/null)" >> "$R"
+(timeout 90 opencode session list >/dev/null 2>"${REPO}/probe-relaunch.err" && echo "relaunch_service=OK" || echo "relaunch_service=failed") >> "$R"
+echo "new_id=$(jq -r '.id // empty' "${SJ}" 2>/dev/null)" >> "$R"
+echo "DONE" >> "$R"
+sleep 600
+PROBE2
+        "${T}" run --detach --session ll --profile-dir "${PROFILE}" -- sh "${REPO}/probe2.sh" > "${SCRATCH}/run2.out" 2>&1
+        wait_for_agent "${SID}" >/dev/null || { echo "FATAL: relaunch never started"; cat "${SCRATCH}/run2.out"; exit 1; }
+        for _ in $(seq 1 120); do grep -q DONE "${R2}" 2>/dev/null && break; sleep 1; done
+        field2() { grep "^$1=" "${R2}" 2>/dev/null | head -1 | cut -d= -f2-; }
+        check "session state kept the service registration across down (precondition)" test "$(field2 stale_id)" = "${SVC_ID}"
+        check "a relaunch with a stale registration starts a fresh in-container service" bash -c "[[ '$(field2 relaunch_service)' == OK && -n '$(field2 new_id)' && '$(field2 new_id)' != '${SVC_ID}' ]]"
+        [[ "$(field2 relaunch_service)" == "OK" ]] || show_err "${REPO}/probe-relaunch.err"
+        ( cd "${REPO}" && "${T}" down --session ll >/dev/null 2>&1 )
+    fi
 else
-    echo "ok   (skipped live-session half: engine has no Landlock)"
+    if [[ ${STRICT} == 1 ]]; then
+        echo "strict mode: the engine has no Landlock, the live half cannot run" >&2
+        check "entrypoint logged kernel-sandbox ACTIVE" false
+    else
+        echo "ok   (skipped live-session half: engine has no Landlock)"
+    fi
 fi
 
 # ---- A2. deny_paths is independent of mask_dotenv (#48) ----------------------

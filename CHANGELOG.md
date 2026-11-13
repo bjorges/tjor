@@ -12,13 +12,19 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
   every session with the tier active failed with "Standalone server exited
   before reporting readiness"; the oc-personal and oc-tieto profiles could
   not start. The wrap now grants the container's `/proc` read-only, the
-  answer cplt itself gives for a pid namespace, which the container is.
-  Residual, stated in the README and the spec: the agent can list the cage's
-  own processes and read their command lines; nothing of the host is visible
-  and denied paths stay denied through `/proc/<pid>/root`. The same latent
-  fault hit any Bun or Node child under the wrap (Claude Code's binary is
-  Bun-compiled too). The Landlock suite now launches `opencode --standalone`
-  under the real wrap, offline, so this cannot regress (ADR 0015).
+  answer cplt itself gives for a pid namespace, which the container is. The
+  same fault hit any Bun or Node child under the wrap (a forked
+  `claude --version` aborts the same way). What the grant exposes and what
+  bounds it is stated in the README, the spec and ADR 0015. The
+  `[landlock] mode = "off"` workaround from #103 is no longer needed and
+  should be removed from profile configs. The Landlock suite now runs in CI
+  and launches opencode v2 under the real wrap, in `--standalone` and in the
+  shipped default service mode.
+- **The managed opencode config loads under the kernel tier.** `/etc/opencode`
+  was outside cplt's system grants, so a hardened profile's
+  `managed/opencode.json` was deployed root-owned and then silently not
+  loaded whenever the tier was active. The wrap grants the directory
+  read-only when it exists; the Landlock suite loads a sentinel key from it.
 
 ## [0.23.0] — 2026-11-13 — OpenCode v2
 

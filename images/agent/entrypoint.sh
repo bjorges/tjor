@@ -605,15 +605,25 @@ elif [[ -n "${landlock_abi}" ]]; then
     # /proc, read-only (#103). Without bubblewrap cplt grants /proc/self to the
     # FIRST sandboxed pid only (the rule is resolved in the child before exec,
     # so it names that one /proc/<pid>); every process forked below it gets
-    # EACCES on its own /proc/self. Bun-compiled harnesses (opencode v2's
-    # server child, Claude Code, any Bun/Node MCP server) abort at startup
-    # when they cannot read /proc/self/maps (navikt/cplt PR 740 met the same).
-    # cplt's own answer is this grant under a pid namespace; the container IS
-    # that namespace. Residual, stated in the README and the spec: the agent
-    # can list the cage's own processes and read their command lines (cplt's
-    # flags, no secret); Landlock still denies every other path, also through
-    # /proc/<pid>/root links. Nothing of the host is visible.
+    # EACCES on its own /proc/self, and a Bun-compiled runtime (opencode v2's
+    # server child, Claude Code, Bun/Node MCP servers) aborts at startup when
+    # it cannot read /proc/self/maps (navikt/cplt PR 740 met the same; its
+    # answer is this grant under bubblewrap's pid namespace, which the
+    # container already is). What it exposes, measured and stated in the
+    # README, the spec and ADR 0015: kernel-wide status files as the
+    # container's kernel reports them, the command lines of the cage's other
+    # processes, and the environment and open files of processes inside this
+    # same sandbox. What bounds it: the container pid namespace (no host
+    # process), Landlock's ptrace rule (environ, maps and root/cwd/fd targets
+    # of processes OUTSIDE the sandbox — cplt, an operator's docker exec —
+    # stay unreadable) and the ruleset itself (a denied path stays denied
+    # through a /proc link; /proc is not writable).
     wrap+=(--allow-read /proc)
+    # The managed opencode config (#46, step 2b) is root-owned cargo under
+    # /etc/opencode, which cplt's system grants do not cover: under the wrap a
+    # hardened profile's managed settings silently did not load (found while
+    # proving #103). Grant the directory, read-only, when it exists.
+    if [[ -d /etc/opencode ]]; then wrap+=(--allow-read /etc/opencode); fi
     child_env=(env -u GIT_CONFIG_NOSYSTEM)
     if [[ -n "${GH_TOKEN:-}" ]]; then child_env+=("GH_TOKEN=${GH_TOKEN}"); fi
     exec gosu agent env HOME="${AGENT_HOME}" USER=agent "${wrap[@]}" exec -- "${child_env[@]}" "$@"

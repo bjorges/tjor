@@ -13,21 +13,24 @@ Charter lessons answered: L18 (a hardening tier degrades loudly, never silently)
 ## What Changes
 
 - **The wrap grants `/proc` read-only.** `images/agent/entrypoint.sh` adds `--allow-read /proc` to the cplt invocation, for every harness and every launch mode. The container already provides what cplt wants from Bubblewrap, its own pid namespace, so the grant exposes the cage's own processes and nothing of the host. Verified in the released image with the entrypoint's flag set and the pinned cplt: `opencode --standalone run ping` answers; `session list`, `debug config` and `models` succeed with networking disabled; a forked child reads its own `/proc/self/maps`; a path the ruleset denies stays denied when reached through `/proc/<pid>/root`.
-- **The kernel-sandbox spec gains a requirement** that every process in the harness tree can read its own `/proc` entries, with the read-only grant, the magic-link invariant and the residual stated.
-- **Proof in the Landlock suite.** The live-session probe gains two checks: a forked child reads its own `/proc/self/maps`, and `opencode --standalone session list` exits zero offline under the real wrap. Both are registered in `python/gen_boundary_matrix.py` as functional rows; the matrix is regenerated.
+- **The kernel-sandbox spec's granted-trees requirement is modified** to name both grants among the system paths needed to run, with the read-only scope, the link invariant, what the `/proc` grant exposes and what bounds it.
+- **The wrap grants `/etc/opencode` read-only when it exists.** Found while proving the fix: the directory holding a hardened profile's root-owned `managed/opencode.json` is outside cplt's system grants, so under the wrap the managed settings silently did not load. The grant makes them apply under the tier.
+- **Proof in the Landlock suite, which becomes a CI job.** The live-session probe pairs each direct denial with its `/proc` link (`/proc/self/root`, a `/proc/self/cwd` traversal, PID 1's `environ`/`root`/`cwd`, an unsandboxed same-uid process's `fd` and `environ`), records the stated residuals (command lines, kernel status files, same-sandbox `environ`), asserts `/proc` is not writable, loads a sentinel key from the managed config, and launches opencode v2 both with `--standalone` and in the shipped default service mode (fresh state, a second invocation reusing the service, the service reachable on its loopback URL, no service surviving `tjor down`, a relaunch with the stale registration starting a fresh service). A new `landlock` job runs the suite on a Linux runner in strict mode, where a missing Landlock or a missing `opencode` fails instead of skipping. Every check is registered in `python/gen_boundary_matrix.py`; the matrix is regenerated.
 - **Documentation.** README kernel-sandbox section: the grant and its residual. `docs/decisions/0015-proc-read-inside-the-kernel-tier.md`: why the grant is the right answer in-cage and what it exposes. The kernel-sandbox slide is re-read and re-pinned. `CHANGELOG.md` gets a Fixed entry under Unreleased.
 
-Deferred, deliberately: making `--standalone` the shipped default for opencode (the default service mode leaves `opencode serve --service` running detached until the container stops; it inherits the irrevocable policy and dies with PID 1, so it is not a hole, but a stdio child is the simpler lifecycle); a cplt pin bump (unrelated to this failure); an upstream report to Bun asking for a graceful fallback when `/proc/self/maps` is unreadable.
+Deferred, deliberately: making `--standalone` the shipped default for opencode (`config/tjor.toml` ships `args = []`, the service mode; it is now tested, and a stdio child would only be the simpler lifecycle); a cplt pin bump (unrelated to this failure); an upstream report to Bun asking for a graceful fallback when `/proc/self/maps` is unreadable.
+
+Rollback: `[landlock] mode = "off"` disables the tier without a rebuild (the #103 workaround, which this change makes unnecessary), or the previous image tag.
 
 Compatibility: additive. A session whose runtime has no Landlock is unchanged. A session with the tier active gains one read-only kernel grant; nothing else in the wrap moves.
 
 ## Capabilities
 
 ### Modified Capabilities
-- `kernel-sandbox`: a new requirement that every process in the harness tree can read its own `/proc` entries, with the residual stated.
+- `kernel-sandbox`: the granted-trees requirement now names `/proc` and `/etc/opencode` among the read-only system grants, with the link invariant and the stated residual.
 
 ## Impact
 
-- `images/agent/entrypoint.sh`: one flag in the `wrap` array and its rationale comment.
-- `tests/integration/landlock_test.sh` (part A probe and two checks), `python/gen_boundary_matrix.py` (two functional rows), `docs/boundary-matrix.md` (regenerated).
+- `images/agent/entrypoint.sh`: two grants in the `wrap` array and their rationale comments.
+- `tests/integration/landlock_test.sh` (strict mode, the part A probe, a second launch), `.github/workflows/ci.yml` (the `landlock` job; the ruleset on `main` must list it by name before merge, CONTRIBUTING "Repository settings"), `python/gen_boundary_matrix.py`, `docs/boundary-matrix.md` (regenerated).
 - `openspec/specs/kernel-sandbox/spec.md` (via archive), `slides/presentations/overview/slides.md` (kernel-sandbox slide re-pinned, residual sentence), `README.md`, `CHANGELOG.md`, `docs/decisions/0015-proc-read-inside-the-kernel-tier.md`.

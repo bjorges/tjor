@@ -153,7 +153,23 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
     "outside-tree write is kernel-denied":
         (LANDLOCK, "kernel-sandbox", "Outside-tree write is kernel-denied", True),
     "a denied path stays denied through /proc/self/root":
-        (LANDLOCK, "kernel-sandbox", "Denied paths stay denied through /proc links", True),
+        (LANDLOCK, "kernel-sandbox", "Denied paths stay denied through /proc links (self root)", True),
+    "a denied path stays denied through a /proc/self/cwd traversal":
+        (LANDLOCK, "kernel-sandbox", "Denied paths stay denied through /proc links (self cwd)", True),
+    "PID 1's environ is unreadable from the wrap":
+        (LANDLOCK, "kernel-sandbox", "Processes outside the sandbox keep their environment private (PID 1 environ)", True),
+    "PID 1's root link is unreadable from the wrap":
+        (LANDLOCK, "kernel-sandbox", "Processes outside the sandbox keep their environment private (PID 1 root)", True),
+    "PID 1's cwd link is unreadable from the wrap":
+        (LANDLOCK, "kernel-sandbox", "Processes outside the sandbox keep their environment private (PID 1 cwd)", True),
+    "an unsandboxed same-uid process's open fd to a denied file is unreadable from the wrap":
+        (LANDLOCK, "kernel-sandbox", "Denied paths stay denied through /proc links (another process's fd)", True),
+    "an unsandboxed same-uid process's environ is unreadable from the wrap":
+        (LANDLOCK, "kernel-sandbox", "Processes outside the sandbox keep their environment private (docker exec)", True),
+    "/proc is not writable under the wrap":
+        (LANDLOCK, "kernel-sandbox", "/proc grant is read-only", True),
+    "the managed opencode config is loaded under the wrap":
+        (LANDLOCK, "agent-profiles", "Managed opencode config applies under the kernel tier", True),
     "workspace .env reads empty (masked)":
         (LANDLOCK, "kernel-sandbox", "Workspace dotenv is masked (reads empty)", True),
     "nested sub/.env reads empty (masked)":
@@ -219,8 +235,21 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
     "config pin: host config file unchanged": (LANDLOCK, "kernel-sandbox", "functional: host config unchanged", False),
     ".env.example (template) is NOT masked": (LANDLOCK, "kernel-sandbox", "masking precision (template not masked)", False),
     "workspace is writable under the wrap": (LANDLOCK, "kernel-sandbox", "functional: workspace writable", False),
+    "outside-tree read denial is Landlock's (the file is readable outside the wrap)": (LANDLOCK, "kernel-sandbox", "control: the denied file is DAC-readable", False),
     "a forked child reads its own /proc/self under the wrap (#103)": (LANDLOCK, "kernel-sandbox", "functional: spawned processes read their own /proc/self", False),
-    "opencode v2 standalone starts under the wrap (#103)": (LANDLOCK, "kernel-sandbox", "functional: opencode v2 starts under the wrap", False),
+    "an allowed path resolves through /proc/self/root (the link is live)": (LANDLOCK, "kernel-sandbox", "control: the /proc link resolves for a granted path", False),
+    "PID 1's command line is readable from the wrap (stated residual)": (LANDLOCK, "kernel-sandbox", "residual as stated: command lines readable", False),
+    "kernel-wide /proc status files are readable under the wrap (stated residual)": (LANDLOCK, "kernel-sandbox", "residual as stated: kernel status files readable", False),
+    "a sibling in the same sandbox exposes its environ (stated residual)": (LANDLOCK, "kernel-sandbox", "residual as stated: same-sandbox environ readable", False),
+    "an unsandboxed same-uid process's command line is readable from the wrap (stated residual)": (LANDLOCK, "kernel-sandbox", "residual as stated: command lines readable", False),
+    "opencode v2 standalone starts under the wrap (#103)": (LANDLOCK, "kernel-sandbox", "functional: opencode v2 --standalone starts under the wrap", False),
+    "opencode v2 default mode starts under the wrap (#103)": (LANDLOCK, "kernel-sandbox", "functional: opencode v2 service mode starts under the wrap", False),
+    "the opencode v2 service registration names a live in-container service": (LANDLOCK, "kernel-sandbox", "functional: service runs inside the container", False),
+    "the opencode v2 service answers on its registered loopback URL": (LANDLOCK, "kernel-sandbox", "functional: client reaches the in-container service", False),
+    "a second opencode v2 invocation reuses the in-container service": (LANDLOCK, "kernel-sandbox", "functional: service reuse", False),
+    "no opencode service outlives the container": (LANDLOCK, "kernel-sandbox", "functional: service dies with the container", False),
+    "session state kept the service registration across down (precondition)": (LANDLOCK, "kernel-sandbox", "functional: relaunch precondition", False),
+    "a relaunch with a stale registration starts a fresh in-container service": (LANDLOCK, "kernel-sandbox", "functional: stale registration handled", False),
     "HTTP_PROXY survives the wrap": (LANDLOCK, "kernel-sandbox", "functional: proxy env survives", False),
     "lowercase http_proxy survives the wrap": (LANDLOCK, "kernel-sandbox", "functional: proxy env survives", False),
     "an allowed host egresses through the proxy": (LANDLOCK, "kernel-sandbox", "functional: allowed egress works", False),
