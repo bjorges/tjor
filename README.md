@@ -16,8 +16,8 @@ or, with nix (flakes), pinned to a release tag, run it without installing or
 install it into your profile:
 
 ```console
-$ nix run github:bjorges/tjor/v0.22.0 -- doctor
-$ nix profile install github:bjorges/tjor/v0.22.0
+$ nix run github:bjorges/tjor/v0.23.0 -- doctor
+$ nix profile install github:bjorges/tjor/v0.23.0
 ```
 
 Requires a Docker engine with compose v2 — **Colima**, Docker Desktop, or a

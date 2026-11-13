@@ -27,8 +27,8 @@ $ brew install bjorges/tap/tjor
 Or with nix (flakes enabled), pinned to a release tag:
 
 ```console
-$ nix run github:bjorges/tjor/v0.22.0 -- doctor        # run without installing
-$ nix profile install github:bjorges/tjor/v0.22.0      # or install into your profile
+$ nix run github:bjorges/tjor/v0.23.0 -- doctor        # run without installing
+$ nix profile install github:bjorges/tjor/v0.23.0      # or install into your profile
 ```
 
 (`github:bjorges/tjor` without the tag follows the `main` branch, not a
