@@ -590,7 +590,10 @@ after, and cannot be overridden by, any user- or project-level opencode
 config — before the privilege drop, so the agent can't write, replace, or
 remove it. That makes it the right home for permission policy a hardened
 profile must keep even when a mounted repo ships its own `opencode.json` or
-agent definitions. A staged managed file that isn't valid JSON refuses the
+agent definitions. It applies under the kernel-sandbox tier too (the wrap
+grants `/etc/opencode` read-only; before that grant it silently did not load
+there), and it is policy, not a secret store: the agent can read it. A staged
+managed file that isn't valid JSON refuses the
 launch (a profile must never *look* hardened without *being* it); with no
 profile, nothing is deployed and any stale managed file is removed. Honest
 scope note: managed settings override config *keys*; they don't stop a repo's
@@ -690,17 +693,27 @@ What it does, in two independent mechanisms:
   container's pid namespace shows no host process; for a process *outside*
   the sandbox (cplt as PID 1, an operator's `docker exec`) Landlock's ptrace
   rule refuses `environ`, `maps`, `mem`, `io`, `exe`, `ns`, `root`, `cwd` and
-  the fd targets whatever they point at; the tree's own `root`/`cwd`/`fd`
-  links resolve but keep the target's path rules, so a Landlock-denied file
-  stays denied through them; `/proc` is not writable (even the agent's own
-  `comm`). The harness's own permission prompts and its loopback service are
-  harness-level controls shared by every process of the tree (one uid, one
-  sandbox), not a tjor boundary (ADR 0015).
+  the fd targets whatever they point at (the suite reads the same entries
+  outside the wrap as a control, so the refusal is the kernel's, not file
+  permissions); the tree's own `root`/`cwd`/`fd` links resolve but keep the
+  target's path rules, so a Landlock-denied file stays denied through them;
+  `/proc` is not writable (even the agent's own `comm`). Also readable:
+  `/proc/sys`, `/proc/version`, the host-side source of each mount in
+  `mountinfo`, and `kallsyms` symbol names. Inside the sandbox the harness
+  and the tools it spawns are one uid and one domain: a tool can reopen the
+  harness's pipes and open files through `/proc/<pid>/fd` (sockets cannot
+  be reopened), and peer memory follows the engine's Yama setting:
+  `kernel.yama.ptrace_scope` at 1 or higher (the usual default) limits
+  `/proc/<pid>/mem` to a process's own descendants, so a tool cannot read
+  the harness's; with 0 or no Yama it can, and the entrypoint says so at
+  start. The harness's own permission prompts are not a boundary against
+  in-tree tools, with or without this grant (ADR 0015).
 - **The managed opencode config is granted under the tier.** `/etc/opencode`
   (hardened profiles, below) is root-owned cargo outside cplt's system grants;
   it is granted read-only when it exists, so a managed policy applies under
   the wrap instead of silently not loading (found while proving #103; the
-  Landlock suite checks it).
+  Landlock suite checks it). The file is policy, readable by the agent: keep
+  secrets out of `managed/opencode.json`.
 - **Dotenv masking (mounts, every runtime).** At launch, each `.env` / `.env.*`
   in the mounted repos (templates like `.env.example` excluded) is masked with a
   read-only empty bind mount, so its contents are unreadable in-cage even where

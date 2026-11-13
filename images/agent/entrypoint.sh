@@ -610,16 +610,33 @@ elif [[ -n "${landlock_abi}" ]]; then
     # it cannot read /proc/self/maps (navikt/cplt PR 740 met the same; its
     # answer is this grant under bubblewrap's pid namespace, which the
     # container already is). What it exposes, measured and stated in the
-    # README, the spec and ADR 0015: kernel-wide status files as the
-    # container's kernel reports them, the command lines of the cage's other
-    # processes, and the environment and open files of processes inside this
-    # same sandbox. What bounds it: the container pid namespace (no host
-    # process), Landlock's ptrace rule (environ, maps, mem, exe and the
-    # root/cwd/fd targets of processes OUTSIDE the sandbox — cplt, an
-    # operator's docker exec — stay unreadable whatever they point at) and
-    # the ruleset itself (the tree's own /proc links keep the target's path
-    # rules; /proc is not writable, not even the agent's own comm).
+    # README, the spec and ADR 0015: kernel-wide status files and sysctl
+    # values as the container's kernel reports them, the command lines of
+    # the cage's other processes, and, for processes inside this same
+    # sandbox, their environment and open files — a peer's pipes and regular
+    # files can be reopened through its fd links — and their memory where
+    # Yama allows it (ptrace_scope >= 1 limits that to a process's own
+    # descendants; the note below states the other case). What bounds it:
+    # the container pid namespace (no host process), Landlock's ptrace rule
+    # (environ, maps, mem, exe and the root/cwd/fd targets of processes
+    # OUTSIDE the sandbox — cplt, an operator's docker exec — stay unreadable
+    # whatever they point at) and the ruleset itself (the tree's own /proc
+    # links keep the target's path rules; /proc is not writable, not even
+    # the agent's own comm). Inside the sandbox the harness and the tools it
+    # spawns are one uid and one domain: the harness's own permission prompts
+    # are not a boundary against them, with or without this grant.
     wrap+=(--allow-read /proc)
+    # Peer memory (/proc/<pid>/mem) needs ptrace-attach rights, which Landlock
+    # allows between processes of one domain and Yama then limits to a
+    # process's own descendants (kernel.yama.ptrace_scope >= 1, the Ubuntu
+    # default). With Yama off or absent, any process in the harness tree can
+    # read any other's memory, the harness's included. Not a tjor boundary
+    # (same uid, same sandbox), but a residual that is stated where it applies.
+    yama_scope="$(cat /proc/sys/kernel/yama/ptrace_scope 2>/dev/null || echo absent)"
+    case "${yama_scope}" in
+        1|2|3) ;;
+        *) echo "tjor-entrypoint: kernel-sandbox: note: kernel.yama.ptrace_scope=${yama_scope} on this engine — a process in the harness tree can read another's memory through /proc/<pid>/mem (same uid, same sandbox; ptrace_scope >= 1 limits that to a process's own descendants)" >&2 ;;
+    esac
     # The managed opencode config (#46, step 2b) is root-owned cargo under
     # /etc/opencode, which cplt's system grants do not cover: under the wrap a
     # hardened profile's managed settings silently did not load (found while

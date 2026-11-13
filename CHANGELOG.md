@@ -18,7 +18,10 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
   bounds it is stated in the README, the spec and ADR 0015: no host process
   is visible, the private entries of processes outside the sandbox stay
   refused, the tree's own `/proc` links keep the target's path rules, and
-  `/proc` is not writable. The
+  `/proc` is not writable. Inside the sandbox a tool can reopen the
+  harness's pipes and open files through its `fd` links, and peer memory
+  follows the engine's Yama setting (the entrypoint prints a note when
+  `kernel.yama.ptrace_scope` is 0 or absent). The
   `[landlock] mode = "off"` workaround from #103 is no longer needed and
   should be removed from profile configs. The Landlock suite now runs in CI
   and launches opencode v2 under the real wrap, in `--standalone` and in the
@@ -26,8 +29,10 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 - **The managed opencode config loads under the kernel tier.** `/etc/opencode`
   was outside cplt's system grants, so a hardened profile's
   `managed/opencode.json` was deployed root-owned and then silently not
-  loaded whenever the tier was active. The wrap grants the directory
-  read-only when it exists; the Landlock suite loads a sentinel key from it.
+  loaded whenever the tier was active, on every image from 0.16.0 (#46) to
+  0.23.0. The wrap grants the directory read-only when it exists; the
+  Landlock suite loads a sentinel key from it. The file is policy, readable
+  by the agent: keep secrets out of it.
 
 ## [0.23.0] — 2026-11-13 — OpenCode v2
 

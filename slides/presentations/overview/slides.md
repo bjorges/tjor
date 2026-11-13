@@ -353,7 +353,7 @@ What the cage can do to your machine. The network boundary holds; these are the 
 ---
 layout: problem
 title: Inside the container is still a lot
-specs: [kernel-sandbox@8d502965]
+specs: [kernel-sandbox@c6bd48e6]
 adrs: ['0015']
 ---
 
@@ -370,7 +370,7 @@ adrs: ['0015']
 - `mode = auto | require | off`; the tier states its status in one greppable line.
 
 <Plainly>
-<p>Masking is a launch-time snapshot: anything created mid-session is unmasked. Hook masking stops host hook frameworks in-cage on purpose (<code>mask_git_hooks = false</code> restores them); <code>core.hooksPath</code> bypasses it unless the config pin is on. The cage's own <code>/proc</code> is readable inside the tier so spawned Bun and Node processes can start: the agent sees the container kernel's status files and the command lines of the cage's processes; no host process, and no environment of a process outside its sandbox.</p>
+<p>Masking is a launch-time snapshot: anything created mid-session is unmasked. Hook masking stops host hook frameworks in-cage on purpose (<code>mask_git_hooks = false</code> restores them); <code>core.hooksPath</code> bypasses it unless the config pin is on. The cage's own <code>/proc</code> is readable inside the tier so spawned Bun and Node processes can start: the agent sees the container kernel's status files and the command lines of the cage's processes; no host process, and no environment of a process outside its sandbox. Inside the sandbox the harness and its tools are one trust domain: a tool can read the harness's pipes and open files.</p>
 </Plainly>
 
 ---
@@ -501,7 +501,7 @@ specs: [agent-profiles@7ab80e54]
 
 - `--profile <name>` / `--profile-dir <path>`: opt in, per launch. Selecting your own directory is the consent.
 - A **structural allow-list** of definition subdirectories (`agent`, `command`, `skill`, `prompt`, `mode`) is staged host-side and only the staging area is mounted; credential filenames and key extensions are skipped.
-- A profile's `managed/opencode.json` is deployed **root-owned** to opencode's managed-settings path before the privilege drop: it loads last and its keys cannot be overridden by any repo config.
+- A profile's `managed/opencode.json` is deployed **root-owned** to opencode's managed-settings path before the privilege drop: it loads last, its keys cannot be overridden by any repo config, and it applies under the kernel tier.
 
 <Plainly>
 <p>tjor cannot tell a definition from a secret by content: a profile is instructions the agent runs. Managed settings override keys but do not stop a repo config from adding plugins or local MCP servers; pair them with <code>mask_dirs = [".opencode"]</code>.</p>

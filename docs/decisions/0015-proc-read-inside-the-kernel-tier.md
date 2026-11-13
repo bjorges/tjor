@@ -49,21 +49,42 @@ under the wrap).
 2. **The wrap grants `/etc/opencode`, read-only, when it exists.** A managed
    policy that a hardened profile relies on must load under the tier; a
    grant on an absent directory is a cplt warning, so it is added only when
-   the entrypoint deployed the file.
+   the entrypoint deployed the file. The file is policy, not a secret store:
+   it is deployed `0644` and readable by the agent user with or without the
+   wrap; put no secrets in `managed/opencode.json`.
 3. **What the `/proc` grant exposes, measured on the pinned cplt with cplt as
    PID 1 and a same-uid process started outside the wrap:**
    - readable: kernel-wide status files as the container's kernel reports
-     them (`meminfo`, `stat`, `cpuinfo`, the kernel command line, the
-     container's `net/*` and mount tables); of PID 1 and the outside process
-     their `cmdline`, `comm`, `status`, `stat`, `statm`, `cgroup`, `limits`,
-     `mountinfo`, `oom_score`, `sched` and the `fd`/`task` name listings; of
-     processes inside the harness's own sandbox everything but `mem`
-     (environment, maps, open files, `exe`, `ns`);
+     them (`meminfo`, `stat`, `cpuinfo`, `version`, the kernel command line,
+     all of `/proc/sys` including the boot id, `kallsyms` symbol names with
+     addresses zeroed under `kptr_restrict=1`, the container's `net/*` and
+     mount tables; `mountinfo` names the host-side source of every mount,
+     which for tjor's bind mounts is the same path as in the cage; `cgroup`
+     shows `0::/`, a cgroup namespace, not the container id); of PID 1 and
+     the outside process their `cmdline`, `comm`, `status`, `stat`, `statm`,
+     `cgroup`, `limits`, `mountinfo`, `oom_score`, `sched` and the
+     `fd`/`task` name listings; of processes inside the harness's own
+     sandbox their environment, maps, `exe`, `ns` and open files, and
+     through their `fd` links the pipes and regular files behind them
+     (measured: a peer's pipe content reads, and drains; a peer's open
+     workspace file reads; sockets cannot be reopened);
+   - peer memory (`/proc/<pid>/mem`) follows the engine's Yama setting:
+     Landlock allows ptrace-attach inside one domain, so Yama decides. With
+     `kernel.yama.ptrace_scope=1` (Ubuntu's default, the CI runner, Colima)
+     a process opens only its own descendants' memory: measured, the probe
+     opens its child's, and a child or a sibling of the probe gets `EACCES`
+     on the probe's. With 0 or no Yama the same-uid check is all that is
+     left and any process in the sandbox opens any other's; that case
+     follows from the kernel rule and was not run here. The entrypoint
+     prints a note when the engine's value is 0 or absent, and the suite
+     asserts whichever case the engine is in;
    - refused: of PID 1 and the outside process `environ`, `maps`, `smaps`,
      `mem`, `io`, `exe`, `ns/*`, `root`, `cwd` and the `fd` targets, whatever
      they point at (Landlock's ptrace rule: a sandboxed process may not
-     inspect a process outside its domain; the holder is the same uid, so
-     this is not file permissions), including an open fd on a denied file;
+     inspect a process outside its domain; the holder is the same uid, and
+     the suite's `docker exec -u agent` controls read every one of these
+     entries outside the wrap, so this is not file permissions), including
+     an open fd on a granted workspace file and one on a denied file;
    - the tree's own links (`/proc/self/root`, a `/proc/self/cwd` traversal, a
      same-sandbox process's `root`) resolve and keep the target's path rules:
      a granted file reads, a denied file is refused, listing `/` is refused;
@@ -71,22 +92,34 @@ under the wrap).
      agent user may set outside the wrap and which a `--allow-write /proc`
      mutation lets through again (the suite's read-only check discriminates
      on exactly this); `/proc/sys` is Docker's read-only mount on top.
-   The container's pid namespace shows no host process. Docker's masked
-   `/proc` paths are unaffected (masks are mounts, not rules).
+   The container's pid namespace shows no host process: PID 1 is cplt and
+   the pid count is a handful (asserted, so a `pid: host` regression fails).
+   Docker's masked `/proc` paths are unaffected (masks are mounts, not
+   rules).
 4. **What this is not.** The harness's own permission prompts and its
    loopback service are harness-level controls. Every process in the tree
-   shares one uid and one sandbox; a tool the harness spawns could already
-   reach the harness's stdio and its service before this grant. tjor's
-   boundary is the container, the egress proxy and the kernel path denies;
-   the README's "Why" says so and this ADR restates it.
+   shares one uid and one sandbox. Before this grant a tool the harness
+   spawned had the file descriptors it inherited, the loopback service and
+   whatever the harness let it run; with it, it can also reopen any
+   same-sandbox peer's pipe or regular-file descriptor through
+   `/proc/<pid>/fd` (the standalone client's stdio channel to its server and
+   a stdio MCP transport are such pipes; sockets cannot be reopened) and, on
+   an engine with Yama off, read a peer's memory. The harness's permission
+   prompts are therefore not a boundary against in-tree tools, with or
+   without this grant. tjor's boundary is the container, the egress proxy
+   and the kernel path denies; the README's "Why" says so and this ADR
+   restates it.
 5. **The grant is a stated residual with live proof.** The kernel-sandbox
    spec carries it inside the granted-trees requirement; the README and the
    slide name it; the Landlock suite, now a CI job, pairs each direct denial
    with its `/proc` link, launches opencode v2 in `--standalone` and in the
    shipped default service mode, proves the service dies with the container
    by its engine-side pid, and loads a sentinel key from the managed config.
-   Measured on Colima (arm64, kernel 6.8, ABI 4) locally and on the Linux
-   CI runner (x86_64) by the `landlock` job.
+   Every denial is asserted to be the kernel's `EACCES` with a `docker exec`
+   control that reads the same entry outside the wrap. Measured on Colima
+   (arm64, kernel 6.8, ABI 4, `ptrace_scope=1`) locally and on the Linux CI
+   runner (x86_64, `ptrace_scope=1`) by the `landlock` job; the Yama-off
+   case is not measured by either.
 
 ## Consequences
 
@@ -97,6 +130,10 @@ under the wrap).
   list. Command lines of the cage's own processes are tjor's (cplt's flags)
   or the agent's own; an operator who runs `docker exec` with a secret on
   the command line shows it to the agent, as on any shared machine.
+- Inside the sandbox the harness and the tools it spawns are one trust
+  domain: a tool reads the harness's pipes and open files, and its memory
+  where Yama permits. The harness's permission prompts never were a boundary
+  against in-tree tools; this grant widens what such a tool reaches.
 - The fail-closed rule of the tier stands: a future cplt that refused the
   flag would fail the exec and abort the start, never run unwrapped.
 - Rollback: `[landlock] mode = "off"` disables the tier (the #103 workaround,
