@@ -430,8 +430,8 @@ build_agent() { # $1 = harness list (comma separated)
     local -a arch_arg=()
     local use_buildkit=0
     case "${DOCKER_BUILDKIT:-}" in
-        0|false|f|FALSE|False) use_buildkit=0 ;;
-        1|true|t|TRUE|True) use_buildkit=1 ;;
+        0|f|F|false|FALSE|False) use_buildkit=0 ;;
+        1|t|T|true|TRUE|True) use_buildkit=1 ;;
         *) docker buildx version >/dev/null 2>&1 && use_buildkit=1 ;;
     esac
     if [[ "${use_buildkit}" == 0 ]]; then
