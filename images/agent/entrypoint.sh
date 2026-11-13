@@ -614,10 +614,11 @@ elif [[ -n "${landlock_abi}" ]]; then
     # container's kernel reports them, the command lines of the cage's other
     # processes, and the environment and open files of processes inside this
     # same sandbox. What bounds it: the container pid namespace (no host
-    # process), Landlock's ptrace rule (environ, maps and root/cwd/fd targets
-    # of processes OUTSIDE the sandbox — cplt, an operator's docker exec —
-    # stay unreadable) and the ruleset itself (a denied path stays denied
-    # through a /proc link; /proc is not writable).
+    # process), Landlock's ptrace rule (environ, maps, mem, exe and the
+    # root/cwd/fd targets of processes OUTSIDE the sandbox — cplt, an
+    # operator's docker exec — stay unreadable whatever they point at) and
+    # the ruleset itself (the tree's own /proc links keep the target's path
+    # rules; /proc is not writable, not even the agent's own comm).
     wrap+=(--allow-read /proc)
     # The managed opencode config (#46, step 2b) is root-owned cargo under
     # /etc/opencode, which cplt's system grants do not cover: under the wrap a

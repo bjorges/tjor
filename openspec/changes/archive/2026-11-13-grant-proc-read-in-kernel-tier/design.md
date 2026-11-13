@@ -43,12 +43,14 @@ Measured on the pinned cplt with cplt as PID 1 (the entrypoint's layout) and a s
 | Read from the wrapped tree | Result |
 |---|---|
 | kernel-wide status files (`meminfo`, `stat`, the kernel command line, `net/tcp`, `self/mountinfo`) | readable, as the container's kernel reports them |
-| command line of PID 1 and of the outside process | readable |
-| `environ`, `maps`, `root`, `cwd` of PID 1 and of the outside process | refused |
+| PID 1 and the outside process: `cmdline`, `comm`, `status`, `stat`, `statm`, `cgroup`, `limits`, `mountinfo`, `oom_score`, `sched`, `fd` and `task` name listings | readable |
+| PID 1 and the outside process: `environ`, `maps`, `smaps`, `mem`, `io`, `exe`, `ns/*`, `root`, `cwd`, `fd` targets | refused, whatever the target |
 | the outside process's open fd to a denied file (`fd/3`) | refused |
-| a sibling inside the same sandbox: `environ` | readable |
-| a denied path through `/proc/self/root` or a `/proc/self/cwd` traversal | refused; a granted path resolves through the same link |
-| writes under `/proc` (`sysrq-trigger`, `sys/kernel/*`) | refused |
+| a sibling inside the same sandbox: `environ`, `maps`, `exe`, `fd` targets | readable (`mem` refused) |
+| the tree's own links: `/proc/self/root/<granted>`, a same-sandbox `root/<granted>` | resolve and read |
+| the tree's own links: `/proc/self/root/<denied>`, a `/proc/self/cwd` traversal to a denied file, a same-sandbox `root/<denied>`, listing `/` through `root` | refused: the target's path rules apply |
+| write to the agent's own `/proc/self/comm` | refused inside the wrap; succeeds for the agent user outside it; succeeds again under a `--allow-write /proc` mutation |
+| write under `/proc/sys` | refused with or without the wrap (Docker's read-only mount) |
 
 The refusals for processes outside the sandbox are Landlock's ptrace rule (a sandboxed process may not inspect a process outside its own domain), not file permissions; the holder is the same uid. The container's pid namespace shows no host process. cplt's warning ("every host process's command line") describes a host; in the cage the command lines are tjor's own (cplt's flags) or the agent's. What the grant does **not** change: every process in the tree shares one uid and one sandbox, so a tool the harness spawns could already reach the harness's stdio and its loopback service; those are harness-level controls, not a tjor boundary (README "Why").
 
@@ -60,14 +62,16 @@ The kernel-sandbox spec's "The harness runs under kernel filesystem denies when 
 
 `tests/integration/landlock_test.sh` part A runs a probe script as the harness command under the real wrap and reads findings back from the workspace. It now:
 
-- replaces the `/etc/shadow` outside-tree read (denied by file permissions, so it proved nothing about Landlock) with `/etc/hostname`, world-readable in the image and outside cplt's system grants, and adds a `docker exec -u agent` control showing the same file is readable outside the wrap;
-- pairs each direct read with its link: `/proc/self/root` for a granted and a denied path, a `/proc/self/cwd` traversal, PID 1's `cmdline`/`environ`/`root`/`cwd`, and an unsandboxed same-uid holder (started by the test with `docker exec -u agent`, its pid handed to the probe through the workspace) whose `fd/3`, `environ` and `cmdline` are read; records the stated residuals (`meminfo`, a sibling's `environ`) and that `/proc` is not writable;
+- replaces the `/etc/shadow` outside-tree read (denied by file permissions, so it proved nothing about Landlock) with `/etc/hostname`, world-readable in the image and outside cplt's system grants, and adds a `docker exec -u agent` control showing the same file is readable outside the wrap. No coverage is lost: `/etc/shadow` stays unreadable through file permissions and the image's non-root guarantee, which the agent-image CI job asserts; what the old probe claimed to prove, the kernel denial, is what the new one proves;
+- pairs each direct read with its link: `/proc/self/root` for a granted and a denied path, a `/proc/self/cwd` traversal, a same-sandbox sibling's `root` for a granted and a denied path, PID 1's `cmdline`/`status` (readable) and `environ`/`root`/`cwd`/`exe`/`fd` target (refused), and an unsandboxed same-uid holder (started by the test with `docker exec -u agent`, its pid handed to the probe through the workspace) whose `fd/3`, `environ` and `cmdline` are read; records the stated residuals (`meminfo`, a sibling's `environ`); asserts read-only on a write the agent may do outside the wrap, its own `/proc/self/comm` (with a `docker exec` control that it succeeds there), and records Docker's read-only `/proc/sys` separately so the two are not confused;
 - launches with `--profile-dir` carrying only `managed/opencode.json` (`username` set to a sentinel; opencode v2 drops unknown keys) and asserts `opencode --standalone debug config` shows it under the wrap;
 - runs `opencode --standalone session list`, then the shipped default mode: `opencode session list` against fresh session state, the registration's pid alive with command line `opencode serve --service`, an HTTP answer on the registered loopback URL, a second invocation keeping the registration id; every call under `timeout 90` with stderr captured to the workspace and printed when a check fails;
-- after `tjor down`, asserts on the engine host that no `opencode serve --service` process survived (`pgrep` on Linux, `colima ssh -- pgrep` on macOS, a stated skip elsewhere), relaunches the session with the stale registration still in the persisted home, and asserts a fresh service with a new id;
+- ties the survivor check to this session's service: `docker top` on the agent container gives the engine-side pid of `opencode serve --service`; a throwaway `--pid=host` container reads that pid's command line from the engine's process table before `tjor down` (a control: the inspection must see it) and after (it must be gone). The same mechanism works on a Linux engine host and inside the Colima VM, and an inspection failure fails the control instead of passing as "no survivor". Then it relaunches the session with the stale registration still in the persisted home and asserts a fresh service with a new id;
 - in strict mode (`TJOR_LANDLOCK_TEST_STRICT=1`, set by CI) fails instead of skipping when the engine has no Landlock or the image has no `opencode`.
 
 A new `landlock` job in `ci.yml` (`needs: agent-image`, strict) runs it; the ruleset on `main` must list the job by name before the pull request can merge (CONTRIBUTING "Repository settings", `tests/ruleset_consistency.sh`). Every check name is registered in `python/gen_boundary_matrix.py`: the denials and the managed config as adversarial rows, the controls, residuals and opencode lifecycle as functional rows. The existing fail-closed path covers the flags themselves: a cplt that refused them would fail the exec and `set -e` aborts the start (add-landlock-tier, decision 3).
+
+**Measured where.** The suite ran green on Colima (arm64, kernel 6.8, Landlock ABI 4) from this branch, and on the Linux CI runner (x86_64) by the strict `landlock` job. The falsification (the released 0.23.0 image's cplt with the same flags minus the grants: child denied, both opencode launches aborting, managed sentinel absent; and the `--allow-write /proc` mutation letting the `comm` write through) was done by hand on Colima with the probe commands, not by CI.
 
 ### D5. Nothing else in the wrap moves
 
@@ -82,7 +86,7 @@ A new `landlock` job in `ci.yml` (`needs: agent-image`, strict) runs it; the rul
 - [The agent reads the container kernel's status files and the cage's command lines] → measured and stated (D2); the command lines are tjor's or the agent's; an operator who passes a secret on a `docker exec` command line shows it to the agent, as on any shared machine.
 - [A future cplt rejects or re-scopes `--allow-read /proc`] → the wrap fails to exec and the start aborts loudly (decision 3 of the tier); the strict CI suite catches a silent behavioural change at the next pin bump.
 - [The offline opencode smoke depends on the CLI shape of the pinned opencode] → it is the CLI the image ships and pins; a later major that changes it fails the check visibly, which is the point of pinning.
-- [The engine-host survivor check depends on `pgrep` seeing container processes] → true on a Linux engine host and inside the Colima VM; elsewhere the check states that it was skipped rather than passing.
+- [The survivor check depends on `docker top` and `--pid=host`] → both are engine features present on a Linux host and in Colima; the before-down control fails loudly if either stops working, so a broken inspection cannot read as "no survivor".
 - [A reader takes "Landlock denies outside the tree" literally and is surprised by `/proc`] → the README, spec, slide and ADR all name the grant.
 
 ## Migration Plan

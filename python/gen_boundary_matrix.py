@@ -167,7 +167,11 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
     "an unsandboxed same-uid process's environ is unreadable from the wrap":
         (LANDLOCK, "kernel-sandbox", "Processes outside the sandbox keep their environment private (docker exec)", True),
     "/proc is not writable under the wrap":
-        (LANDLOCK, "kernel-sandbox", "/proc grant is read-only", True),
+        (LANDLOCK, "kernel-sandbox", "/proc grant is read-only (own comm write refused)", True),
+    "PID 1's exe and fd targets are unreadable from the wrap":
+        (LANDLOCK, "kernel-sandbox", "Processes outside the sandbox keep their private entries (PID 1 exe, fd targets)", True),
+    "a same-sandbox process's root link keeps the target's path rules":
+        (LANDLOCK, "kernel-sandbox", "The tree's own /proc links keep the target's path rules (same-sandbox root)", True),
     "the managed opencode config is loaded under the wrap":
         (LANDLOCK, "agent-profiles", "Managed opencode config applies under the kernel tier", True),
     "workspace .env reads empty (masked)":
@@ -238,6 +242,10 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
     "outside-tree read denial is Landlock's (the file is readable outside the wrap)": (LANDLOCK, "kernel-sandbox", "control: the denied file is DAC-readable", False),
     "a forked child reads its own /proc/self under the wrap (#103)": (LANDLOCK, "kernel-sandbox", "functional: spawned processes read their own /proc/self", False),
     "an allowed path resolves through /proc/self/root (the link is live)": (LANDLOCK, "kernel-sandbox", "control: the /proc link resolves for a granted path", False),
+    "a /proc/self/comm write succeeds outside the wrap (control)": (LANDLOCK, "kernel-sandbox", "control: the refused write is one the agent may do unwrapped", False),
+    "Docker's read-only /proc/sys holds under the wrap": (LANDLOCK, "kernel-sandbox", "control: Docker's read-only /proc/sys (not the grant)", False),
+    "PID 1's status is readable from the wrap (stated residual)": (LANDLOCK, "kernel-sandbox", "residual as stated: status readable", False),
+    "the engine-side inspection sees the session's service before down (control)": (LANDLOCK, "kernel-sandbox", "control: survivor inspection sees the live service", False),
     "PID 1's command line is readable from the wrap (stated residual)": (LANDLOCK, "kernel-sandbox", "residual as stated: command lines readable", False),
     "kernel-wide /proc status files are readable under the wrap (stated residual)": (LANDLOCK, "kernel-sandbox", "residual as stated: kernel status files readable", False),
     "a sibling in the same sandbox exposes its environ (stated residual)": (LANDLOCK, "kernel-sandbox", "residual as stated: same-sandbox environ readable", False),

@@ -54,15 +54,23 @@ under the wrap).
    PID 1 and a same-uid process started outside the wrap:**
    - readable: kernel-wide status files as the container's kernel reports
      them (`meminfo`, `stat`, `cpuinfo`, the kernel command line, the
-     container's `net/*` and mount tables); the command lines of the cage's
-     other processes; the environment, maps and open files of processes
-     inside the harness's own sandbox (the agent's own tree);
-   - refused: PID 1's and the outside process's `environ`, `maps`, `root`,
-     `cwd` and `fd` targets (Landlock's ptrace rule: a sandboxed process may
-     not inspect a process outside its domain); an open fd that such a
-     process holds on a denied file; a denied path reached through
-     `/proc/self/root` or a `/proc/self/cwd` traversal, while a granted path
-     resolves through the same link; every write under `/proc`.
+     container's `net/*` and mount tables); of PID 1 and the outside process
+     their `cmdline`, `comm`, `status`, `stat`, `statm`, `cgroup`, `limits`,
+     `mountinfo`, `oom_score`, `sched` and the `fd`/`task` name listings; of
+     processes inside the harness's own sandbox everything but `mem`
+     (environment, maps, open files, `exe`, `ns`);
+   - refused: of PID 1 and the outside process `environ`, `maps`, `smaps`,
+     `mem`, `io`, `exe`, `ns/*`, `root`, `cwd` and the `fd` targets, whatever
+     they point at (Landlock's ptrace rule: a sandboxed process may not
+     inspect a process outside its domain; the holder is the same uid, so
+     this is not file permissions), including an open fd on a denied file;
+   - the tree's own links (`/proc/self/root`, a `/proc/self/cwd` traversal, a
+     same-sandbox process's `root`) resolve and keep the target's path rules:
+     a granted file reads, a denied file is refused, listing `/` is refused;
+   - every write under `/proc`, including the agent's own `comm`, which the
+     agent user may set outside the wrap and which a `--allow-write /proc`
+     mutation lets through again (the suite's read-only check discriminates
+     on exactly this); `/proc/sys` is Docker's read-only mount on top.
    The container's pid namespace shows no host process. Docker's masked
    `/proc` paths are unaffected (masks are mounts, not rules).
 4. **What this is not.** The harness's own permission prompts and its
@@ -75,8 +83,10 @@ under the wrap).
    spec carries it inside the granted-trees requirement; the README and the
    slide name it; the Landlock suite, now a CI job, pairs each direct denial
    with its `/proc` link, launches opencode v2 in `--standalone` and in the
-   shipped default service mode, and loads a sentinel key from the managed
-   config.
+   shipped default service mode, proves the service dies with the container
+   by its engine-side pid, and loads a sentinel key from the managed config.
+   Measured on Colima (arm64, kernel 6.8, ABI 4) locally and on the Linux
+   CI runner (x86_64) by the `landlock` job.
 
 ## Consequences
 

@@ -132,10 +132,20 @@ try pid1_cmdline "head -c1 /proc/1/cmdline"
 try pid1_environ "head -c1 /proc/1/environ"
 try pid1_root "head -c1 /proc/1/root/etc/os-release"
 try pid1_cwd "ls /proc/1/cwd"
+try pid1_status "head -c1 /proc/1/status"
+try pid1_exe "readlink /proc/1/exe"
+try pid1_fd0 "readlink /proc/1/fd/0"
 try proc_meminfo "head -c1 /proc/meminfo"
-(echo 0 > /proc/sys/kernel/randomize_va_space 2>/dev/null && say "proc_write=OK" || say "proc_write=refused")
+# Read-only: setting the probe's own comm is a write the agent user may do
+# outside the wrap (the docker-exec control proves it) and must be refused
+# inside; /proc/sys is Docker's read-only mount, refused with or without the
+# wrap, recorded separately.
+(echo tjorprobe > /proc/self/comm 2>/dev/null && say "proc_comm_write=OK" || say "proc_comm_write=refused")
+(echo 0 > /proc/sys/kernel/randomize_va_space 2>/dev/null && say "proc_sys_write=OK" || say "proc_sys_write=refused")
 sleep 30 & SIB=$!
 try sibling_environ "head -c1 /proc/${SIB}/environ"
+try sib_root_allowed "head -c1 /proc/${SIB}/root/etc/os-release"
+try sib_root_denied "head -c1 /proc/${SIB}/root/etc/hostname"
 kill "${SIB}" 2>/dev/null
 # A same-uid process started OUTSIDE the wrap (the test runs it with docker
 # exec -u agent) holding a denied file open on fd 3: wait for its pid.
@@ -188,6 +198,7 @@ PROBE
     # harness tree, keeping a Landlock-denied file open on fd 3.
     docker exec -d -u agent "${CTR}" sh -c "exec 3</etc/hostname; echo \$\$ > '${REPO}/holder.pid'; sleep 600"
     DAC_READ="$(docker exec -u agent "${CTR}" cat /etc/hostname 2>/dev/null | wc -c | tr -d ' ')"
+    DAC_COMM_WRITE="$(docker exec -u agent "${CTR}" sh -c 'echo tjorctl > /proc/self/comm && echo OK' 2>/dev/null)"
     for _ in $(seq 1 240); do grep -q DONE "${R}" 2>/dev/null && break; sleep 1; done
 
     field() { grep "^$1=" "${R}" 2>/dev/null | head -1 | cut -d= -f2-; }
@@ -226,9 +237,14 @@ PROBE
     check "PID 1's environ is unreadable from the wrap" test "$(field pid1_environ)" = "denied"
     check "PID 1's root link is unreadable from the wrap" test "$(field pid1_root)" = "denied"
     check "PID 1's cwd link is unreadable from the wrap" test "$(field pid1_cwd)" = "denied"
+    check "PID 1's exe and fd targets are unreadable from the wrap" bash -c "[[ '$(field pid1_exe)' == denied && '$(field pid1_fd0)' == denied ]]"
+    check "PID 1's status is readable from the wrap (stated residual)" test "$(field pid1_status)" = "OK"
     check "kernel-wide /proc status files are readable under the wrap (stated residual)" test "$(field proc_meminfo)" = "OK"
-    check "/proc is not writable under the wrap" test "$(field proc_write)" = "refused"
+    check "a /proc/self/comm write succeeds outside the wrap (control)" test "${DAC_COMM_WRITE}" = "OK"
+    check "/proc is not writable under the wrap" test "$(field proc_comm_write)" = "refused"
+    check "Docker's read-only /proc/sys holds under the wrap" test "$(field proc_sys_write)" = "refused"
     check "a sibling in the same sandbox exposes its environ (stated residual)" test "$(field sibling_environ)" = "OK"
+    check "a same-sandbox process's root link keeps the target's path rules" bash -c "[[ '$(field sib_root_allowed)' == OK && '$(field sib_root_denied)' == denied ]]"
     check "an unsandboxed same-uid process's open fd to a denied file is unreadable from the wrap" test "$(field holder_fd)" = "denied"
     check "an unsandboxed same-uid process's environ is unreadable from the wrap" test "$(field holder_environ)" = "denied"
     check "an unsandboxed same-uid process's command line is readable from the wrap (stated residual)" test "$(field holder_cmdline)" = "OK"
@@ -263,23 +279,28 @@ PROBE
     check "an allowed host egresses through the proxy" bash -c \
         "field() { grep '^egress=' '${R}' | cut -d= -f2-; }; field | grep -Eq '\[(200|301|302)\]'"
 
+    # The service dies with the container, tied to THIS session's service:
+    # docker top reports the engine-side pid of the in-container service, and a
+    # throwaway --pid=host container reads that pid's command line from the
+    # engine's process table before the session is stopped (the inspection
+    # must see it) and after (it must be gone). Works the same on a Linux
+    # engine host and inside the Colima VM; an inspection that fails fails
+    # the control check, never passes as "no survivor".
+    # A pid that is gone must read as EMPTY, not as an error: the redirection
+    # of a vanished /proc/<pid>/cmdline would exit the throwaway shell with 2
+    # and set -e would abort the suite on the very state this measures.
+    host_cmdline() { docker run --rm --pid=host --network none --entrypoint sh "${IMAGE}" -c "cat /proc/$1/cmdline 2>/dev/null | tr '\\0' ' '; exit 0"; }
+    HOST_SVC_PID="$(docker top "${CTR}" -o pid,args 2>/dev/null | awk '/opencode serve --service/ {print $1; exit}')"
+    SEEN_BEFORE=""; if [[ -n "${HOST_SVC_PID}" ]]; then SEEN_BEFORE="$(host_cmdline "${HOST_SVC_PID}")"; fi
+
     ( cd "${REPO}" && "${T}" down --session ll >/dev/null 2>&1 )
 
-    # The service dies with the container: on a Linux engine host the
-    # container's processes are visible to pgrep; through Colima, inside the
-    # VM. The bracket keeps the pattern from matching its own shell.
-    survivor="unknown"
-    if [[ "$(uname -s)" == "Linux" ]]; then
-        if pgrep -f 'opencode serve --servic[e]' >/dev/null 2>&1; then survivor=yes; else survivor=no; fi
-    elif command -v colima >/dev/null 2>&1; then
-        if colima ssh -- pgrep -f 'opencode serve --servic[e]' >/dev/null 2>&1; then survivor=yes; else survivor=no; fi
-    fi
+    SEEN_AFTER=""; if [[ -n "${HOST_SVC_PID}" ]]; then SEEN_AFTER="$(host_cmdline "${HOST_SVC_PID}")"; fi
     if [[ -z "${SVC_ID}" ]]; then
         echo "ok   (skipped: no opencode service outlives the container — no service ran)"
-    elif [[ "${survivor}" == "unknown" ]]; then
-        echo "ok   (skipped: no opencode service outlives the container — engine host not inspectable from here)"
     else
-        check "no opencode service outlives the container" test "${survivor}" = "no"
+        check "the engine-side inspection sees the session's service before down (control)" bash -c "grep -q 'opencode serve --service' <<<'${SEEN_BEFORE}'"
+        check "no opencode service outlives the container" bash -c "! grep -q 'opencode serve' <<<'${SEEN_AFTER}'"
     fi
 
     # Relaunch with the stale registration: the session home persists across

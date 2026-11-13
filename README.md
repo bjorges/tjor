@@ -683,16 +683,19 @@ What it does, in two independent mechanisms:
   `claude --version`; Bun or Node MCP servers are the same class). What the
   grant exposes, measured on the pinned cplt: kernel-wide status files as the
   container's kernel reports them (memory, CPU, the kernel command line, the
-  container's network and mount tables), the command lines of the cage's
-  other processes, and the environment and open files of processes inside
-  the harness's own sandbox. What bounds it: the container's pid namespace
-  shows no host process; Landlock's ptrace rule keeps the environment,
-  memory maps and `root`/`cwd`/`fd` targets of processes *outside* the
-  sandbox (cplt, an operator's `docker exec`) unreadable; a path Landlock
-  denies stays denied through a `/proc/<pid>/root` link; `/proc` is not
-  writable. The harness's own permission prompts and its loopback service
-  are harness-level controls shared by every process of the tree (one uid,
-  one sandbox), not a tjor boundary (ADR 0015).
+  container's network and mount tables); of the cage's other processes their
+  `cmdline`, `comm`, `status`, `stat`, `cgroup`, `limits`, `mountinfo` and
+  the names of their open fds; and, for processes inside the harness's own
+  sandbox, their environment, maps and open files. What bounds it: the
+  container's pid namespace shows no host process; for a process *outside*
+  the sandbox (cplt as PID 1, an operator's `docker exec`) Landlock's ptrace
+  rule refuses `environ`, `maps`, `mem`, `io`, `exe`, `ns`, `root`, `cwd` and
+  the fd targets whatever they point at; the tree's own `root`/`cwd`/`fd`
+  links resolve but keep the target's path rules, so a Landlock-denied file
+  stays denied through them; `/proc` is not writable (even the agent's own
+  `comm`). The harness's own permission prompts and its loopback service are
+  harness-level controls shared by every process of the tree (one uid, one
+  sandbox), not a tjor boundary (ADR 0015).
 - **The managed opencode config is granted under the tier.** `/etc/opencode`
   (hardened profiles, below) is root-owned cargo outside cplt's system grants;
   it is granted read-only when it exists, so a managed policy applies under

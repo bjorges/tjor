@@ -353,7 +353,7 @@ What the cage can do to your machine. The network boundary holds; these are the 
 ---
 layout: problem
 title: Inside the container is still a lot
-specs: [kernel-sandbox@d22d1e96]
+specs: [kernel-sandbox@8d502965]
 adrs: ['0015']
 ---
 

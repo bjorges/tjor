@@ -15,7 +15,10 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
   answer cplt itself gives for a pid namespace, which the container is. The
   same fault hit any Bun or Node child under the wrap (a forked
   `claude --version` aborts the same way). What the grant exposes and what
-  bounds it is stated in the README, the spec and ADR 0015. The
+  bounds it is stated in the README, the spec and ADR 0015: no host process
+  is visible, the private entries of processes outside the sandbox stay
+  refused, the tree's own `/proc` links keep the target's path rules, and
+  `/proc` is not writable. The
   `[landlock] mode = "off"` workaround from #103 is no longer needed and
   should be removed from profile configs. The Landlock suite now runs in CI
   and launches opencode v2 under the real wrap, in `--standalone` and in the
