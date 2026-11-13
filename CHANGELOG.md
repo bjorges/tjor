@@ -5,6 +5,21 @@ dates are release dates. Pre-1.0: minor versions may carry breaking changes.
 
 ## [Unreleased]
 
+### Fixed
+- **opencode v2 starts under the kernel-sandbox tier again** (#103). cplt's
+  Landlock rules grant `/proc/self` to the first sandboxed process only, so
+  opencode v2's server child, a second Bun process, aborted at startup and
+  every session with the tier active failed with "Standalone server exited
+  before reporting readiness"; the oc-personal and oc-tieto profiles could
+  not start. The wrap now grants the container's `/proc` read-only, the
+  answer cplt itself gives for a pid namespace, which the container is.
+  Residual, stated in the README and the spec: the agent can list the cage's
+  own processes and read their command lines; nothing of the host is visible
+  and denied paths stay denied through `/proc/<pid>/root`. The same latent
+  fault hit any Bun or Node child under the wrap (Claude Code's binary is
+  Bun-compiled too). The Landlock suite now launches `opencode --standalone`
+  under the real wrap, offline, so this cannot regress (ADR 0015).
+
 ## [0.23.0] — 2026-11-13 — OpenCode v2
 
 Breaking by design (pre-1.0 minor bump): opencode v2 replaces v1 in the image;

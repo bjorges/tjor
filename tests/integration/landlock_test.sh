@@ -108,6 +108,13 @@ echo "template=[\$(cat ${REPO}/.env.example 2>/dev/null)]" >> "\$R"
 (cat /etc/shadow >/dev/null 2>&1 && echo "outside_read=OK" || echo "outside_read=denied") >> "\$R"
 (touch /opt/tjor/evil 2>/dev/null && echo "outside_write=OK" || echo "outside_write=denied") >> "\$R"
 (echo w > ${REPO}/wprobe 2>/dev/null && echo "workspace_write=OK" || echo "workspace_write=denied") >> "\$R"
+(sh -c 'cat /proc/self/maps >/dev/null' 2>/dev/null && echo "child_proc_self=OK" || echo "child_proc_self=denied") >> "\$R"
+(cat /proc/self/root/etc/hostname >/dev/null 2>&1 && echo "proc_root=OK" || echo "proc_root=denied") >> "\$R"
+if command -v opencode >/dev/null 2>&1; then
+    (OPENCODE_DISABLE_PROJECT_CONFIG=1 opencode --standalone session list >/dev/null 2>&1 && echo "opencode_standalone=OK" || echo "opencode_standalone=failed") >> "\$R"
+else
+    echo "opencode_standalone=absent" >> "\$R"
+fi
 echo "http_proxy=[\$HTTP_PROXY]" >> "\$R"
 echo "http_proxy_lc=[\$http_proxy]" >> "\$R"
 echo "egress=[\$(curl -fsS -o /dev/null -w %{http_code} https://github.com 2>/dev/null)]" >> "\$R"
@@ -141,6 +148,20 @@ PROBE
     check "outside-tree read is kernel-denied" test "$(field outside_read)" = "denied"
     check "outside-tree write is kernel-denied" test "$(field outside_write)" = "denied"
     check "workspace is writable under the wrap" test "$(field workspace_write)" = "OK"
+
+    # /proc inside the tier (#103): cplt's own /proc/self rule covers the first
+    # pid only, so without the wrap's /proc grant a forked child cannot read
+    # its own maps and every Bun-compiled child (opencode v2's server) aborts.
+    # The grant is read-only and subtracts nothing: a denied path stays denied
+    # through the process's own /proc/self/root link (/etc/hostname is
+    # world-readable in the image and outside cplt's system grants).
+    check "a forked child reads its own /proc/self under the wrap (#103)" test "$(field child_proc_self)" = "OK"
+    check "a denied path stays denied through /proc/self/root" test "$(field proc_root)" = "denied"
+    if [[ "$(field opencode_standalone)" == "absent" ]]; then
+        echo "ok   opencode v2 standalone starts under the wrap (#103) (skipped: image has no opencode)"; PASS=$((PASS + 1))
+    else
+        check "opencode v2 standalone starts under the wrap (#103)" test "$(field opencode_standalone)" = "OK"
+    fi
 
     # Strictly additive: proxy env survives the wrap; harness reaches the proxy.
     check "HTTP_PROXY survives the wrap" bash -c "field() { grep '^http_proxy=' '${R}' | cut -d= -f2-; }; field | grep -q ':8080'"

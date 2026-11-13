@@ -4,7 +4,7 @@
      Regenerate: python3 python/gen_boundary_matrix.py
      Drift-checked by tests/doc_consistency.sh (`--check`). -->
 
-Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount`, `gitcheck`, `task-notes` and `harness-launch` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (560 checks total; 255 adversarial guarantees below, the rest functional/config checks the suites also run).
+Each row is an adversarial guarantee tjor enforces, the probe that proves it, and the spec capability it backs. **Status is coverage, not a per-run result**: every guarantee here is exercised by a live probe that the CI `conformance`, `landlock` and `unit` jobs run — a red CI blocks merge, so "listed here" means "proven green in CI". The `conformance` and `landlock` suites probe the cage from inside; the `workspace-gate`, `self-mount`, `gitcheck`, `task-notes` and `harness-launch` suites are launcher-side (host guarantees the cage cannot re-check: what `tjor run` refuses before any container exists). Generated from the suite sources (563 checks total; 256 adversarial guarantees below, the rest functional/config checks the suites also run).
 
 ## cage-network
 
@@ -87,6 +87,7 @@ Each row is an adversarial guarantee tjor enforces, the probe that proves it, an
 | A symlinked git config is refused at launch regardless of the pin setting | `git hooks: a symlinked config is refused even with the pin off` | gitcheck |
 | A symlinked git hooks directory is refused at launch, never masked through | `git hooks: a symlinked hooks dir refuses the launch instead of masking through the link` | gitcheck |
 | A write into a masked dir is refused | `write into the masked dir refused` | landlock |
+| Denied paths stay denied through /proc links | `a denied path stays denied through /proc/self/root` | landlock |
 | Git hooks directory is masked (lists empty) in a writable mount | `git hooks: workspace hooks dir lists empty in-cage` | landlock |
 | Masked-dir content is absent from results | `plugin content nowhere in the probe result` | landlock |
 | Nested dotenv is masked (reads empty) | `nested sub/.env reads empty (masked)` | landlock |

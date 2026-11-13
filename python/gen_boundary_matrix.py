@@ -152,6 +152,8 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
         (LANDLOCK, "kernel-sandbox", "Outside-tree read is kernel-denied", True),
     "outside-tree write is kernel-denied":
         (LANDLOCK, "kernel-sandbox", "Outside-tree write is kernel-denied", True),
+    "a denied path stays denied through /proc/self/root":
+        (LANDLOCK, "kernel-sandbox", "Denied paths stay denied through /proc links", True),
     "workspace .env reads empty (masked)":
         (LANDLOCK, "kernel-sandbox", "Workspace dotenv is masked (reads empty)", True),
     "nested sub/.env reads empty (masked)":
@@ -217,6 +219,8 @@ REGISTRY: dict[str, tuple[str, str, str, bool]] = {
     "config pin: host config file unchanged": (LANDLOCK, "kernel-sandbox", "functional: host config unchanged", False),
     ".env.example (template) is NOT masked": (LANDLOCK, "kernel-sandbox", "masking precision (template not masked)", False),
     "workspace is writable under the wrap": (LANDLOCK, "kernel-sandbox", "functional: workspace writable", False),
+    "a forked child reads its own /proc/self under the wrap (#103)": (LANDLOCK, "kernel-sandbox", "functional: spawned processes read their own /proc/self", False),
+    "opencode v2 standalone starts under the wrap (#103)": (LANDLOCK, "kernel-sandbox", "functional: opencode v2 starts under the wrap", False),
     "HTTP_PROXY survives the wrap": (LANDLOCK, "kernel-sandbox", "functional: proxy env survives", False),
     "lowercase http_proxy survives the wrap": (LANDLOCK, "kernel-sandbox", "functional: proxy env survives", False),
     "an allowed host egresses through the proxy": (LANDLOCK, "kernel-sandbox", "functional: allowed egress works", False),

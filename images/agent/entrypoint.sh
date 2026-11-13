@@ -602,6 +602,18 @@ elif [[ -n "${landlock_abi}" ]]; then
     # (found the same way: git reported "unable to access '/etc/gitconfig':
     # Permission denied" under the wrap). Grant exactly that file, read-only.
     wrap+=(--allow-read /etc/gitconfig)
+    # /proc, read-only (#103). Without bubblewrap cplt grants /proc/self to the
+    # FIRST sandboxed pid only (the rule is resolved in the child before exec,
+    # so it names that one /proc/<pid>); every process forked below it gets
+    # EACCES on its own /proc/self. Bun-compiled harnesses (opencode v2's
+    # server child, Claude Code, any Bun/Node MCP server) abort at startup
+    # when they cannot read /proc/self/maps (navikt/cplt PR 740 met the same).
+    # cplt's own answer is this grant under a pid namespace; the container IS
+    # that namespace. Residual, stated in the README and the spec: the agent
+    # can list the cage's own processes and read their command lines (cplt's
+    # flags, no secret); Landlock still denies every other path, also through
+    # /proc/<pid>/root links. Nothing of the host is visible.
+    wrap+=(--allow-read /proc)
     child_env=(env -u GIT_CONFIG_NOSYSTEM)
     if [[ -n "${GH_TOKEN:-}" ]]; then child_env+=("GH_TOKEN=${GH_TOKEN}"); fi
     exec gosu agent env HOME="${AGENT_HOME}" USER=agent "${wrap[@]}" exec -- "${child_env[@]}" "$@"

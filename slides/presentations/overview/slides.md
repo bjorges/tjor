@@ -353,7 +353,8 @@ What the cage can do to your machine. The network boundary holds; these are the 
 ---
 layout: problem
 title: Inside the container is still a lot
-specs: [kernel-sandbox@51127809]
+specs: [kernel-sandbox@ac92bcc1]
+adrs: ['0015']
 ---
 
 ::problem::
@@ -369,7 +370,7 @@ specs: [kernel-sandbox@51127809]
 - `mode = auto | require | off`; the tier states its status in one greppable line.
 
 <Plainly>
-<p>Masking is a launch-time snapshot: anything created mid-session is unmasked. Hook masking stops host hook frameworks in-cage on purpose (<code>mask_git_hooks = false</code> restores them); <code>core.hooksPath</code> bypasses it unless the config pin is on.</p>
+<p>Masking is a launch-time snapshot: anything created mid-session is unmasked. Hook masking stops host hook frameworks in-cage on purpose (<code>mask_git_hooks = false</code> restores them); <code>core.hooksPath</code> bypasses it unless the config pin is on. The cage's own <code>/proc</code> is readable inside the tier, so spawned Bun and Node processes can start: the agent sees its own process list and command lines, nothing of the host.</p>
 </Plainly>
 
 ---

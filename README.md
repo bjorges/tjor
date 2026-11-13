@@ -675,6 +675,16 @@ What it does, in two independent mechanisms:
   denied by the kernel and the restriction is irrevocable for the process tree.
   (Landlock is allowlist-only — it *cannot* subtract a path inside a granted tree,
   which is why in-repo secrets use the second mechanism.)
+- **`/proc` is readable inside the tier (#103).** The wrap grants the
+  container's `/proc` read-only. Without it only the *first* sandboxed process
+  can read its own `/proc/self`; every process it spawns gets `EACCES`, and a
+  Bun-compiled runtime aborts at startup when it cannot read its own
+  `/proc/self/maps` (opencode v2's server child, Claude Code, Bun or Node MCP
+  servers). Residual, stated plainly: the agent can list the cage's own
+  processes and read their command lines (cplt's wrap flags, no secret). The
+  container's pid namespace bounds that view to the cage's own processes; no
+  host process is visible, and a path Landlock denies stays denied when reached
+  through a `/proc/<pid>/root` link (ADR 0015).
 - **Dotenv masking (mounts, every runtime).** At launch, each `.env` / `.env.*`
   in the mounted repos (templates like `.env.example` excluded) is masked with a
   read-only empty bind mount, so its contents are unreadable in-cage even where
