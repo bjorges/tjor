@@ -97,11 +97,11 @@ class TestRepoConfigLayer:
             '[proxy]\nport = 7777\n[harness.opencode]\nargs = ["--auto"]\n')
         tjor_trust.approve(repo / ".tjor" / "config.toml")
         user = tmp_path / "user.toml"
-        user.write_text('[harness.opencode]\nargs = ["--agent", "bob"]\n')
+        user.write_text('[harness.opencode]\nargs = ["--standalone", "--auto"]\n')
         monkeypatch.setenv("TJOR_USER_CONFIG", str(user))
         cfg = tjor_cfg.effective()
         assert tjor_cfg.get(cfg, "proxy.port") == 7777
-        assert tjor_cfg.get(cfg, "harness.opencode.args") == ["--agent", "bob"]
+        assert tjor_cfg.get(cfg, "harness.opencode.args") == ["--standalone", "--auto"]
         assert tjor_cfg.get(cfg, "harness.claude.args") == []
         err = capsys.readouterr().err
         assert "[harness]" in err and "user-config only" in err and "ADR 0014" in err

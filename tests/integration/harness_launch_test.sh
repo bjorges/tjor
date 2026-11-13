@@ -125,10 +125,10 @@ check "harness launch: the prompt-less command is the bare harness" cmd_is claud
 check "harness launch: the record flag stays empty without a task" rec_flag ""
 
 # === 2. Configured arguments: user config only, verbatim, uninspected =======
-write_cfg $'[harness.opencode]\nargs = ["--agent", "bob", "a b", "-x"]'
+write_cfg $'[harness.opencode]\nargs = ["--standalone", "--auto", "a b", "-x"]'
 check "harness launch: args pass verbatim, one argv element each, in order" build_from opencode "" ""
-check "harness launch: the argv is harness then args" cmd_is opencode --agent bob "a b" -x
-check "harness launch: the launch line shows the args" show_is "opencode --agent bob a b -x"
+check "harness launch: the argv is harness then args" cmd_is opencode --standalone --auto "a b" -x
+check "harness launch: the launch line shows the args" show_is "opencode --standalone --auto a b -x"
 write_cfg $'[harness.claude]\nargs = ["--model", "opus"]\n[task]\nprompt = "Task {task} begins."'
 check "harness launch: args precede what the launcher adds" build_from claude a ""
 check "harness launch: claude gets args, then -- and the prompt" cmd_is claude --model opus -- "Task a begins."
@@ -163,9 +163,9 @@ check "harness launch: the operator's prompt flag is then passed as given" cmd_i
 mkdir -p "${HOME}/proj/.tjor"
 printf '[harness.opencode]\nargs = ["--auto"]\n' > "${HOME}/proj/.tjor/config.toml"
 python3 "${ROOT}/python/tjor_trust.py" approve "${HOME}/proj/.tjor/config.toml" >/dev/null
-write_cfg $'[harness.opencode]\nargs = ["--agent", "bob"]'
+write_cfg $'[harness.opencode]\nargs = ["--standalone", "--auto"]'
 check "harness launch: a TRUSTED repo config cannot set harness arguments" build_from opencode "" ""
-check "harness launch: the user config's arguments are used instead" cmd_is opencode --agent bob
+check "harness launch: the user config's arguments are used instead" cmd_is opencode --standalone --auto
 check "harness launch: the repo config's [harness] table is reported as user-config only" out_has "[harness]"
 check "harness launch: the report names ADR 0014" out_has "ADR 0014"
 rm -rf "${HOME:?}/proj/.tjor"
