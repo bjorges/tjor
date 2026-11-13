@@ -74,10 +74,11 @@ under the wrap).
      a process opens only its own descendants' memory: measured, the probe
      opens its child's, and a child or a sibling of the probe gets `EACCES`
      on the probe's. With 0 or no Yama the same-uid check is all that is
-     left and any process in the sandbox opens any other's; that case
-     follows from the kernel rule and was not run here. The entrypoint
-     prints a note when the engine's value is 0 or absent, and the suite
-     asserts whichever case the engine is in;
+     left and any process in the sandbox opens any other's: measured on
+     Colima with `ptrace_scope` set to 0, a child, a sibling and the
+     ancestor all open the probe's memory. The entrypoint prints a note
+     when the engine's value is 0 or absent (present in that run), and the
+     suite asserts whichever case the engine is in;
    - refused: of PID 1 and the outside process `environ`, `maps`, `smaps`,
      `mem`, `io`, `exe`, `ns/*`, `root`, `cwd` and the `fd` targets, whatever
      they point at (Landlock's ptrace rule: a sandboxed process may not
@@ -119,7 +120,8 @@ under the wrap).
    control that reads the same entry outside the wrap. Measured on Colima
    (arm64, kernel 6.8, ABI 4, `ptrace_scope=1`) locally and on the Linux CI
    runner (x86_64, `ptrace_scope=1`) by the `landlock` job; the Yama-off
-   case is not measured by either.
+   case once by hand on Colima with `ptrace_scope=0` (106 passed, the
+   residual branch and the entrypoint's note), not by CI.
 
 ## Consequences
 
