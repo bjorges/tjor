@@ -2,7 +2,7 @@
   "name": "tjor-slides",
   "private": true,
   "description": "Slide decks for tjor, built with Slidev and published to GitHub Pages (see agents.md).",
-  "packageManager": "pnpm@10.28.0",
+  "packageManager": "pnpm@10.34.9",
   "engines": {
     "node": ">=22.12.0"
   },
